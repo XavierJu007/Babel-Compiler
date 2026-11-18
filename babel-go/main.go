@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -68,34 +69,82 @@ type CompileResp struct {
 }
 
 type CacheEntry struct {
-	Compiled  string `json:"compiled"`
-	Audit     string `json:"audit,omitempty"`
-	Model     string `json:"model"`
-	Mode      string `json:"mode"`
-	CreatedAt string `json:"created_at"`
+	Compiled   string `json:"compiled"`
+	Audit      string `json:"audit,omitempty"`
+	Model      string `json:"model"`
+	Mode       string `json:"mode"`
+	CreatedAt  string `json:"created_at"`
+	LastAccess int64  `json:"last_access"`
 }
 
 type ProxyLog struct {
-	ID        string `json:"id"`
-	Timestamp string `json:"timestamp"`
-	Role      string `json:"role"`
-	Original  string `json:"original"`
-	Compiled  string `json:"compiled"`
-	Ratio     string `json:"ratio"`
-	CacheHit  bool   `json:"cache_hit"`
+	ID               string `json:"id"`
+	Timestamp        string `json:"timestamp"`
+	Role             string `json:"role"`
+	Original         string `json:"original"`
+	Compiled         string `json:"compiled"`
+	Ratio            string `json:"ratio"`
+	CacheHit         bool   `json:"cache_hit"`
+	RealPromptTokens int    `json:"real_prompt_tokens,omitempty"`
+	EstOrigTokens    int    `json:"est_orig_tokens,omitempty"`
+	RealBillingRatio string `json:"real_billing_ratio,omitempty"`
 }
 
+// 零外部依赖 Singleflight 防缓存击穿
+type flightCall struct {
+	wg  sync.WaitGroup
+	res CompileResp
+	err error
+}
+
+type flightGroup struct {
+	mu    sync.Mutex
+	calls map[string]*flightCall
+}
+
+func (g *flightGroup) Do(key string, fn func() (CompileResp, error)) (CompileResp, bool, error) {
+	g.mu.Lock()
+	if g.calls == nil {
+		g.calls = make(map[string]*flightCall)
+	}
+	if c, ok := g.calls[key]; ok {
+		g.mu.Unlock()
+		c.wg.Wait()
+		return c.res, true, c.err
+	}
+	c := &flightCall{}
+	c.wg.Add(1)
+	g.calls[key] = c
+	g.mu.Unlock()
+
+	c.res, c.err = fn()
+
+	g.mu.Lock()
+	delete(g.calls, key)
+	g.mu.Unlock()
+	c.wg.Done()
+
+	return c.res, false, c.err
+}
+
+const (
+	maxCacheEntries = 2000
+	maxLogs         = 40
+)
+
 var (
-	cacheMutex sync.RWMutex
-	diskCache  = make(map[string]CacheEntry)
+	cacheMutex    sync.RWMutex
+	diskCache     = make(map[string]CacheEntry)
+	compileFlight flightGroup
+
+	calibMutex          sync.RWMutex
+	bpeCalibrationScale = 1.0 // 基于上游真实 usage.prompt_tokens 动态校准的缩放系数
 
 	logsMutex sync.RWMutex
 	proxyLogs []ProxyLog
 
 	numRegex = regexp.MustCompile(`\d+(?:\.\d+)?`)
 )
-
-const maxLogs = 40
 
 var prompts = map[string]string{
 	"standard": `你是一个「高密度提示词编译器」。将自然语言无损编译为结构清晰的树状符号指令（目标长度为原文的 55%~70%）。
@@ -167,10 +216,29 @@ func initDiskCache() {
 	_ = json.Unmarshal(data, &diskCache)
 }
 
+func evictCacheIfNeededLocked() {
+	for len(diskCache) > maxCacheEntries {
+		var oldestKey string
+		var oldestTime int64 = math.MaxInt64
+		for k, v := range diskCache {
+			if v.LastAccess < oldestTime {
+				oldestTime = v.LastAccess
+				oldestKey = k
+			}
+		}
+		if oldestKey != "" {
+			delete(diskCache, oldestKey)
+		} else {
+			break
+		}
+	}
+}
+
 func saveDiskCache() {
-	cacheMutex.RLock()
+	cacheMutex.Lock()
+	evictCacheIfNeededLocked()
 	data, err := json.MarshalIndent(diskCache, "", "  ")
-	cacheMutex.RUnlock()
+	cacheMutex.Unlock()
 	if err == nil {
 		_ = os.WriteFile(cacheFilePath(), data, 0600)
 	}
@@ -283,6 +351,57 @@ func appendProxyLog(entry ProxyLog) {
 	}
 }
 
+// 当上游返回真实 usage.prompt_tokens 时，动态校准本地估算因子并回写代理日志
+func applyRealBillingUsage(logIDs []string, estOrigTotal, estCompTotal, realPromptTokens int, hasTools bool) {
+	if realPromptTokens <= 0 || estOrigTotal <= 0 {
+		return
+	}
+
+	// 仅在无额外 tools Schema 干扰时，用真实账单值动态平滑校准 BPE 估算权重
+	if !hasTools && estCompTotal > 20 {
+		observedRatio := float64(realPromptTokens) / float64(estCompTotal)
+		if observedRatio >= 0.65 && observedRatio <= 1.65 {
+			calibMutex.Lock()
+			bpeCalibrationScale = bpeCalibrationScale*0.8 + observedRatio*0.2
+			calibMutex.Unlock()
+		}
+	}
+
+	if len(logIDs) == 0 {
+		return
+	}
+
+	// 按当前校准系数还原原始自然语言的等效真实 Token 数
+	calibMutex.RLock()
+	scale := bpeCalibrationScale
+	calibMutex.RUnlock()
+
+	calibratedOrig := int(float64(estOrigTotal)*scale + 0.5)
+	if calibratedOrig < realPromptTokens {
+		calibratedOrig = estOrigTotal
+	}
+	realSavedPct := 0.0
+	if calibratedOrig > 0 {
+		realSavedPct = (1.0 - float64(realPromptTokens)/float64(calibratedOrig)) * 100
+	}
+	billingTag := fmt.Sprintf("实测 %d→%d tok (省%.1f%%)", calibratedOrig, realPromptTokens, realSavedPct)
+
+	idSet := make(map[string]bool, len(logIDs))
+	for _, id := range logIDs {
+		idSet[id] = true
+	}
+
+	logsMutex.Lock()
+	defer logsMutex.Unlock()
+	for i := range proxyLogs {
+		if idSet[proxyLogs[i].ID] {
+			proxyLogs[i].RealPromptTokens = realPromptTokens
+			proxyLogs[i].EstOrigTokens = calibratedOrig
+			proxyLogs[i].RealBillingRatio = billingTag
+		}
+	}
+}
+
 func buildCompletionsURL(baseURL string) string {
 	clean := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if strings.HasSuffix(clean, "/chat/completions") {
@@ -370,14 +489,13 @@ func compactDSL(raw string) string {
 	return strings.Join(out, "\n")
 }
 
-// 感知 UTF-8 Byte-Fallback 的 BPE Token 精确估算器（对齐 cl100k_base / o200k_base）
+// 感知 UTF-8 Byte-Fallback 与动态校准系数的 BPE Token 估算器
 func estimateTokensBPE(s string) int {
 	var total float64
 	asciiWordRun := 0
 
 	flushWord := func() {
 		if asciiWordRun > 0 {
-			// 英文单词/标识符平均约 3.8 字符 = 1 token
 			total += float64(asciiWordRun) / 3.8
 			if asciiWordRun < 3 {
 				total += 0.35
@@ -396,29 +514,29 @@ func estimateTokensBPE(s string) int {
 				if r == ' ' || r == '\n' || r == '\t' {
 					total += 0.35
 				} else {
-					// 单字节 ASCII 标点/算子（| ! -> :=）通常为 1 token
 					total += 1.0
 				}
 			}
 		} else {
 			flushWord()
 			if r >= 0x4E00 && r <= 0x9FFF {
-				// 常见汉字在 cl100k/o200k 中平均约 1.45 token
 				total += 1.45
 			} else if r >= 0x2500 && r <= 0x257F {
-				// Box Drawing 制表符（├ │ ╰）3字节 UTF-8，通常触发 byte-fallback 占 2.5 token
 				total += 2.5
 			} else if r >= 0x2190 && r <= 0x22FF {
-				// 数学与箭头算子（∀ ∃ ∧ →）多数不在高频词表，占 2.0 token
 				total += 2.0
 			} else {
-				// 其他多字节字符按 UTF-8 字节数 * 0.75 估算
 				total += float64(bLen) * 0.75
 			}
 		}
 	}
 	flushWord()
-	return int(total + 0.5)
+
+	calibMutex.RLock()
+	scale := bpeCalibrationScale
+	calibMutex.RUnlock()
+
+	return int(total*scale + 0.5)
 }
 
 func formatStats(orig, comp string) (int, int, int, int, string) {
@@ -439,11 +557,9 @@ func formatStats(orig, comp string) (int, int, int, int, string) {
 	return oChars, cChars, oTok, cTok, summary
 }
 
-// 本地确定性硬门禁检查：核验数字/阈值与否定约束是否被吞掉
 func checkDeterministicInvariants(orig, comp string) []string {
 	var failures []string
 
-	// 1. 核验所有数字与阈值
 	origNums := numRegex.FindAllString(orig, -1)
 	seen := make(map[string]bool)
 	for _, num := range origNums {
@@ -456,7 +572,6 @@ func checkDeterministicInvariants(orig, comp string) []string {
 		}
 	}
 
-	// 2. 核验否定/禁止约束是否保留否定算子
 	negKeywords := []string{"不批量", "不过期", "不验签", "不得", "禁止", "严禁", "绝不", "不能", "不可", "只读不写"}
 	hasOrigNeg := false
 	for _, kw := range negKeywords {
@@ -483,13 +598,11 @@ func checkDeterministicInvariants(orig, comp string) []string {
 }
 
 func runAuditGate(p Profile, orig, comp string) (bool, string) {
-	// 第一关：零延迟本地不变量硬核验
 	localFails := checkDeterministicInvariants(orig, comp)
 	if len(localFails) > 0 {
 		return false, "[本地硬门禁拦截] " + strings.Join(localFails, "; ")
 	}
 
-	// 第二关：LLM 往返语义门禁审计
 	rawAudit, err := callLLM(p, verifyGatePrompt, fmt.Sprintf("【原文】:\n%s\n\n【编译后DSL】:\n%s", orig, comp), 0.0)
 	if err != nil {
 		return false, fmt.Sprintf("[审计服务异常] %v", err)
@@ -507,7 +620,6 @@ func runAuditGate(p Profile, orig, comp string) (bool, string) {
 		return false, "[语义门禁拦截] 缺失: " + strings.Join(gateRes.Missing, "; ")
 	}
 
-	// 兜底兼容非 JSON 文本响应
 	if strings.Contains(strings.ToUpper(cleaned), "PASS") {
 		return true, cleaned
 	}
@@ -542,11 +654,15 @@ func doCompile(req CompileReq) (CompileResp, error) {
 
 	cacheKey := makeCacheKey(req.Mode, p.Model, req.Text)
 
-	// 1. 查询持久化确定性缓存
+	// 1. 查询 LRU 持久化缓存
 	if !req.NoCache {
-		cacheMutex.RLock()
+		cacheMutex.Lock()
 		cached, hit := diskCache[cacheKey]
-		cacheMutex.RUnlock()
+		if hit && cached.Compiled != "" {
+			cached.LastAccess = time.Now().Unix()
+			diskCache[cacheKey] = cached
+		}
+		cacheMutex.Unlock()
 
 		if hit && cached.Compiled != "" {
 			var out CompileResp
@@ -569,65 +685,83 @@ func doCompile(req CompileReq) (CompileResp, error) {
 		}
 	}
 
-	// 2. 缓存未命中：调用模型编译
-	compiled, err := callLLM(p, sys, req.Text, 0.1)
+	// 2. Singleflight 并发合并：同一 CacheKey 并发请求只发起一次上游编译
+	flightKey := cacheKey
+	if req.NoCache {
+		flightKey = fmt.Sprintf("%s_force_%d", cacheKey, time.Now().UnixNano())
+	}
+
+	res, shared, err := compileFlight.Do(flightKey, func() (CompileResp, error) {
+		compiled, err := callLLM(p, sys, req.Text, 0.1)
+		if err != nil {
+			return CompileResp{}, err
+		}
+		compiled = compactDSL(compiled)
+
+		var auditReport string
+		if req.Verify || req.StrictGate {
+			passed, report := runAuditGate(p, req.Text, compiled)
+			auditReport = report
+			if req.StrictGate && !passed {
+				return CompileResp{}, fmt.Errorf("%s", report)
+			}
+		}
+
+		now := time.Now()
+		cacheMutex.Lock()
+		diskCache[cacheKey] = CacheEntry{
+			Compiled:   compiled,
+			Audit:      auditReport,
+			Model:      p.Model,
+			Mode:       req.Mode,
+			CreatedAt:  now.Format(time.RFC3339),
+			LastAccess: now.Unix(),
+		}
+		cacheMutex.Unlock()
+		go saveDiskCache()
+
+		var out CompileResp
+		out.Compiled = compiled
+		out.Audit = auditReport
+		out.CacheHit = false
+		out.Stats.OriginalChars, out.Stats.CompiledChars, out.Stats.OriginalTokens, out.Stats.CompiledTokens, out.Stats.CompressionRatio = formatStats(req.Text, compiled)
+		return out, nil
+	})
+
 	if err != nil {
 		return CompileResp{}, err
 	}
-	compiled = compactDSL(compiled)
-
-	// 3. 往返校验与硬门禁拦截
-	var auditReport string
-	if req.Verify || req.StrictGate {
-		passed, report := runAuditGate(p, req.Text, compiled)
-		auditReport = report
-		if req.StrictGate && !passed {
-			// 硬门禁失败：直接返回错误且不写入正常缓存
-			return CompileResp{}, fmt.Errorf("%s", report)
-		}
+	if shared {
+		res.CacheHit = true
 	}
-
-	// 4. 写入磁盘持久化缓存，保证后续同输入输出完全固定
-	cacheMutex.Lock()
-	diskCache[cacheKey] = CacheEntry{
-		Compiled:  compiled,
-		Audit:     auditReport,
-		Model:     p.Model,
-		Mode:      req.Mode,
-		CreatedAt: time.Now().Format(time.RFC3339),
-	}
-	cacheMutex.Unlock()
-	go saveDiskCache()
-
-	var out CompileResp
-	out.Compiled = compiled
-	out.Audit = auditReport
-	out.CacheHit = false
-	out.Stats.OriginalChars, out.Stats.CompiledChars, out.Stats.OriginalTokens, out.Stats.CompiledTokens, out.Stats.CompressionRatio = formatStats(req.Text, compiled)
-	return out, nil
+	return res, nil
 }
 
-func translateWithCache(role, text string, p Profile) string {
+// 透明代理单条文本编译，返回 (编译后文本, 日志ID, 原始估算Token, 编译后估算Token)
+func translateMessageBlock(role, text string, p Profile) (string, string, int, int) {
+	origTok := estimateTokensBPE(text)
 	if len([]rune(strings.TrimSpace(text))) < 35 {
-		return text
+		return text, "", origTok, origTok
 	}
 
-	// 代理模式默认开启 StrictGate：一旦压缩丢失关键阈值或否定词，自动降级透传原文，保障业务安全
 	res, err := doCompile(CompileReq{
 		Text:       text,
-		Mode:       "token", // 代理通信默认使用纯 ASCII token 模式，最大化节省真实 Token
+		Mode:       "token",
 		StrictGate: true,
 		APIKey:     p.APIKey,
 		BaseURL:    p.BaseURL,
 		Model:      p.Model,
 	})
 	if err != nil || res.Compiled == "" {
-		return text
+		return text, "", origTok, origTok
 	}
 
 	key := makeCacheKey("token", p.Model, text)
+	logID := key[:8]
+	compTok := estimateTokensBPE(res.Compiled)
+
 	appendProxyLog(ProxyLog{
-		ID:        key[:8],
+		ID:        logID,
 		Timestamp: time.Now().Format("15:04:05"),
 		Role:      role,
 		Original:  text,
@@ -635,7 +769,31 @@ func translateWithCache(role, text string, p Profile) string {
 		Ratio:     res.Stats.CompressionRatio,
 		CacheHit:  res.CacheHit,
 	})
-	return res.Compiled
+	return res.Compiled, logID, origTok, compTok
+}
+
+// 从 SSE 尾部文本中提取上游真实返回的 usage.prompt_tokens
+func extractUsageFromSSETail(tail string) int {
+	lines := strings.Split(tail, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		jsonStr := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if jsonStr == "" || jsonStr == "[DONE]" {
+			continue
+		}
+		var chunk struct {
+			Usage struct {
+				PromptTokens int `json:"prompt_tokens"`
+			} `json:"usage"`
+		}
+		if json.Unmarshal([]byte(jsonStr), &chunk) == nil && chunk.Usage.PromptTokens > 0 {
+			return chunk.Usage.PromptTokens
+		}
+	}
+	return 0
 }
 
 func transparentProxyHandler(w http.ResponseWriter, r *http.Request) {
@@ -658,6 +816,12 @@ func transparentProxyHandler(w http.ResponseWriter, r *http.Request) {
 	cfg := loadConfig()
 	p := getActiveProfile(cfg, r.Header.Get("X-Babel-Profile"))
 
+	var (
+		logIDs       []string
+		estOrigTotal int
+		estCompTotal int
+	)
+
 	if msgs, ok := payload["messages"].([]any); ok {
 		for _, m := range msgs {
 			msgMap, ok := m.(map[string]any)
@@ -666,18 +830,39 @@ func transparentProxyHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			role, _ := msgMap["role"].(string)
 			if role != "system" && role != "user" {
+				// 统计 assistant/tool 历史消息的基础 Token，对齐上游总 prompt_tokens
+				if contentStr, ok := msgMap["content"].(string); ok {
+					t := estimateTokensBPE(contentStr) + 4
+					estOrigTotal += t
+					estCompTotal += t
+				}
 				continue
 			}
 
+			estOrigTotal += 4
+			estCompTotal += 4
+
 			switch content := msgMap["content"].(type) {
 			case string:
-				msgMap["content"] = translateWithCache(role, content, p)
+				comp, id, oTok, cTok := translateMessageBlock(role, content, p)
+				msgMap["content"] = comp
+				estOrigTotal += oTok
+				estCompTotal += cTok
+				if id != "" {
+					logIDs = append(logIDs, id)
+				}
 			case []any:
 				for _, part := range content {
 					if partMap, ok := part.(map[string]any); ok {
 						if partMap["type"] == "text" {
 							if txt, ok := partMap["text"].(string); ok {
-								partMap["text"] = translateWithCache(role, txt, p)
+								comp, id, oTok, cTok := translateMessageBlock(role, txt, p)
+								partMap["text"] = comp
+								estOrigTotal += oTok
+								estCompTotal += cTok
+								if id != "" {
+									logIDs = append(logIDs, id)
+								}
 							}
 						}
 					}
@@ -686,6 +871,13 @@ func transparentProxyHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 若为流式请求且未显式关闭 stream_options，则自动注入 include_usage 以捕获真实账单 Token
+	isStream, _ := payload["stream"].(bool)
+	if isStream && payload["stream_options"] == nil {
+		payload["stream_options"] = map[string]any{"include_usage": true}
+	}
+
+	_, hasTools := payload["tools"]
 	modifiedBody, _ := json.Marshal(payload)
 
 	upstreamBase := r.Header.Get("X-Upstream-BaseURL")
@@ -728,19 +920,45 @@ func transparentProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.StatusCode)
 
+	if !isStream {
+		respBytes, _ := io.ReadAll(resp.Body)
+		w.Write(respBytes)
+
+		var nonStreamResp struct {
+			Usage struct {
+				PromptTokens int `json:"prompt_tokens"`
+			} `json:"usage"`
+		}
+		if json.Unmarshal(respBytes, &nonStreamResp) == nil && nonStreamResp.Usage.PromptTokens > 0 {
+			go applyRealBillingUsage(logIDs, estOrigTotal, estCompTotal, nonStreamResp.Usage.PromptTokens, hasTools)
+		}
+		return
+	}
+
+	// 流式透传并截取最后 4KB 缓冲以解析 usage chunk
 	flusher, canFlush := w.(http.Flusher)
 	buf := make([]byte, 4096)
+	var tailRing string
 	for {
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
-			w.Write(buf[:n])
+			chunk := buf[:n]
+			w.Write(chunk)
 			if canFlush {
 				flusher.Flush()
+			}
+			tailRing += string(chunk)
+			if len(tailRing) > 4096 {
+				tailRing = tailRing[len(tailRing)-4096:]
 			}
 		}
 		if readErr != nil {
 			break
 		}
+	}
+
+	if realTokens := extractUsageFromSSETail(tailRing); realTokens > 0 {
+		go applyRealBillingUsage(logIDs, estOrigTotal, estCompTotal, realTokens, hasTools)
 	}
 }
 
@@ -792,10 +1010,15 @@ func startServer(preferredAddr string, autoOpen bool) {
 					"upstream_url":   prof.UpstreamURL,
 				}
 			}
+			cacheMutex.RLock()
+			cacheCount := len(diskCache)
+			cacheMutex.RUnlock()
+
 			json.NewEncoder(w).Encode(map[string]any{
 				"active_profile": cfg.ActiveProfile,
 				"config_path":    configPath(),
 				"cache_path":     cacheFilePath(),
+				"cache_count":    cacheCount,
 				"profiles":       safeProfiles,
 			})
 			return
@@ -922,7 +1145,7 @@ func startServer(preferredAddr string, autoOpen bool) {
 	webURL := "http://" + actualAddr
 	fmt.Printf("[+] Babel-DSL 服务已就绪:\n")
 	fmt.Printf("    - 配置文件:    %s\n", configPath())
-	fmt.Printf("    - 确定性缓存:  %s\n", cacheFilePath())
+	fmt.Printf("    - LRU 缓存池:  %s (上限 %d 条)\n", cacheFilePath(), maxCacheEntries)
 	fmt.Printf("    - Web 控制台:  %s\n", webURL)
 	fmt.Printf("    - OpenAI 代理: %s/v1/chat/completions\n", webURL)
 

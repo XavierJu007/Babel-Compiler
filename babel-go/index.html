@@ -4,10 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BABEL-DSL // 神经符号编译器 & 透明代理网关</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="[https://cdn.tailwindcss.com](https://cdn.tailwindcss.com)"></script>
+    <script src="[https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js](https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js)"></script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+        @import url('[https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap](https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap)');
         body {
             font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
             background: radial-gradient(circle at 50% 42%, #071318 0%, #020408 100%);
@@ -19,7 +19,6 @@
             z-index: 0;
             pointer-events: none;
         }
-        /* 适度透明磨砂：既能透过看到背后的星环粒子，又保证代码文本清晰锐利 */
         .glass-panel {
             background: rgba(10, 15, 26, 0.54);
             backdrop-filter: blur(12px);
@@ -111,7 +110,7 @@
             <span><code class="text-cyan-300">→</code> 因果流向</span>
             <span><code class="text-cyan-300">∧</code> 逻辑与</span>
             <span><code class="text-cyan-300">|</code> 逻辑或</span>
-            <span><code class="text-cyan-300">¬</code> 否定禁止</span>
+            <span><code class="text-cyan-300">¬ / !</code> 否定禁止</span>
             <span><code class="text-cyan-300">∀</code> 全称遍历</span>
             <span><code class="text-cyan-300">∃</code> 存在命中</span>
             <span><code class="text-cyan-300">↔</code> 篡改替换</span>
@@ -128,15 +127,16 @@
                     <span class="text-xs font-semibold text-slate-300">INPUT // 自然语言提示词</span>
                     <span id="inputCharCount" class="text-[11px] text-slate-400">0 chars</span>
                 </div>
-                <div class="flex items-center gap-3 text-xs">
-                    <label class="flex items-center gap-1.5 cursor-pointer text-slate-300 hover:text-emerald-300">
-                        <input id="verifyCheck" type="checkbox" class="accent-emerald-500 rounded"> 语义无损审计
+                <div class="flex items-center gap-2.5 text-xs">
+                    <label class="flex items-center gap-1.5 cursor-pointer text-slate-300 hover:text-emerald-300" title="开启后若丢失数字阈值或否定约束将直接报错拦截">
+                        <input id="verifyCheck" type="checkbox" checked class="accent-emerald-500 rounded"> 硬门禁审计
                     </label>
-                    <select id="modeSelect" class="bg-slate-900 border border-slate-700 rounded-md px-2.5 py-1 text-slate-200 focus:outline-none focus:border-emerald-500">
+                    <select id="modeSelect" class="bg-slate-900 border border-slate-700 rounded-md px-2 py-1 text-slate-200 focus:outline-none focus:border-emerald-500">
                         <option value="extreme">极限数理符号 (Extreme)</option>
+                        <option value="token">纯 ASCII 省Token (Token-Saver)</option>
                         <option value="standard">标准树状结构 (Standard)</option>
                     </select>
-                    <button id="runBtn" onclick="runCompile()" class="cyber-btn text-white font-semibold px-4 py-1.5 rounded-md">
+                    <button id="runBtn" onclick="runCompile(false)" class="cyber-btn text-white font-semibold px-3.5 py-1.5 rounded-md">
                         编译 ⚡
                     </button>
                 </div>
@@ -145,17 +145,23 @@
         </div>
 
         <div class="glass-panel rounded-xl flex flex-col overflow-hidden">
-            <div class="px-4 py-3 border-b border-slate-800/80 flex justify-between items-center bg-slate-950/35">
-                <div class="flex items-center gap-2.5">
+            <div class="px-4 py-3 border-b border-slate-800/80 flex flex-wrap justify-between items-center gap-2 bg-slate-950/35">
+                <div class="flex items-center gap-2">
                     <span class="text-xs font-semibold text-emerald-400">OUTPUT // 巴别语高密度 DSL</span>
-                    <span id="statsBadge" class="hidden text-[11px] bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 px-2.5 py-0.5 rounded-full"></span>
+                    <span id="statsBadge" class="hidden text-[11px] bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full"></span>
+                    <span id="cacheBadge" class="hidden text-[10px] bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 px-2 py-0.5 rounded">CACHE HIT</span>
                 </div>
-                <button id="copyBtn" onclick="copyResult()" class="text-xs bg-slate-800/90 hover:bg-slate-700 border border-slate-700 px-3 py-1 rounded-md text-slate-200 transition">
-                    复制 DSL
-                </button>
+                <div class="flex items-center gap-2">
+                    <button id="forceBtn" onclick="runCompile(true)" title="跳过本地确定性缓存重新调用模型编译" class="text-xs bg-slate-800/90 hover:bg-slate-700 border border-slate-700 px-2.5 py-1 rounded-md text-slate-300 transition">
+                        ↻ 重编译
+                    </button>
+                    <button id="copyBtn" onclick="copyResult()" class="text-xs bg-slate-800/90 hover:bg-slate-700 border border-slate-700 px-3 py-1 rounded-md text-slate-200 transition">
+                        复制 DSL
+                    </button>
+                </div>
             </div>
             <textarea id="dslOutput" readonly class="flex-1 bg-transparent p-4 text-sm text-emerald-300 resize-none focus:outline-none leading-relaxed placeholder-slate-500" placeholder="编译后的高密度数理符号文本将在此生成..."></textarea>
-            <div id="auditBox" class="hidden border-t border-amber-500/30 bg-amber-950/35 px-4 py-2.5 text-xs text-amber-300"></div>
+            <div id="auditBox" class="hidden border-t border-emerald-500/30 bg-emerald-950/35 px-4 py-2.5 text-xs text-emerald-300"></div>
         </div>
     </div>
 </main>
@@ -166,9 +172,9 @@
         <div class="text-xs space-y-1.5">
             <div class="flex items-center gap-2">
                 <span class="text-emerald-400 font-semibold">OpenAI 兼容透明代理网关:</span>
-                <code class="text-cyan-300 select-all bg-slate-950/90 px-3 py-1 rounded border border-cyan-500/30" id="proxyEndpoint">http://127.0.0.1:8080/v1</code>
+                <code class="text-cyan-300 select-all bg-slate-950/90 px-3 py-1 rounded border border-cyan-500/30" id="proxyEndpoint">[http://127.0.0.1:8080/v1](http://127.0.0.1:8080/v1)</code>
             </div>
-            <p class="text-slate-300">将你 Product 的 <code class="text-slate-200">OPENAI_BASE_URL</code> 指向此地址：前端 UI 保持自然语言展示，底层请求自动经由当前激活模型压缩为巴别语再发往上游 Agent。</p>
+            <p class="text-slate-300">将你 Product 的 <code class="text-slate-200">OPENAI_BASE_URL</code> 指向此地址：前端 UI 保持自然语言展示，底层自动采用纯 ASCII 省 Token 模式与硬门禁转发，并实时捕获上游账单 <code class="text-emerald-300">usage.prompt_tokens</code>。</p>
         </div>
         <div class="flex items-center gap-2.5 text-xs">
             <label class="flex items-center gap-1.5 text-slate-300 cursor-pointer mr-2">
@@ -196,10 +202,10 @@
         <div class="space-y-1.5">
             <span class="text-[11px] text-slate-400">快速填充服务商模板 (注意中转站通常需要带 /v1 后缀):</span>
             <div class="flex flex-wrap gap-2 text-xs">
-                <button onclick="applyPreset('deepseek', 'https://api.deepseek.com/v1', 'deepseek-chat')" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-300 transition">DeepSeek</button>
-                <button onclick="applyPreset('openai', 'https://api.openai.com/v1', 'gpt-4o-mini')" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-emerald-300 transition">OpenAI (4o-mini)</button>
-                <button onclick="applyPreset('openrouter', 'https://openrouter.ai/api/v1', 'google/gemini-2.5-flash')" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-purple-300 transition">OpenRouter</button>
-                <button onclick="applyPreset('ollama', 'http://127.0.0.1:11434/v1', 'qwen2.5:7b')" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-amber-300 transition">Ollama 本地</button>
+                <button onclick="applyPreset('deepseek', '[https://api.deepseek.com/v1](https://api.deepseek.com/v1)', 'deepseek-chat')" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-300 transition">DeepSeek</button>
+                <button onclick="applyPreset('openai', '[https://api.openai.com/v1](https://api.openai.com/v1)', 'gpt-4o-mini')" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-emerald-300 transition">OpenAI (4o-mini)</button>
+                <button onclick="applyPreset('openrouter', '[https://openrouter.ai/api/v1](https://openrouter.ai/api/v1)', 'google/gemini-2.5-flash')" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-purple-300 transition">OpenRouter</button>
+                <button onclick="applyPreset('ollama', '[http://127.0.0.1:11434/v1](http://127.0.0.1:11434/v1)', 'qwen2.5:7b')" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-amber-300 transition">Ollama 本地</button>
             </div>
         </div>
 
@@ -220,7 +226,7 @@
         <div class="space-y-3 text-xs">
             <div>
                 <label class="block text-slate-400 mb-1">编译器 API Base URL (末尾请带 /v1)</label>
-                <input id="cfgBaseUrl" type="text" placeholder="https://api.openai.com/v1" class="w-full bg-slate-950/90 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-emerald-500">
+                <input id="cfgBaseUrl" type="text" placeholder="[https://api.openai.com/v1](https://api.openai.com/v1)" class="w-full bg-slate-950/90 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-emerald-500">
             </div>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
@@ -246,7 +252,7 @@
 </div>
 
 <script>
-    // ==================== 1. 恢复原版简洁二十面体线框 + 三层细轨星环背景 ====================
+    // ==================== 1. 简洁二十面体线框 + 三层细轨星环背景 ====================
     let isOverdrive = false;
     (function initThreeBackground() {
         const canvas = document.getElementById('bg-canvas');
@@ -263,7 +269,6 @@
         const astrolabe = new THREE.Group();
         scene.add(astrolabe);
 
-        // 核心二十面体线框
         const coreGeo = new THREE.IcosahedronGeometry(4.4, 1);
         const coreMat = new THREE.MeshBasicMaterial({
             color: 0x10b981,
@@ -274,7 +279,6 @@
         const coreMesh = new THREE.Mesh(coreGeo, coreMat);
         astrolabe.add(coreMesh);
 
-        // 三层细线偏心陀螺仪星环
         const ringConfigs = [
             { r: 7.6, tube: 0.04, color: 0x34d399, opacity: 0.45, rx: 0.6, ry: 0.2 },
             { r: 10.4, tube: 0.03, color: 0x06b6d4, opacity: 0.35, rx: -0.5, ry: 0.8 },
@@ -289,7 +293,6 @@
             return mesh;
         });
 
-        // 空间微粒群
         const particleCount = 480;
         const posArray = new Float32Array(particleCount * 3);
         for (let i = 0; i < particleCount * 3; i += 3) {
@@ -536,17 +539,21 @@
     }
 
     function fillDemoText() {
-        document.getElementById('rawInput').value = `你是一名授权渗透测试工程师，目标是找出业务系统里扫描器发现不了的逻辑缺陷、越权、状态机绕过与并发问题。先把所有接口按未认证、普通用户、高权限角色三档标注，标出仅在返回体做权限过滤或用请求参数 userId、orderId 判断归属的接口作为 IDOR 名单，对名单中每一项执行换 ID 重放测试能否读写他人对象。注意检查 GET 改 POST、PUT 改 PATCH、参数从 body 移到 query 以及添加 ?debug=1 绕过鉴权的情况。全程对生产系统只发最小必要流量，能只读不写，写操作前必须征得同意，截图与报告中的敏感凭据一律脱敏。`;
+        document.getElementById('rawInput').value = `你是一名授权渗透测试者，目标是找出业务系统里扫描器永远发现不了的那类漏洞:逻辑缺陷、越权、状态机绕过、并发问题。先做入口与权限模型测绘:把所有接口按[未认证/普通用户/高权限角色」三档标注，标出哪些接口只在返回体里做权限过滤、哪些接口用请求参数里的userId、orderId、tenantId判断归属，这类就是IDOR(越权访问)的名单，对每个名单项做一次「换ID重放」，看能否读取或修改他人对象。全程要求:对生产系统只发最小必要流量，能只读不写，写操作前说明副作用并征得同意，不批量拉取真实用户数据，截图与报告中的凭据和个人信息一律脱敏。`;
         updateInputCount();
     }
 
-    async function runCompile() {
+    async function runCompile(noCache = false) {
         const text = document.getElementById('rawInput').value.trim();
         if (!text) return;
         const btn = document.getElementById('runBtn');
-        btn.textContent = '星盘编译中...';
+        const forceBtn = document.getElementById('forceBtn');
+        btn.textContent = '编译中...';
         btn.disabled = true;
+        forceBtn.disabled = true;
         isOverdrive = true;
+
+        const strictGate = document.getElementById('verifyCheck').checked;
 
         try {
             const data = await fetchJSON('/api/compile', {
@@ -555,18 +562,27 @@
                 body: JSON.stringify({
                     text,
                     mode: document.getElementById('modeSelect').value,
-                    verify: document.getElementById('verifyCheck').checked
+                    verify: strictGate,
+                    strict_gate: strictGate,
+                    no_cache: noCache
                 })
             });
 
             document.getElementById('dslOutput').value = data.compiled;
             const badge = document.getElementById('statsBadge');
-            badge.textContent = `${data.stats.original_chars} → ${data.stats.compiled_chars} 字符 (压缩率 ${data.stats.compression_ratio})`;
+            badge.textContent = data.stats.compression_ratio;
             badge.classList.remove('hidden');
+
+            const cacheBadge = document.getElementById('cacheBadge');
+            if (data.cache_hit) {
+                cacheBadge.classList.remove('hidden');
+            } else {
+                cacheBadge.classList.add('hidden');
+            }
 
             const auditBox = document.getElementById('auditBox');
             if (data.audit) {
-                auditBox.textContent = `语义审计：${data.audit}`;
+                auditBox.textContent = `门禁审计：${data.audit}`;
                 auditBox.classList.remove('hidden');
             } else {
                 auditBox.classList.add('hidden');
@@ -577,6 +593,7 @@
         } finally {
             btn.textContent = '编译 ⚡';
             btn.disabled = false;
+            forceBtn.disabled = false;
             isOverdrive = false;
         }
     }
@@ -605,7 +622,7 @@
             container.innerHTML = '';
 
             if (!logs.length) {
-                container.innerHTML = '<div class="glass-panel text-center text-slate-400 text-xs py-14 rounded-xl">暂无代理拦截记录。将你 Product 的 OPENAI_BASE_URL 指向 <code class="text-cyan-300">' + window.location.origin + '/v1</code> 后发起对话，即可在此实时透视底层发送给 Agent 的巴别语。</div>';
+                container.innerHTML = '<div class="glass-panel text-center text-slate-400 text-xs py-14 rounded-xl">暂无代理拦截记录。将你 Product 的 OPENAI_BASE_URL 指向 <code class="text-cyan-300">' + window.location.origin + '/v1</code> 后发起对话，即可在此实时透视底层发送给 Agent 的巴别语与上游实测 Token 消耗。</div>';
                 return;
             }
 
@@ -614,13 +631,14 @@
                 card.className = 'glass-panel rounded-xl overflow-hidden text-xs';
 
                 const header = document.createElement('div');
-                header.className = 'px-4 py-2.5 bg-slate-950/50 border-b border-slate-800/80 flex items-center justify-between';
+                header.className = 'px-4 py-2.5 bg-slate-950/50 border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-2';
                 header.innerHTML = `
-            <div class="flex items-center gap-2.5">
+            <div class="flex flex-wrap items-center gap-2">
               <span class="text-slate-500">[${item.timestamp}]</span>
               <span class="px-2 py-0.5 rounded bg-slate-800 text-slate-200 uppercase font-semibold">${item.role}</span>
-              <span class="text-emerald-400 font-semibold">压缩率 ${item.ratio}</span>
-              ${item.cache_hit ? '<span class="px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">⚡ SHA-256 缓存命中</span>' : ''}
+              <span class="text-slate-300">${item.ratio}</span>
+              ${item.real_billing_ratio ? `<span class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-semibold">💰 ${item.real_billing_ratio}</span>` : ''}
+              ${item.cache_hit ? '<span class="px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">⚡ CACHE HIT</span>' : ''}
             </div>
             <span class="text-slate-500">#${item.id}</span>
           `;
