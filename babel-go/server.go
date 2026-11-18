@@ -3,6 +3,7 @@ package main
 import (
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -43,13 +44,14 @@ func bindAvailableListener(preferredAddr string) (net.Listener, string, error) {
 	return nil, "", fmt.Errorf("8080-8099 端口均被占用，请通过 -serve 127.0.0.1:<端口> 手动指定")
 }
 
-func startServer(preferredAddr string, autoOpen bool) {
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+func newServerMux() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(w, indexHTML)
 	})
 
-	http.HandleFunc("/api/dialects", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/dialects", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == "GET" {
 			reloadDialects()
@@ -131,7 +133,7 @@ func startServer(preferredAddr string, autoOpen bool) {
 		}
 	})
 
-	http.HandleFunc("/api/config", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/config", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == "GET" {
 			cfg := loadConfig()
@@ -231,7 +233,7 @@ func startServer(preferredAddr string, autoOpen bool) {
 		}
 	})
 
-	http.HandleFunc("/api/config/test", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/config/test", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method != "POST" {
 			w.WriteHeader(405)
@@ -269,8 +271,14 @@ func startServer(preferredAddr string, autoOpen bool) {
 		json.NewEncoder(w).Encode(probeProfile(prof))
 	})
 
-	http.HandleFunc("/api/compile", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/compile", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			json.NewEncoder(w).Encode(map[string]string{"detail": "仅支持 POST"})
+			return
+		}
 		var req CompileReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(400)
@@ -280,17 +288,24 @@ func startServer(preferredAddr string, autoOpen bool) {
 		res, err := doCompile(req)
 		if err != nil {
 			status := 400
-			if strings.Contains(err.Error(), "门禁拦截") {
-				status = 422
+			body := map[string]any{"detail": err.Error()}
+			var validationErr *ValidationError
+			if errors.As(err, &validationErr) {
+				body["validation"] = validationErr.Validation
+				if validationErr.Validation.Status == "error" {
+					status = http.StatusBadGateway
+				} else {
+					status = http.StatusUnprocessableEntity
+				}
 			}
 			w.WriteHeader(status)
-			json.NewEncoder(w).Encode(map[string]string{"detail": err.Error()})
+			json.NewEncoder(w).Encode(body)
 			return
 		}
 		json.NewEncoder(w).Encode(res)
 	})
 
-	http.HandleFunc("/api/logs", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/logs", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == "DELETE" {
 			logsMutex.Lock()
@@ -333,9 +348,14 @@ func startServer(preferredAddr string, autoOpen bool) {
 		})
 	})
 
-	http.HandleFunc("/v1/chat/completions", openAIProxyHandler)
-	http.HandleFunc("/v1/messages", anthropicProxyHandler)
+	mux.HandleFunc("/v1/chat/completions", openAIProxyHandler)
+	mux.HandleFunc("/v1/messages", anthropicProxyHandler)
 
+	return mux
+}
+
+func startServer(preferredAddr string, autoOpen bool) {
+	mux := newServerMux()
 	ln, actualAddr, err := bindAvailableListener(preferredAddr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[Error] 启动失败: %v\n", err)
@@ -355,7 +375,7 @@ func startServer(preferredAddr string, autoOpen bool) {
 		openBrowser(webURL)
 	}
 
-	if err := http.Serve(ln, nil); err != nil {
+	if err := http.Serve(ln, mux); err != nil {
 		fmt.Fprintf(os.Stderr, "[Error] 服务异常退出: %v\n", err)
 		os.Exit(1)
 	}

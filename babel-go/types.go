@@ -34,6 +34,7 @@ type Dialect struct {
 type CompileReq struct {
 	Text             string   `json:"text"`
 	Mode             string   `json:"mode"`
+	Domains          []string `json:"domains,omitempty"`
 	Verify           bool     `json:"verify"`
 	StrictGate       bool     `json:"strict_gate"`
 	NoCache          bool     `json:"no_cache"`
@@ -44,22 +45,40 @@ type CompileReq struct {
 	Model            string   `json:"model,omitempty"`
 }
 
+// ValidationResult describes this request's checks, never a cached assertion.
+// A passed LLM comparison is evidence from that check, not a proof of equivalence.
+type ValidationResult struct {
+	Status        string   `json:"status"`
+	Method        string   `json:"method"`
+	PolicyVersion string   `json:"policy_version"`
+	Issues        []string `json:"issues"`
+}
+
+type ValidationError struct {
+	Validation ValidationResult
+}
+
 type CompileResp struct {
-	Compiled string `json:"compiled"`
-	Dialect  string `json:"dialect"`
-	Audit    string `json:"audit,omitempty"`
-	CacheHit bool   `json:"cache_hit"`
-	Stats    struct {
-		OriginalChars    int    `json:"original_chars"`
-		CompiledChars    int    `json:"compiled_chars"`
-		OriginalTokens   int    `json:"original_tokens"`
-		CompiledTokens   int    `json:"compiled_tokens"`
-		CompressionRatio string `json:"compression_ratio"`
+	Compiled   string           `json:"compiled"`
+	Dialect    string           `json:"dialect"`
+	Audit      string           `json:"audit,omitempty"`
+	CacheHit   bool             `json:"cache_hit"`
+	Validation ValidationResult `json:"validation"`
+	Stats      struct {
+		OriginalChars     int    `json:"original_chars"`
+		CompiledChars     int    `json:"compiled_chars"`
+		OriginalTokens    int    `json:"original_tokens"`
+		CompiledTokens    int    `json:"compiled_tokens"`
+		CompressionRatio  string `json:"compression_ratio"`
+		MeasurementKind   string `json:"measurement_kind"`
+		MeasurementSource string `json:"measurement_source"`
+		MeasurementScope  string `json:"measurement_scope"`
 	} `json:"stats"`
 }
 
 type CacheEntry struct {
-	Compiled   string `json:"compiled"`
+	Compiled string `json:"compiled"`
+	// Audit is read only for compatibility with old cache files. It is never trusted.
 	Audit      string `json:"audit,omitempty"`
 	Model      string `json:"model"`
 	Mode       string `json:"mode"`
@@ -68,19 +87,22 @@ type CacheEntry struct {
 }
 
 type ProxyLog struct {
-	ID               string `json:"id"`
-	Timestamp        string `json:"timestamp"`
-	Protocol         string `json:"protocol"`
-	Dialect          string `json:"dialect"`
-	Role             string `json:"role"`
-	Original         string `json:"original"`
-	Compiled         string `json:"compiled"`
-	Ratio            string `json:"ratio"`
-	CacheHit         bool   `json:"cache_hit"`
-	Redacted         bool   `json:"redacted"`
-	RealPromptTokens int    `json:"real_prompt_tokens,omitempty"`
-	EstOrigTokens    int    `json:"est_orig_tokens,omitempty"`
-	RealBillingRatio string `json:"real_billing_ratio,omitempty"`
+	ID               string   `json:"id"`
+	Timestamp        string   `json:"timestamp"`
+	Protocol         string   `json:"protocol"`
+	Dialect          string   `json:"dialect"`
+	Domains          []string `json:"domains,omitempty"`
+	Decision         string   `json:"decision,omitempty"`
+	Reason           string   `json:"reason,omitempty"`
+	Role             string   `json:"role"`
+	Original         string   `json:"original"`
+	Compiled         string   `json:"compiled"`
+	Ratio            string   `json:"ratio"`
+	CacheHit         bool     `json:"cache_hit"`
+	Redacted         bool     `json:"redacted"`
+	RealPromptTokens int      `json:"real_prompt_tokens,omitempty"`
+	EstOrigTokens    int      `json:"est_orig_tokens,omitempty"`
+	RealBillingRatio string   `json:"real_billing_ratio,omitempty"`
 }
 
 // ==================== 编译器故障熔断器 ====================
@@ -165,9 +187,10 @@ func (cb *CircuitBreaker) Status() map[string]any {
 // ==================== Singleflight 防缓存击穿 ====================
 
 type flightCall struct {
-	wg  sync.WaitGroup
-	res CompileResp
-	err error
+	wg      sync.WaitGroup
+	res     CompileResp
+	err     error
+	waiters int // protected by flightGroup.mu
 }
 
 type flightGroup struct {
@@ -181,6 +204,7 @@ func (g *flightGroup) Do(key string, fn func() (CompileResp, error)) (CompileRes
 		g.calls = make(map[string]*flightCall)
 	}
 	if c, ok := g.calls[key]; ok {
+		c.waiters++
 		g.mu.Unlock()
 		c.wg.Wait()
 		return c.res, true, c.err

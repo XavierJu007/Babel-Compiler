@@ -3,13 +3,17 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 )
+
+var proxyLogSequence atomic.Uint64
 
 var secretPatterns = []struct {
 	re   *regexp.Regexp
@@ -40,6 +44,7 @@ func appendProxyLog(entry ProxyLog) {
 		}
 		entry.Original = redactedOrig
 		entry.Compiled = redactedComp
+		entry.Reason = redactSecrets(entry.Reason)
 	}
 
 	logsMutex.Lock()
@@ -50,37 +55,15 @@ func appendProxyLog(entry ProxyLog) {
 	}
 }
 
-func applyRealBillingUsage(logIDs []string, estOrigTotal, estCompTotal, realPromptTokens int, hasTools bool) {
-	if realPromptTokens <= 0 || estOrigTotal <= 0 {
+func applyUpstreamUsage(logIDs []string, estOrigTotal, estCompTotal, realPromptTokens int) {
+	if realPromptTokens <= 0 || len(logIDs) == 0 {
 		return
 	}
 
-	if !hasTools && estCompTotal > 20 {
-		observedRatio := float64(realPromptTokens) / float64(estCompTotal)
-		if observedRatio >= 0.65 && observedRatio <= 1.65 {
-			calibMutex.Lock()
-			bpeCalibrationScale = bpeCalibrationScale*0.8 + observedRatio*0.2
-			calibMutex.Unlock()
-		}
-	}
-
-	if len(logIDs) == 0 {
-		return
-	}
-
-	calibMutex.RLock()
-	scale := bpeCalibrationScale
-	calibMutex.RUnlock()
-
-	calibratedOrig := int(float64(estOrigTotal)*scale + 0.5)
-	if calibratedOrig < realPromptTokens {
-		calibratedOrig = estOrigTotal
-	}
-	realSavedPct := 0.0
-	if calibratedOrig > 0 {
-		realSavedPct = (1.0 - float64(realPromptTokens)/float64(calibratedOrig)) * 100
-	}
-	billingTag := fmt.Sprintf("实测 %d→%d tok (省%.1f%%)", calibratedOrig, realPromptTokens, realSavedPct)
+	// The provider reports the whole forwarded request, including tool schemas,
+	// message framing and possibly multimodal input. The original request was not
+	// sent to the provider, so its cost and actual savings are unknown.
+	usageTag := fmt.Sprintf("上游实际输入 %d tok（整次请求）；文本估算 %d→%d tok", realPromptTokens, estOrigTotal, estCompTotal)
 
 	idSet := make(map[string]bool, len(logIDs))
 	for _, id := range logIDs {
@@ -92,8 +75,8 @@ func applyRealBillingUsage(logIDs []string, estOrigTotal, estCompTotal, realProm
 	for i := range proxyLogs {
 		if idSet[proxyLogs[i].ID] {
 			proxyLogs[i].RealPromptTokens = realPromptTokens
-			proxyLogs[i].EstOrigTokens = calibratedOrig
-			proxyLogs[i].RealBillingRatio = billingTag
+			proxyLogs[i].EstOrigTokens = estOrigTotal
+			proxyLogs[i].RealBillingRatio = usageTag
 		}
 	}
 }
@@ -145,33 +128,42 @@ func translateMessageBlock(protocol, role, text string, p Profile, dialect Diale
 		BaseURL:          p.BaseURL,
 		Model:            p.Model,
 	})
+	// A source-derived cache key is not a request ID: repeated requests must not
+	// overwrite one another's provider usage in the log.
+	logID := fmt.Sprintf("%d-%d", time.Now().UnixNano(), proxyLogSequence.Add(1))
+	entry := ProxyLog{
+		ID: logID, Timestamp: time.Now().Format("15:04:05"),
+		Protocol: protocol, Dialect: dialect.Name, Role: role,
+		Original: text, Compiled: text, CacheHit: res.CacheHit,
+		Decision: "kept_original",
+	}
 	if err != nil {
-		if !strings.Contains(err.Error(), "门禁拦截") {
+		var validationErr *ValidationError
+		if errors.As(err, &validationErr) && validationErr.Validation.Status == "failed" {
+			// A rejected candidate proves the compiler is reachable. Release any
+			// half-open probe rather than leaving the circuit permanently busy.
+			compilerCB.RecordSuccess()
+			entry.Reason = "候选未通过语义检查，已保留原文"
+		} else {
 			compilerCB.RecordFailure()
+			entry.Reason = "编译或审计服务异常，已保留原文"
 		}
-		return text, "", origTok, origTok
+		appendProxyLog(entry)
+		return text, logID, origTok, origTok
 	}
 
 	compilerCB.RecordSuccess()
-	if res.Compiled == "" {
-		return text, "", origTok, origTok
-	}
-
-	key := makeCacheKey(dialect, p.Model, text)
-	logID := key[:8]
 	compTok := estimateTokensBPE(res.Compiled)
-
-	appendProxyLog(ProxyLog{
-		ID:        logID,
-		Timestamp: time.Now().Format("15:04:05"),
-		Protocol:  protocol,
-		Dialect:   dialect.Name,
-		Role:      role,
-		Original:  text,
-		Compiled:  res.Compiled,
-		Ratio:     res.Stats.CompressionRatio,
-		CacheHit:  res.CacheHit,
-	})
+	if strings.TrimSpace(res.Compiled) == "" || compTok >= origTok {
+		entry.Reason = "候选未减少估算 Token，已保留原文"
+		appendProxyLog(entry)
+		return text, logID, origTok, origTok
+	}
+	entry.Compiled = res.Compiled
+	entry.Ratio = res.Stats.CompressionRatio
+	entry.Decision = "adopted"
+	entry.Reason = "本次审计通过，且文本估算 Token 更少"
+	appendProxyLog(entry)
 	return res.Compiled, logID, origTok, compTok
 }
 
@@ -245,43 +237,6 @@ func compressToolsArray(protocol string, tools []any, p Profile, dialect Dialect
 		}
 		if schema, ok := toolMap["input_schema"].(map[string]any); ok {
 			compressSchemaNode(protocol, label, schema, p, dialect, logIDs, estOrig, estComp)
-		}
-	}
-}
-
-func ensureJSONKeywordInOpenAIMessages(msgs []any) {
-	for _, m := range msgs {
-		msgMap, ok := m.(map[string]any)
-		if !ok {
-			continue
-		}
-		switch c := msgMap["content"].(type) {
-		case string:
-			if strings.Contains(strings.ToLower(c), "json") {
-				return
-			}
-		case []any:
-			for _, part := range c {
-				if pm, ok := part.(map[string]any); ok {
-					if txt, ok := pm["text"].(string); ok && strings.Contains(strings.ToLower(txt), "json") {
-						return
-					}
-				}
-			}
-		}
-	}
-
-	for _, m := range msgs {
-		msgMap, ok := m.(map[string]any)
-		if !ok {
-			continue
-		}
-		role, _ := msgMap["role"].(string)
-		if role == "system" || role == "user" {
-			if c, ok := msgMap["content"].(string); ok {
-				msgMap["content"] = c + " (JSON)"
-				return
-			}
 		}
 	}
 }
@@ -382,15 +337,12 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 			role, _ := msgMap["role"].(string)
 			if role != "system" && role != "user" {
 				if contentStr, ok := msgMap["content"].(string); ok {
-					t := estimateTokensBPE(contentStr) + 4
+					t := estimateTokensBPE(contentStr)
 					estOrigTotal += t
 					estCompTotal += t
 				}
 				continue
 			}
-
-			estOrigTotal += 4
-			estCompTotal += 4
 
 			switch content := msgMap["content"].(type) {
 			case string:
@@ -420,9 +372,6 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		if requireJSON {
-			ensureJSONKeywordInOpenAIMessages(msgs)
-		}
 	}
 
 	toolsList, hasTools := payload["tools"].([]any)
@@ -446,7 +395,7 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	targetURL := buildOpenAICompletionsURL(upstreamBase)
 
-	proxyReq, err := http.NewRequest("POST", targetURL, bytes.NewBuffer(modifiedBody))
+	proxyReq, err := http.NewRequestWithContext(r.Context(), "POST", targetURL, bytes.NewBuffer(modifiedBody))
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -487,7 +436,7 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 			} `json:"usage"`
 		}
 		if json.Unmarshal(respBytes, &nonStreamResp) == nil && nonStreamResp.Usage.PromptTokens > 0 {
-			go applyRealBillingUsage(logIDs, estOrigTotal, estCompTotal, nonStreamResp.Usage.PromptTokens, hasTools)
+			go applyUpstreamUsage(logIDs, estOrigTotal, estCompTotal, nonStreamResp.Usage.PromptTokens)
 		}
 		return
 	}
@@ -514,7 +463,7 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if realTokens := extractUsageFromOpenAISSETail(tailRing); realTokens > 0 {
-		go applyRealBillingUsage(logIDs, estOrigTotal, estCompTotal, realTokens, hasTools)
+		go applyUpstreamUsage(logIDs, estOrigTotal, estCompTotal, realTokens)
 	}
 }
 
@@ -581,15 +530,12 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 			role, _ := msgMap["role"].(string)
 			if role != "user" {
 				if contentStr, ok := msgMap["content"].(string); ok {
-					t := estimateTokensBPE(contentStr) + 4
+					t := estimateTokensBPE(contentStr)
 					estOrigTotal += t
 					estCompTotal += t
 				}
 				continue
 			}
-
-			estOrigTotal += 4
-			estCompTotal += 4
 
 			switch content := msgMap["content"].(type) {
 			case string:
@@ -637,7 +583,7 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	targetURL := buildAnthropicMessagesURL(upstreamBase)
 
-	proxyReq, err := http.NewRequest("POST", targetURL, bytes.NewBuffer(modifiedBody))
+	proxyReq, err := http.NewRequestWithContext(r.Context(), "POST", targetURL, bytes.NewBuffer(modifiedBody))
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -693,7 +639,7 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 		if json.Unmarshal(respBytes, &nonStreamResp) == nil {
 			realIn := nonStreamResp.Usage.InputTokens + nonStreamResp.Usage.CacheCreationInputTokens + nonStreamResp.Usage.CacheReadInputTokens
 			if realIn > 0 {
-				go applyRealBillingUsage(logIDs, estOrigTotal, estCompTotal, realIn, hasTools)
+				go applyUpstreamUsage(logIDs, estOrigTotal, estCompTotal, realIn)
 			}
 		}
 		return
@@ -720,6 +666,6 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if realTokens := extractUsageFromAnthropicSSE(headCapture); realTokens > 0 {
-		go applyRealBillingUsage(logIDs, estOrigTotal, estCompTotal, realTokens, hasTools)
+		go applyUpstreamUsage(logIDs, estOrigTotal, estCompTotal, realTokens)
 	}
 }

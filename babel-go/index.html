@@ -477,9 +477,9 @@
             font-size: 11px;
             padding: 2px 10px;
             border-radius: 999px;
-            background: rgba(16, 185, 129, 0.15);
-            color: var(--emerald-light);
-            border: 1px solid rgba(52, 211, 153, 0.3);
+            background: rgba(245, 158, 11, 0.12);
+            color: #fde68a;
+            border: 1px solid rgba(245, 158, 11, 0.28);
         }
 
         .cache-pill {
@@ -522,14 +522,27 @@
             font-weight: 600;
         }
 
+        .inv-pill-neutral {
+            padding: 2px 8px;
+            border-radius: 5px;
+            background: rgba(148, 163, 184, 0.12);
+            color: var(--text-secondary);
+            border: 1px solid var(--border-subtle);
+        }
+
         .audit-bar {
             padding: 10px 16px;
-            border-top: 1px solid rgba(52, 211, 153, 0.25);
-            background: rgba(6, 78, 59, 0.28);
+            border-top: 1px solid var(--border-subtle);
+            background: rgba(30, 41, 59, 0.28);
             font-family: var(--font-mono);
             font-size: 12px;
-            color: #a7f3d0;
+            line-height: 1.6;
+            color: var(--text-secondary);
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
         }
+        .audit-bar.is-passed { border-color: rgba(52, 211, 153, 0.25); background: rgba(6, 78, 59, 0.28); color: #a7f3d0; }
+        .audit-bar.is-failed, .audit-bar.is-error { border-color: rgba(244, 63, 94, 0.3); background: rgba(136, 19, 55, 0.18); color: #fda4af; }
 
         /* ==================== 代理透视面板 ==================== */
         .proxy-banner {
@@ -594,7 +607,9 @@
         .tag-dialect { background: rgba(20, 184, 166, 0.15); color: #5eead4; border: 1px solid rgba(20, 184, 166, 0.3); }
         .tag-role { background: rgba(30, 41, 59, 0.9); color: #e2e8f0; font-weight: 600; }
         .tag-tool { background: rgba(245, 158, 11, 0.18); color: #fcd34d; border: 1px solid rgba(245, 158, 11, 0.32); font-weight: 600; }
-        .tag-billing { background: rgba(16, 185, 129, 0.18); color: var(--emerald-light); border: 1px solid rgba(52, 211, 153, 0.38); font-weight: 600; }
+        .tag-billing { background: rgba(56, 189, 248, 0.12); color: var(--cyan-light); border: 1px solid rgba(56, 189, 248, 0.28); }
+        .tag-estimated { background: rgba(245, 158, 11, 0.12); color: #fde68a; border: 1px solid rgba(245, 158, 11, 0.25); }
+        .log-reason { padding: 9px 16px; color: var(--text-secondary); line-height: 1.5; overflow-wrap: anywhere; }
         .tag-redact { background: rgba(244, 63, 94, 0.15); color: #fda4af; border: 1px solid rgba(244, 63, 94, 0.3); }
 
         .log-diff {
@@ -807,8 +822,8 @@
                     <span id="inputCharCount" class="char-counter">0 chars</span>
                 </div>
                 <div class="pane-actions">
-                    <label class="checkbox-label" title="开启后若丢失数字阈值、否定约束或出现私有码本将直接报错拦截">
-                        <input id="verifyCheck" type="checkbox" checked> 零码本硬门禁
+                    <label class="checkbox-label" title="由后端执行本地检查与模型对照；未通过或校验异常时不返回候选。通过不代表完整语义证明。">
+                        <input id="verifyCheck" type="checkbox" checked> 严格校验
                     </label>
                     <div class="dialect-group">
                         <select id="modeSelect" class="select-dark"></select>
@@ -830,12 +845,12 @@
                 </div>
                 <div class="pane-actions">
                     <button id="forceBtn" type="button" class="btn" onclick="runCompile(true)" title="跳过本地缓存强制重新编译">↻ 重编译</button>
-                    <button id="copyBtn" type="button" class="btn" onclick="copyResult()">复制 DSL</button>
+                    <button id="copyBtn" type="button" class="btn" onclick="copyResult()" disabled>复制 DSL</button>
                 </div>
             </div>
             <textarea id="dslOutput" readonly class="code-area output" placeholder="编译后的高密度数理符号文本将在此生成..."></textarea>
-            <div id="invariantCapsules" class="capsules-bar hidden"></div>
-            <div id="auditBox" class="audit-bar hidden"></div>
+            <div id="invariantCapsules" class="capsules-bar hidden" aria-live="polite"></div>
+            <div id="auditBox" class="audit-bar hidden" role="status" aria-live="polite"></div>
         </section>
     </div>
 </main>
@@ -857,7 +872,7 @@
                 <button id="resetCircuitBtn" type="button" class="btn btn-danger hidden" onclick="resetCircuitBreaker()">立即恢复编译</button>
             </div>
             <p style="font-size: 12px; color: var(--text-secondary);">
-                默认使用 <code style="color: var(--cyan-light)">token</code> 方言压缩，支持请求头 <code style="color: var(--amber)">X-Babel-Dialect: code-audit</code> 动态切换词典；编译器连续故障 3 次自动熔断 60s 零延迟直通原文。
+                默认使用 <code style="color: var(--cyan-light)">token</code> 方言压缩，支持请求头 <code style="color: var(--amber)">X-Babel-Dialect: code-audit</code> 动态切换词典；编译器连续故障 3 次自动熔断 60s，期间转发原文。Token 减少为文本估算；上游 usage 是整次请求用量。
             </p>
         </div>
 
@@ -873,6 +888,7 @@
         </div>
     </div>
 
+    <div id="logsError" class="audit-bar is-error hidden" role="status" aria-live="polite"></div>
     <div id="logsContainer" class="log-list"></div>
 </main>
 
@@ -1150,10 +1166,15 @@
             data = JSON.parse(rawText);
         } catch (e) {
             const preview = rawText.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
-            throw new Error(`HTTP ${res.status}：返回了网页而非 JSON。\n响应摘要: ${preview}`);
+            const error = new Error(`HTTP ${res.status}：响应不是有效 JSON。\n响应摘要: ${preview}`);
+            error.status = res.status;
+            throw error;
         }
         if (!res.ok) {
-            throw new Error(data.detail || `请求失败 (HTTP ${res.status})`);
+            const error = new Error(typeof data?.detail === 'string' ? data.detail : `请求失败 (HTTP ${res.status})`);
+            error.status = res.status;
+            error.validation = data?.validation;
+            throw error;
         }
         return data;
     }
@@ -1509,48 +1530,90 @@
         if (show) fillFormFromProfile(serverConfig.active_profile);
     }
 
-    // ==================== 6. 关键不变量可视化状态胶囊 ====================
-    function renderInvariantCapsules(origText, compiledText) {
-        const box = document.getElementById('invariantCapsules');
-        box.innerHTML = '';
-
-        const capsules = [];
-        const numMatches = origText.match(/\b\d+(?:\.\d+)*%?\b/g) || [];
-        const seenNums = new Set();
-        numMatches.forEach(num => {
-            if (seenNums.has(num)) return;
-            seenNums.add(num);
-            capsules.push({ label: num, ok: compiledText.includes(num) });
-        });
-
-        const negMatches = origText.match(/((?:不|不得|禁止|严禁|绝不|不能|不可|无需|免|无|非)[\u4e00-\u9fa5A-Za-z0-9_-]{1,5}|只读不写|脱敏)/g) || [];
-        const seenNegs = new Set();
-        const hasNegOperator = /[¬!不禁止无非免]|脱敏|只读/.test(compiledText);
-        negMatches.forEach(phrase => {
-            if (seenNegs.has(phrase) || seenNegs.size >= 8) return;
-            seenNegs.add(phrase);
-            capsules.push({ label: `¬${phrase}`, ok: hasNegOperator });
-        });
-
-        if (capsules.length === 0) {
-            box.classList.add('hidden');
-            return;
+    // ==================== 6. 后端校验结果与计量来源 ====================
+    function normalizeValidation(validation) {
+        if (!validation || typeof validation !== 'object') {
+            return { status: 'not_run', method: 'none', issues: ['后端未提供本次校验结果。'] };
         }
+        const statuses = ['not_run', 'passed', 'failed', 'error'];
+        const methods = ['none', 'local_checks', 'llm_compare'];
+        const valid = statuses.includes(validation.status) && methods.includes(validation.method) &&
+            validation.policy_version === 'semantic-gate-v2' && Array.isArray(validation.issues) &&
+            validation.issues.every(issue => typeof issue === 'string') &&
+            !(validation.status === 'passed' && (validation.method === 'none' || validation.issues.length > 0));
+        if (!valid) {
+            return { status: 'error', method: 'none', issues: ['无法识别后端校验结果，请重新编译。'] };
+        }
+        return validation;
+    }
 
+    function renderValidation(validation, detail = '') {
+        const result = normalizeValidation(validation);
+        const box = document.getElementById('invariantCapsules');
+        box.replaceChildren();
+        box.dataset.validationStatus = result.status;
         const title = document.createElement('span');
         title.style.color = 'var(--text-secondary)';
         title.style.fontWeight = '600';
-        title.textContent = '不变量核验:';
+        title.textContent = '后端校验:';
         box.appendChild(title);
-
-        capsules.forEach(item => {
-            const pill = document.createElement('span');
-            pill.className = item.ok ? 'inv-pill-ok' : 'inv-pill-fail';
-            pill.textContent = item.ok ? `✓ ${item.label}` : `✕ 缺失 ${item.label}`;
-            box.appendChild(pill);
-        });
-
+        const methodLabel = { none: '未执行', local_checks: '本地检查', llm_compare: '模型对照' }[result.method];
+        const labels = { not_run: '未校验', passed: `${methodLabel}通过`, failed: '校验未通过', error: '校验异常' };
+        const pill = document.createElement('span');
+        pill.className = result.status === 'passed' ? 'inv-pill-ok' :
+            ['failed', 'error'].includes(result.status) ? 'inv-pill-fail' : 'inv-pill-neutral';
+        pill.textContent = labels[result.status];
+        box.appendChild(pill);
         box.classList.remove('hidden');
+
+        const explanations = {
+            not_run: '本次候选未完成校验，不能据此判断约束是否完整保留。',
+            passed: result.method === 'local_checks' ? '仅通过已实现的本地检查项，尚未完成模型对照。' :
+                '本次模型对照未发现问题；这不是完整语义保留或跨模型可读性的证明。',
+            failed: '后端检测到缺失、冲突或歧义；本次候选未通过。',
+            error: '本次校验或请求未能正常完成，不能判定为通过。'
+        };
+        const auditBox = document.getElementById('auditBox');
+        auditBox.className = `audit-bar is-${result.status}`;
+        auditBox.textContent = [explanations[result.status], ...result.issues, detail].filter(Boolean).join('\n');
+    }
+
+    function resetCompileResult() {
+        document.getElementById('dslOutput').value = '';
+        document.getElementById('copyBtn').disabled = true;
+        for (const id of ['statsBadge', 'cacheBadge', 'invariantCapsules', 'auditBox']) {
+            const el = document.getElementById(id);
+            el.classList.add('hidden');
+            if (id !== 'cacheBadge') el.textContent = '';
+        }
+        delete document.getElementById('invariantCapsules').dataset.validationStatus;
+        document.getElementById('auditBox').className = 'audit-bar hidden';
+    }
+
+    function formatTokenMeasurement(stats) {
+        if (!stats || !Number.isSafeInteger(stats.original_tokens) || stats.original_tokens < 0 ||
+            !Number.isSafeInteger(stats.compiled_tokens) || stats.compiled_tokens < 0) {
+            return { text: 'Token 未计量', title: '后端未提供有效的 Token 计量。' };
+        }
+        const original = stats.original_tokens;
+        const compiled = stats.compiled_tokens;
+        const estimated = stats.measurement_kind === 'estimated';
+        const kind = estimated ? '估算' : '未确认计量来源';
+        const scope = stats.measurement_scope === 'text' ? '文本' : '范围未确认';
+        const change = original > 0 && estimated ? `（估算${compiled <= original ? '减少' : '增加'} ${Math.abs((1 - compiled / original) * 100).toFixed(1)}%）` : '';
+        return {
+            text: `${scope} Token ${kind} ${original}→${compiled}${change}`,
+            title: `计数来源：${stats.measurement_source || '未提供'}；此处不代表目标模型实际 Token 用量或账单节省。`
+        };
+    }
+
+    function formatProxyUsage(item) {
+        if (!Number.isSafeInteger(item.real_prompt_tokens) || item.real_prompt_tokens <= 0) return '';
+        let text = `上游实际输入 ${item.real_prompt_tokens} tok（整次请求）`;
+        const estimate = typeof item.real_billing_ratio === 'string' &&
+            item.real_billing_ratio.match(/(?:已检查)?文本估算\s*(\d+)→(\d+)\s*tok/);
+        if (estimate) text += `；已检查文本估算 ${estimate[1]}→${estimate[2]} tok`;
+        return text;
     }
 
     // ==================== 7. 编译与透明代理透视 ====================
@@ -1618,10 +1681,11 @@
     }
 
     async function runCompile(noCache = false) {
-        const text = document.getElementById('rawInput').value.trim();
-        if (!text) return;
+        const text = document.getElementById('rawInput').value;
+        if (!text.trim()) return;
         const btn = document.getElementById('runBtn');
         const forceBtn = document.getElementById('forceBtn');
+        resetCompileResult();
         btn.textContent = '编译中...';
         btn.disabled = true;
         forceBtn.disabled = true;
@@ -1642,26 +1706,37 @@
                 })
             });
 
+            if (typeof data?.compiled !== 'string' || !data.compiled.trim()) {
+                throw new Error('后端未返回有效的编译文本。');
+            }
+            const validation = normalizeValidation(data.validation);
+            if (strictGate && (validation.status !== 'passed' || validation.method !== 'llm_compare')) {
+                const error = new Error('严格校验未完成，本次候选未显示。');
+                error.validation = validation;
+                throw error;
+            }
             document.getElementById('dslOutput').value = data.compiled;
-            renderInvariantCapsules(text, data.compiled);
+            document.getElementById('copyBtn').disabled = false;
+            renderValidation(data.validation);
 
             const badge = document.getElementById('statsBadge');
-            badge.textContent = data.stats.compression_ratio;
+            const measurement = formatTokenMeasurement(data.stats);
+            badge.textContent = measurement.text;
+            badge.title = measurement.title;
             badge.classList.remove('hidden');
 
             const cacheBadge = document.getElementById('cacheBadge');
             cacheBadge.classList.toggle('hidden', !data.cache_hit);
 
-            const auditBox = document.getElementById('auditBox');
-            if (data.audit) {
-                auditBox.textContent = `门禁审计：${data.audit}`;
-                auditBox.classList.remove('hidden');
-            } else {
-                auditBox.classList.add('hidden');
-            }
         } catch (err) {
+            resetCompileResult();
+            const reported = normalizeValidation(err.validation);
+            const validation = ['failed', 'error'].includes(reported.status) ? reported : {
+                status: err.status === 422 ? 'failed' : 'error',
+                method: 'none', policy_version: 'semantic-gate-v2', issues: reported.issues || []
+            };
+            renderValidation(validation, err.message || '编译请求失败，请重试。');
             if ((err.message || '').includes('API Key')) toggleConfigModal(true);
-            alert(err.message);
         } finally {
             btn.textContent = '编译 ⚡';
             btn.disabled = false;
@@ -1728,6 +1803,7 @@
                 document.getElementById('redactCheck').checked = payload.redact_enabled;
             }
             if (payload.circuit) renderCircuitStatus(payload.circuit);
+            document.getElementById('logsError').classList.add('hidden');
 
             const badge = document.getElementById('logCountBadge');
             if (logs.length > 0) {
@@ -1751,51 +1827,77 @@
 
                 const isTool = (item.role || '').startsWith('tool:');
                 const roleClass = isTool ? 'tag tag-tool' : 'tag tag-role';
-                const protoBadge = item.protocol === 'anthropic'
-                    ? '<span class="tag tag-anthropic">ANTHROPIC</span>'
-                    : '<span class="tag tag-openai">OPENAI</span>';
-                const dialectBadge = item.dialect ? `<span class="tag tag-dialect">${item.dialect}</span>` : '';
-                const redactBadge = item.redacted ? '<span class="tag tag-redact">🛡 已脱敏</span>' : '';
-
                 const header = document.createElement('div');
                 header.className = 'log-card-header';
-                header.innerHTML = `
-            <div class="log-tags">
-              <span style="color: var(--text-muted)">[${item.timestamp}]</span>
-              ${protoBadge}
-              ${dialectBadge}
-              <span class="${roleClass}">${item.role}</span>
-              <span style="color: var(--text-primary)">${item.ratio}</span>
-              ${item.real_billing_ratio ? `<span class="tag tag-billing">💰 ${item.real_billing_ratio}</span>` : ''}
-              ${item.cache_hit ? '<span class="cache-pill">⚡ CACHE HIT</span>' : ''}
-              ${redactBadge}
-            </div>
-            <span style="color: var(--text-muted); font-family: var(--font-mono);">#${item.id}</span>
-          `;
+                const tags = document.createElement('div');
+                tags.className = 'log-tags';
+                function addTag(text, className) {
+                    const tag = document.createElement('span');
+                    tag.className = className;
+                    tag.textContent = text;
+                    tags.appendChild(tag);
+                    return tag;
+                }
+                addTag(`[${item.timestamp || ''}]`, '');
+                addTag(item.protocol === 'anthropic' ? 'ANTHROPIC' : 'OPENAI',
+                    item.protocol === 'anthropic' ? 'tag tag-anthropic' : 'tag tag-openai');
+                if (item.dialect) addTag(item.dialect, 'tag tag-dialect');
+                addTag(item.role || '', roleClass);
+                const adopted = item.decision === 'adopted';
+                const keptOriginal = item.decision === 'kept_original';
+                addTag(adopted ? '已采用候选' : keptOriginal ? '已保留原文' : '决策未提供',
+                    adopted ? 'tag tag-dialect' : 'tag tag-role');
+                if (item.ratio) addTag(`文本估算：${item.ratio}`, 'tag tag-estimated');
+                const usage = formatProxyUsage(item);
+                if (usage) {
+                    addTag(usage, 'tag tag-billing').title = '整次请求的实际用量与所检查文本的估算范围不同，不能据此计算实际节省；同一请求的 usage 可能显示在多条记录中，请勿相加。';
+                }
+                if (item.cache_hit) addTag('CACHE HIT', 'cache-pill');
+                if (item.redacted) addTag('已脱敏', 'tag tag-redact');
+                header.appendChild(tags);
+                const id = document.createElement('span');
+                id.style.color = 'var(--text-muted)';
+                id.textContent = `#${item.id || ''}`;
+                header.appendChild(id);
+
+                const reason = document.createElement('div');
+                reason.className = 'log-reason';
+                reason.textContent = item.reason || '后端未提供本次处理原因。';
 
                 const grid = document.createElement('div');
                 grid.className = 'log-diff';
 
                 const left = document.createElement('pre');
                 left.className = 'log-col';
-                left.textContent = item.original;
+                left.textContent = `原文\n\n${item.original || ''}`;
 
                 const right = document.createElement('pre');
                 right.className = 'log-col';
-                right.textContent = item.compiled;
+                right.textContent = `${adopted ? '实际发送：候选' : keptOriginal ? '实际发送：原文' : '记录文本（决策未提供）'}\n\n${item.compiled || ''}`;
 
                 grid.appendChild(left);
                 grid.appendChild(right);
                 card.appendChild(header);
+                card.appendChild(reason);
                 card.appendChild(grid);
                 container.appendChild(card);
             });
-        } catch (e) {}
+        } catch (e) {
+            const box = document.getElementById('logsError');
+            box.textContent = `代理记录刷新失败：${e.message || '请求异常'}。当前记录可能过期。`;
+            box.classList.remove('hidden');
+        }
     }
 
     async function clearLogs() {
-        await fetchJSON('/api/logs', { method: 'DELETE' });
-        loadLogs();
+        try {
+            await fetchJSON('/api/logs', { method: 'DELETE' });
+            await loadLogs();
+        } catch (e) {
+            const box = document.getElementById('logsError');
+            box.textContent = `清空代理记录失败：${e.message || '请求异常'}`;
+            box.classList.remove('hidden');
+        }
     }
 
     setInterval(() => {
