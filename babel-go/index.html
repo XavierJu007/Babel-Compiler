@@ -3,265 +3,909 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BABEL-DSL // 神经符号编译器 & 透明代理网关</title>
-    <script src="[https://cdn.tailwindcss.com](https://cdn.tailwindcss.com)"></script>
-    <script src="[https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js](https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js)"></script>
+    <title>BABEL // DSL — 神经符号编译器 & 透明代理网关</title>
     <style>
-        @import url('[https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap](https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap)');
-        body {
-            font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-            background: radial-gradient(circle at 50% 42%, #071318 0%, #020408 100%);
-            overflow-x: hidden;
+        :root {
+            --bg-base: #06090f;
+            --bg-surface: rgba(12, 17, 27, 0.74);
+            --bg-surface-solid: #0d131f;
+            --bg-elevated: rgba(18, 25, 39, 0.85);
+            --bg-input: rgba(6, 10, 18, 0.65);
+            --border-subtle: rgba(148, 163, 184, 0.14);
+            --border-accent: rgba(52, 211, 153, 0.35);
+            --text-primary: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --emerald: #10b981;
+            --emerald-light: #34d399;
+            --cyan: #06b6d4;
+            --cyan-light: #38bdf8;
+            --amber: #f59e0b;
+            --rose: #f43f5e;
+            --purple: #a855f7;
+            --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+            --font-mono: "JetBrains Mono", "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
         }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: var(--font-sans);
+            background: radial-gradient(circle at 50% 42%, #0a1622 0%, #05080e 65%, #020408 100%);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
+        }
+
         #bg-canvas {
             position: fixed;
             inset: 0;
+            width: 100vw;
+            height: 100vh;
             z-index: 0;
             pointer-events: none;
         }
-        .glass-panel {
-            background: rgba(10, 15, 26, 0.54);
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            border: 1px solid rgba(52, 211, 153, 0.18);
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.05);
-            transition: border-color 0.25s ease, background-color 0.25s ease;
-        }
-        .glass-panel:focus-within {
-            background: rgba(10, 15, 26, 0.68);
-            border-color: rgba(52, 211, 153, 0.48);
-            box-shadow: 0 0 25px rgba(16, 185, 129, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.06);
-        }
-        .cyber-btn {
-            background: linear-gradient(135deg, #059669 0%, #0d9488 100%);
-            box-shadow: 0 0 16px rgba(16, 185, 129, 0.35);
-            transition: all 0.2s ease;
-        }
-        .cyber-btn:hover:not(:disabled) {
-            box-shadow: 0 0 24px rgba(16, 185, 129, 0.65);
-            transform: translateY(-1px);
-        }
-        .cyber-btn:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-        }
+
+        .hidden { display: none !important; }
+
         .ui-fade {
-            transition: opacity 0.4s ease, transform 0.4s ease;
+            transition: opacity 0.38s cubic-bezier(0.16, 1, 0.3, 1), transform 0.38s cubic-bezier(0.16, 1, 0.3, 1);
         }
         .ui-hidden {
             opacity: 0 !important;
             pointer-events: none !important;
             transform: scale(0.985);
         }
+
+        /* ==================== 顶部导航栏 ==================== */
+        .topbar {
+            position: relative;
+            z-index: 20;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 12px 24px;
+            background: rgba(7, 11, 19, 0.72);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border-bottom: 1px solid var(--border-subtle);
+            flex-wrap: wrap;
+        }
+
+        .topbar-left, .topbar-right {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-family: var(--font-mono);
+            font-weight: 700;
+            font-size: 16px;
+            letter-spacing: 0.08em;
+            color: #fff;
+        }
+
+        .brand-dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            background: var(--emerald-light);
+            box-shadow: 0 0 12px var(--emerald-light);
+            animation: pulse 2.2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.55; transform: scale(0.88); }
+        }
+
+        .nav-tabs {
+            display: flex;
+            background: rgba(15, 23, 42, 0.85);
+            border: 1px solid var(--border-subtle);
+            border-radius: 8px;
+            padding: 3px;
+            gap: 4px;
+        }
+
+        .nav-tab {
+            background: transparent;
+            border: 1px solid transparent;
+            color: var(--text-secondary);
+            font-size: 12px;
+            font-weight: 500;
+            padding: 6px 14px;
+            border-radius: 6px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.2s ease;
+        }
+
+        .nav-tab:hover { color: var(--text-primary); }
+
+        .nav-tab.active {
+            background: rgba(16, 185, 129, 0.16);
+            color: var(--emerald-light);
+            border-color: rgba(52, 211, 153, 0.32);
+            font-weight: 600;
+        }
+
+        .badge-count {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            padding: 1px 6px;
+            border-radius: 999px;
+            background: rgba(6, 182, 212, 0.2);
+            color: var(--cyan-light);
+        }
+
+        .profile-pill {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(15, 23, 42, 0.85);
+            border: 1px solid var(--border-subtle);
+            border-radius: 8px;
+            padding: 5px 12px;
+            font-size: 12px;
+        }
+
+        .profile-pill select {
+            background: transparent;
+            border: none;
+            color: var(--emerald-light);
+            font-family: var(--font-mono);
+            font-weight: 600;
+            font-size: 12px;
+            cursor: pointer;
+            outline: none;
+        }
+
+        .profile-pill select option {
+            background: #0f172a;
+            color: #f1f5f9;
+        }
+
+        .model-tag {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--text-secondary);
+            border-left: 1px solid var(--border-subtle);
+            padding-left: 8px;
+        }
+
+        /* ==================== 通用按钮与表单控件 ==================== */
+        .btn {
+            font-family: var(--font-sans);
+            font-size: 12px;
+            font-weight: 500;
+            padding: 6px 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border-subtle);
+            background: rgba(15, 23, 42, 0.85);
+            color: var(--text-primary);
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            transition: all 0.18s ease;
+            white-space: nowrap;
+        }
+
+        .btn:hover:not(:disabled) {
+            background: rgba(30, 41, 59, 0.95);
+            border-color: rgba(148, 163, 184, 0.32);
+        }
+
+        .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
+        .btn-cyan {
+            border-color: rgba(56, 189, 248, 0.32);
+            color: var(--cyan-light);
+        }
+        .btn-cyan:hover:not(:disabled) {
+            background: rgba(6, 182, 212, 0.16);
+            border-color: rgba(56, 189, 248, 0.55);
+        }
+
+        .btn-emerald {
+            border-color: rgba(52, 211, 153, 0.32);
+            color: var(--emerald-light);
+        }
+        .btn-emerald:hover:not(:disabled) {
+            background: rgba(16, 185, 129, 0.16);
+            border-color: rgba(52, 211, 153, 0.55);
+        }
+
+        .btn-danger {
+            background: rgba(244, 63, 94, 0.12);
+            border-color: rgba(244, 63, 94, 0.32);
+            color: #fda4af;
+        }
+        .btn-danger:hover:not(:disabled) {
+            background: rgba(244, 63, 94, 0.24);
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #059669 0%, #0d9488 100%);
+            border: 1px solid rgba(52, 211, 153, 0.45);
+            color: #ffffff;
+            font-weight: 600;
+            box-shadow: 0 0 18px rgba(16, 185, 129, 0.3);
+        }
+        .btn-primary:hover:not(:disabled) {
+            box-shadow: 0 0 26px rgba(16, 185, 129, 0.6);
+            transform: translateY(-1px);
+        }
+
+        .select-dark {
+            background: rgba(10, 15, 26, 0.9);
+            border: 1px solid var(--border-subtle);
+            color: var(--text-primary);
+            font-family: var(--font-mono);
+            font-size: 12px;
+            padding: 6px 10px;
+            border-radius: 8px;
+            outline: none;
+            cursor: pointer;
+        }
+        .select-dark:focus { border-color: var(--emerald-light); }
+
+        /* ==================== 主工作区容器 ==================== */
+        .workspace {
+            position: relative;
+            z-index: 10;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            padding: 18px 24px;
+            max-width: 1640px;
+            width: 100%;
+            margin: 0 auto;
+        }
+
+        .glass-card {
+            background: var(--bg-surface);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+            border: 1px solid var(--border-subtle);
+            border-radius: 14px;
+            box-shadow: 0 12px 36px rgba(0, 0, 0, 0.48), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+            transition: border-color 0.25s ease;
+        }
+
+        .glass-card:focus-within {
+            border-color: var(--border-accent);
+        }
+
+        /* 算子速查栏 */
+        .operator-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 9px 16px;
+            flex-wrap: wrap;
+            font-size: 12px;
+        }
+
+        .operator-list {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .op-title {
+            color: var(--emerald-light);
+            font-weight: 600;
+            margin-right: 4px;
+        }
+
+        .op-chip {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            background: rgba(15, 23, 42, 0.75);
+            border: 1px solid rgba(148, 163, 184, 0.14);
+            color: var(--text-secondary);
+            padding: 2px 8px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+        .op-chip:hover {
+            border-color: rgba(56, 189, 248, 0.45);
+            color: var(--text-primary);
+            background: rgba(30, 41, 59, 0.9);
+        }
+        .op-chip code {
+            color: var(--cyan-light);
+            font-weight: 700;
+            margin-right: 3px;
+        }
+        .op-chip.warn code { color: var(--amber); }
+
+        .link-btn {
+            background: none;
+            border: none;
+            color: var(--cyan-light);
+            font-size: 12px;
+            cursor: pointer;
+            text-decoration: underline;
+            text-underline-offset: 3px;
+        }
+        .link-btn:hover { color: var(--emerald-light); }
+
+        /* 双栏编辑器网格 */
+        .editor-grid {
+            flex: 1;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            min-height: 540px;
+        }
+
+        @media (max-width: 1024px) {
+            .editor-grid { grid-template-columns: 1fr; }
+        }
+
+        .pane {
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .pane-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 10px 16px;
+            background: rgba(6, 10, 18, 0.45);
+            border-bottom: 1px solid var(--border-subtle);
+            flex-wrap: wrap;
+        }
+
+        .pane-title-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .pane-label {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+            color: var(--text-secondary);
+        }
+        .pane-label.emerald { color: var(--emerald-light); }
+
+        .char-counter {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+
+        .pane-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .checkbox-label {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            user-select: none;
+        }
+        .checkbox-label:hover { color: var(--text-primary); }
+        .checkbox-label input { accent-color: var(--emerald); cursor: pointer; }
+
+        .dialect-group {
+            display: inline-flex;
+            align-items: center;
+        }
+        .dialect-group .select-dark {
+            border-top-right-radius: 0;
+            border-bottom-right-radius: 0;
+            max-width: 195px;
+        }
+        .dialect-group .btn {
+            border-left: none;
+            border-top-left-radius: 0;
+            border-bottom-left-radius: 0;
+            padding: 6px 9px;
+            color: var(--cyan-light);
+        }
+
+        .code-area {
+            flex: 1;
+            width: 100%;
+            background: transparent;
+            border: none;
+            padding: 16px;
+            font-family: var(--font-mono);
+            font-size: 13.5px;
+            line-height: 1.7;
+            color: var(--text-primary);
+            resize: none;
+            outline: none;
+        }
+        .code-area::placeholder { color: var(--text-muted); }
+        .code-area.output { color: #6ee7b7; }
+
+        .stat-pill {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            padding: 2px 10px;
+            border-radius: 999px;
+            background: rgba(16, 185, 129, 0.15);
+            color: var(--emerald-light);
+            border: 1px solid rgba(52, 211, 153, 0.3);
+        }
+
+        .cache-pill {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            padding: 2px 7px;
+            border-radius: 5px;
+            background: rgba(6, 182, 212, 0.16);
+            color: var(--cyan-light);
+            border: 1px solid rgba(56, 189, 248, 0.3);
+        }
+
+        /* 不变量胶囊 & 审计结果栏 */
+        .capsules-bar {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 6px;
+            padding: 10px 16px;
+            border-top: 1px solid var(--border-subtle);
+            background: rgba(6, 10, 18, 0.55);
+            font-family: var(--font-mono);
+            font-size: 11px;
+        }
+
+        .inv-pill-ok {
+            padding: 2px 8px;
+            border-radius: 5px;
+            background: rgba(16, 185, 129, 0.14);
+            color: var(--emerald-light);
+            border: 1px solid rgba(52, 211, 153, 0.28);
+        }
+
+        .inv-pill-fail {
+            padding: 2px 8px;
+            border-radius: 5px;
+            background: rgba(244, 63, 94, 0.18);
+            color: #fda4af;
+            border: 1px solid rgba(244, 63, 94, 0.38);
+            font-weight: 600;
+        }
+
+        .audit-bar {
+            padding: 10px 16px;
+            border-top: 1px solid rgba(52, 211, 153, 0.25);
+            background: rgba(6, 78, 59, 0.28);
+            font-family: var(--font-mono);
+            font-size: 12px;
+            color: #a7f3d0;
+        }
+
+        /* ==================== 代理透视面板 ==================== */
+        .proxy-banner {
+            padding: 16px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+
+        .endpoint-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-bottom: 8px;
+            font-size: 12px;
+        }
+
+        .endpoint-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: rgba(6, 10, 18, 0.85);
+            border: 1px solid var(--border-subtle);
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-family: var(--font-mono);
+        }
+
+        .cb-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-family: var(--font-mono);
+            font-size: 11px;
+        }
+        .cb-closed { background: rgba(16, 185, 129, 0.14); border: 1px solid rgba(52, 211, 153, 0.3); color: var(--emerald-light); }
+        .cb-open { background: rgba(244, 63, 94, 0.18); border: 1px solid rgba(244, 63, 94, 0.4); color: #fda4af; font-weight: 600; }
+        .cb-half { background: rgba(245, 158, 11, 0.18); border: 1px solid rgba(245, 158, 11, 0.4); color: #fde68a; font-weight: 600; }
+
+        .log-list { display: flex; flex-direction: column; gap: 12px; }
+
+        .log-card { overflow: hidden; font-size: 12px; }
+        .log-card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 10px 16px;
+            background: rgba(6, 10, 18, 0.55);
+            border-bottom: 1px solid var(--border-subtle);
+            flex-wrap: wrap;
+        }
+        .log-tags { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-family: var(--font-mono); }
+        .tag { padding: 2px 7px; border-radius: 5px; font-size: 11px; }
+        .tag-openai { background: rgba(56, 189, 248, 0.15); color: var(--cyan-light); border: 1px solid rgba(56, 189, 248, 0.3); }
+        .tag-anthropic { background: rgba(168, 85, 247, 0.18); color: #d8b4fe; border: 1px solid rgba(168, 85, 247, 0.35); }
+        .tag-dialect { background: rgba(20, 184, 166, 0.15); color: #5eead4; border: 1px solid rgba(20, 184, 166, 0.3); }
+        .tag-role { background: rgba(30, 41, 59, 0.9); color: #e2e8f0; font-weight: 600; }
+        .tag-tool { background: rgba(245, 158, 11, 0.18); color: #fcd34d; border: 1px solid rgba(245, 158, 11, 0.32); font-weight: 600; }
+        .tag-billing { background: rgba(16, 185, 129, 0.18); color: var(--emerald-light); border: 1px solid rgba(52, 211, 153, 0.38); font-weight: 600; }
+        .tag-redact { background: rgba(244, 63, 94, 0.15); color: #fda4af; border: 1px solid rgba(244, 63, 94, 0.3); }
+
+        .log-diff {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+        }
+        @media (max-width: 768px) { .log-diff { grid-template-columns: 1fr; } }
+        .log-col {
+            padding: 14px 16px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            line-height: 1.65;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 240px;
+            overflow-y: auto;
+        }
+        .log-col:first-child {
+            color: var(--text-secondary);
+            border-right: 1px solid var(--border-subtle);
+        }
+        .log-col:last-child { color: #6ee7b7; }
+
+        .empty-state {
+            text-align: center;
+            padding: 48px 20px;
+            color: var(--text-secondary);
+            font-size: 13px;
+            line-height: 1.8;
+        }
+
+        /* ==================== 模态弹窗 ==================== */
+        .modal-backdrop {
+            position: fixed;
+            inset: 0;
+            z-index: 50;
+            background: rgba(2, 4, 10, 0.78);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .modal-box {
+            background: var(--bg-surface-solid);
+            border: 1px solid rgba(52, 211, 153, 0.28);
+            border-radius: 16px;
+            width: 100%;
+            max-width: 580px;
+            padding: 22px 24px;
+            box-shadow: 0 24px 64px rgba(0, 0, 0, 0.85);
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+        .modal-box.wide { max-width: 820px; }
+
+        .modal-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 12px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--border-subtle);
+        }
+        .modal-title { font-size: 15px; font-weight: 700; color: var(--emerald-light); }
+        .modal-title.cyan { color: var(--cyan-light); }
+        .modal-sub { font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); margin-top: 4px; }
+
+        .form-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        @media (max-width: 640px) { .form-grid-2 { grid-template-columns: 1fr; } }
+
+        .form-group { display: flex; flex-direction: column; gap: 6px; }
+        .form-label { font-size: 12px; color: var(--text-secondary); }
+        .form-input {
+            width: 100%;
+            background: rgba(6, 10, 18, 0.9);
+            border: 1px solid var(--border-subtle);
+            border-radius: 8px;
+            padding: 8px 12px;
+            color: var(--text-primary);
+            font-family: var(--font-mono);
+            font-size: 12px;
+            outline: none;
+        }
+        .form-input:focus { border-color: var(--emerald-light); }
+
+        .preset-row { display: flex; flex-wrap: wrap; gap: 8px; }
+
+        .dialect-layout {
+            display: grid;
+            grid-template-columns: 220px 1fr;
+            gap: 16px;
+        }
+        @media (max-width: 720px) { .dialect-layout { grid-template-columns: 1fr; } }
+
+        .dialect-sidebar {
+            border-right: 1px solid var(--border-subtle);
+            padding-right: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .dialect-item {
+            width: 100%;
+            text-align: left;
+            background: rgba(6, 10, 18, 0.8);
+            border: 1px solid var(--border-subtle);
+            border-radius: 8px;
+            padding: 8px 10px;
+            cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+            transition: all 0.15s ease;
+        }
+        .dialect-item:hover { border-color: rgba(56, 189, 248, 0.45); background: rgba(15, 23, 42, 0.95); }
+
+        .modal-footer {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 10px;
+            padding-top: 12px;
+            border-top: 1px solid var(--border-subtle);
+        }
+
         ::-webkit-scrollbar { width: 6px; height: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: rgba(52, 211, 153, 0.25); border-radius: 3px; }
-        ::-webkit-scrollbar-thumb:hover { background: rgba(52, 211, 153, 0.5); }
+        ::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.22); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(52, 211, 153, 0.45); }
     </style>
 </head>
-<body class="text-slate-200 min-h-screen flex flex-col relative selection:bg-emerald-500/30 selection:text-emerald-200">
+<body>
+<!-- 原生 3D 透视巴别星盘背景 -->
 <canvas id="bg-canvas"></canvas>
 
-<!-- 顶部导航与模型状态栏 -->
-<header class="relative z-20 border-b border-emerald-500/15 bg-slate-950/60 backdrop-blur-xl px-6 py-3.5 flex flex-wrap items-center justify-between gap-4">
-    <div class="flex items-center gap-4">
-        <div class="flex items-center gap-2.5">
-            <div class="w-2.5 h-2.5 rounded-full bg-emerald-400 shadow-[0_0_10px_#34d399] animate-pulse"></div>
-            <span class="text-transparent bg-clip-text bg-gradient-to-r from-emerald-300 via-teal-200 to-cyan-300 font-bold text-lg tracking-wider">BABEL//DSL</span>
+<!-- 顶部导航栏 -->
+<header class="topbar">
+    <div class="topbar-left">
+        <div class="brand">
+            <span class="brand-dot"></span>
+            <span>BABEL//DSL</span>
         </div>
 
-        <nav id="mainNav" class="ui-fade flex bg-slate-900/90 border border-slate-800 p-1 rounded-lg text-xs">
-            <button id="tabBtnCompiler" onclick="switchTab('compiler')" class="px-3.5 py-1.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-semibold transition">
-                ⌘ 符号编译器
-            </button>
-            <button id="tabBtnProxy" onclick="switchTab('proxy')" class="px-3.5 py-1.5 rounded-md text-slate-400 hover:text-slate-200 transition flex items-center gap-1.5">
+        <nav id="mainNav" class="nav-tabs ui-fade">
+            <button id="tabBtnCompiler" class="nav-tab active" onclick="switchTab('compiler')">⌘ 符号编译器</button>
+            <button id="tabBtnProxy" class="nav-tab" onclick="switchTab('proxy')">
                 <span>⇄ 透明代理透视</span>
-                <span id="logCountBadge" class="hidden px-1.5 py-0.2 bg-cyan-500/20 text-cyan-300 rounded text-[10px]">0</span>
+                <span id="logCountBadge" class="badge-count hidden">0</span>
             </button>
         </nav>
     </div>
 
-    <div class="flex items-center gap-2.5 text-xs">
-        <button id="zenToggleBtn" onclick="toggleZenMode()" class="bg-slate-900/90 hover:bg-slate-800 border border-slate-700 text-slate-300 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition">
+    <div class="topbar-right">
+        <button id="zenToggleBtn" class="btn" onclick="toggleZenMode()">
             <span id="zenIcon">◎</span>
             <span id="zenText">纯享背景</span>
         </button>
 
-        <div id="headerControls" class="ui-fade flex items-center gap-2.5">
-            <button onclick="toggleDialectModal(true)" class="bg-slate-900/90 hover:bg-slate-800 border border-cyan-500/30 text-cyan-300 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition">
-                <span>📖 方言词典</span>
-            </button>
+        <div id="headerControls" class="topbar-right ui-fade">
+            <button class="btn btn-cyan" onclick="toggleDialectModal(true)">📖 方言词典</button>
 
-            <div class="flex items-center bg-slate-900/90 border border-slate-700/80 rounded-lg px-2.5 py-1.5 gap-2">
-                <span class="text-slate-500">方案:</span>
-                <select id="headerProfileSelect" onchange="quickSwitchProfile(this.value)" class="bg-transparent text-emerald-300 font-semibold focus:outline-none cursor-pointer"></select>
-                <span id="headerModelBadge" class="text-slate-400 border-l border-slate-700 pl-2 hidden sm:inline"></span>
+            <div class="profile-pill">
+                <span style="color: var(--text-muted)">方案</span>
+                <select id="headerProfileSelect" onchange="quickSwitchProfile(this.value)"></select>
+                <span id="headerModelBadge" class="model-tag"></span>
             </div>
 
-            <button onclick="toggleConfigModal(true)" class="bg-slate-900/90 hover:bg-slate-800 border border-emerald-500/30 text-emerald-300 px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 transition">
-                <span>⚙ 模型配置</span>
-            </button>
+            <button class="btn btn-emerald" onclick="toggleConfigModal(true)">⚙ 模型配置</button>
         </div>
     </div>
 </header>
 
 <!-- 视图 1：手动符号编译器 -->
-<main id="viewCompiler" class="ui-fade relative z-10 flex-1 flex flex-col gap-3 p-5 max-w-[1600px] w-full mx-auto">
-    <div class="glass-panel rounded-lg px-4 py-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-300">
-        <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
-            <span class="text-emerald-400 font-semibold">逻辑算子表:</span>
-            <span><code class="text-cyan-300">:=</code> 定义</span>
-            <span><code class="text-cyan-300">→</code> 因果流向</span>
-            <span><code class="text-cyan-300">∧</code> 逻辑与</span>
-            <span><code class="text-cyan-300">|</code> 逻辑或</span>
-            <span><code class="text-cyan-300">¬ / !</code> 否定禁止</span>
-            <span><code class="text-cyan-300">∀</code> 全称遍历</span>
-            <span><code class="text-cyan-300">∃</code> 存在命中</span>
-            <span><code class="text-cyan-300">↔</code> 篡改替换</span>
-            <span><code class="text-cyan-300">?</code> 条件探测</span>
-            <span><code class="text-amber-400">⚠</code> 红线约束</span>
+<main id="viewCompiler" class="workspace ui-fade">
+    <!-- 算子速查条（点击可直接插入光标处） -->
+    <div class="glass-card operator-bar">
+        <div class="operator-list">
+            <span class="op-title">零码本算子 (点击插入):</span>
+            <button type="button" class="op-chip" onclick="insertOperator('∵')"><code>∵</code>因为</button>
+            <button type="button" class="op-chip" onclick="insertOperator('⇒')"><code>⇒</code>导致</button>
+            <button type="button" class="op-chip" onclick="insertOperator('∧')"><code>∧</code>且</button>
+            <button type="button" class="op-chip" onclick="insertOperator('|')"><code>|</code>或</button>
+            <button type="button" class="op-chip" onclick="insertOperator('¬')"><code>¬</code>非/禁</button>
+            <button type="button" class="op-chip" onclick="insertOperator('∈')"><code>∈</code>属于</button>
+            <button type="button" class="op-chip" onclick="insertOperator('∉')"><code>∉</code>排除</button>
+            <button type="button" class="op-chip" onclick="insertOperator('@')"><code>@</code>归属/状态</button>
+            <button type="button" class="op-chip" onclick="insertOperator('∅')"><code>∅</code>空/null</button>
+            <button type="button" class="op-chip" onclick="insertOperator('∀')"><code>∀</code>全部</button>
+            <button type="button" class="op-chip" onclick="insertOperator('∃')"><code>∃</code>存在</button>
+            <button type="button" class="op-chip" onclick="insertOperator('↔')"><code>↔</code>篡改</button>
+            <button type="button" class="op-chip" onclick="insertOperator('?')"><code>?</code>探测</button>
+            <button type="button" class="op-chip warn" onclick="insertOperator('⚠')"><code>⚠</code>红线</button>
         </div>
-        <button onclick="fillDemoText()" class="text-slate-300 hover:text-emerald-300 underline decoration-dotted transition">填入测试样本</button>
+        <button type="button" class="link-btn" onclick="fillDemoText()">填入测试样本</button>
     </div>
 
-    <div class="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-4 min-h-[540px]">
-        <div class="glass-panel rounded-xl flex flex-col overflow-hidden">
-            <div class="px-4 py-3 border-b border-slate-800/80 flex flex-wrap justify-between items-center gap-2 bg-slate-950/35">
-                <div class="flex items-center gap-2">
-                    <span class="text-xs font-semibold text-slate-300">INPUT // 自然语言提示词</span>
-                    <span id="inputCharCount" class="text-[11px] text-slate-400">0 chars</span>
+    <!-- 双栏编辑器 -->
+    <div class="editor-grid">
+        <!-- 左侧输入 -->
+        <section class="glass-card pane">
+            <div class="pane-header">
+                <div class="pane-title-group">
+                    <span class="pane-label">INPUT // 自然语言提示词</span>
+                    <span id="inputCharCount" class="char-counter">0 chars</span>
                 </div>
-                <div class="flex items-center gap-2 text-xs">
-                    <label class="flex items-center gap-1.5 cursor-pointer text-slate-300 hover:text-emerald-300" title="开启后若丢失数字阈值或否定约束将直接报错拦截">
-                        <input id="verifyCheck" type="checkbox" checked class="accent-emerald-500 rounded"> 硬门禁审计
+                <div class="pane-actions">
+                    <label class="checkbox-label" title="开启后若丢失数字阈值、否定约束或出现私有码本将直接报错拦截">
+                        <input id="verifyCheck" type="checkbox" checked> 零码本硬门禁
                     </label>
-                    <div class="flex items-center">
-                        <select id="modeSelect" class="bg-slate-900 border border-slate-700 rounded-l-md px-2 py-1 text-slate-200 focus:outline-none focus:border-emerald-500 max-w-[200px]"></select>
-                        <button onclick="hotReloadDialects(true)" title="从磁盘热重载方言词典" class="bg-slate-800 hover:bg-slate-700 border border-l-0 border-slate-700 rounded-r-md px-2 py-1 text-cyan-300 transition">↻</button>
+                    <div class="dialect-group">
+                        <select id="modeSelect" class="select-dark"></select>
+                        <button type="button" class="btn" onclick="hotReloadDialects(true)" title="从磁盘热重载方言词典">↻</button>
                     </div>
-                    <button id="runBtn" onclick="runCompile(false)" class="cyber-btn text-white font-semibold px-3.5 py-1.5 rounded-md">
-                        编译 ⚡
-                    </button>
+                    <button id="runBtn" type="button" class="btn btn-primary" onclick="runCompile(false)">编译 ⚡</button>
                 </div>
             </div>
-            <textarea id="rawInput" oninput="updateInputCount()" class="flex-1 bg-transparent p-4 text-sm text-slate-100 resize-none focus:outline-none leading-relaxed placeholder-slate-500" placeholder="在此输入冗长的自然语言指令、Agent System Prompt 或安全测试 SOP..."></textarea>
-        </div>
+            <textarea id="rawInput" class="code-area" oninput="updateInputCount()" placeholder="在此输入冗长的自然语言指令、Agent System Prompt 或安全测试 SOP..."></textarea>
+        </section>
 
-        <div class="glass-panel rounded-xl flex flex-col overflow-hidden">
-            <div class="px-4 py-3 border-b border-slate-800/80 flex flex-wrap justify-between items-center gap-2 bg-slate-950/35">
-                <div class="flex items-center gap-2">
-                    <span class="text-xs font-semibold text-emerald-400">OUTPUT // 巴别语高密度 DSL</span>
-                    <span id="statsBadge" class="hidden text-[11px] bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full"></span>
-                    <span id="cacheBadge" class="hidden text-[10px] bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 px-2 py-0.5 rounded">CACHE HIT</span>
+        <!-- 右侧输出 -->
+        <section class="glass-card pane">
+            <div class="pane-header">
+                <div class="pane-title-group">
+                    <span class="pane-label emerald">OUTPUT // 巴别语高密度 DSL</span>
+                    <span id="statsBadge" class="stat-pill hidden"></span>
+                    <span id="cacheBadge" class="cache-pill hidden">CACHE HIT</span>
                 </div>
-                <div class="flex items-center gap-2">
-                    <button id="forceBtn" onclick="runCompile(true)" title="跳过本地确定性缓存重新调用模型编译" class="text-xs bg-slate-800/90 hover:bg-slate-700 border border-slate-700 px-2.5 py-1 rounded-md text-slate-300 transition">
-                        ↻ 重编译
-                    </button>
-                    <button id="copyBtn" onclick="copyResult()" class="text-xs bg-slate-800/90 hover:bg-slate-700 border border-slate-700 px-3 py-1 rounded-md text-slate-200 transition">
-                        复制 DSL
-                    </button>
+                <div class="pane-actions">
+                    <button id="forceBtn" type="button" class="btn" onclick="runCompile(true)" title="跳过本地缓存强制重新编译">↻ 重编译</button>
+                    <button id="copyBtn" type="button" class="btn" onclick="copyResult()">复制 DSL</button>
                 </div>
             </div>
-            <textarea id="dslOutput" readonly class="flex-1 bg-transparent p-4 text-sm text-emerald-300 resize-none focus:outline-none leading-relaxed placeholder-slate-500" placeholder="编译后的高密度数理符号文本将在此生成..."></textarea>
-            <!-- P3: 关键不变量可视化状态胶囊 -->
-            <div id="invariantCapsules" class="hidden border-t border-slate-800/80 bg-slate-950/45 px-4 py-2.5 flex flex-wrap items-center gap-1.5 text-[11px]"></div>
-            <div id="auditBox" class="hidden border-t border-emerald-500/30 bg-emerald-950/35 px-4 py-2.5 text-xs text-emerald-300"></div>
-        </div>
+            <textarea id="dslOutput" readonly class="code-area output" placeholder="编译后的高密度数理符号文本将在此生成..."></textarea>
+            <div id="invariantCapsules" class="capsules-bar hidden"></div>
+            <div id="auditBox" class="audit-bar hidden"></div>
+        </section>
     </div>
 </main>
 
 <!-- 视图 2：透明代理流量透视 -->
-<main id="viewProxy" class="ui-fade hidden relative z-10 flex-1 flex-col gap-4 p-5 max-w-[1600px] w-full mx-auto">
-    <div class="glass-panel rounded-xl p-4 flex flex-wrap items-center justify-between gap-4">
-        <div class="text-xs space-y-2">
-            <div class="flex flex-wrap items-center gap-3">
-                <div>
-                    <span class="text-emerald-400 font-semibold">OpenAI BaseURL: </span>
-                    <code class="text-cyan-300 select-all bg-slate-950/90 px-2.5 py-1 rounded border border-cyan-500/30" id="proxyEndpointOpenAI">[http://127.0.0.1:8080/v1](http://127.0.0.1:8080/v1)</code>
+<main id="viewProxy" class="workspace ui-fade hidden">
+    <div class="glass-card proxy-banner">
+        <div>
+            <div class="endpoint-row">
+                <div class="endpoint-chip">
+                    <span style="color: var(--emerald-light)">OpenAI BaseURL:</span>
+                    <code id="proxyEndpointOpenAI" style="color: var(--cyan-light); user-select: all;">http://127.0.0.1:8080/v1</code>
                 </div>
-                <div>
-                    <span class="text-purple-300 font-semibold">Anthropic BaseURL: </span>
-                    <code class="text-purple-200 select-all bg-slate-950/90 px-2.5 py-1 rounded border border-purple-500/30" id="proxyEndpointAnthropic">[http://127.0.0.1:8080](http://127.0.0.1:8080)</code>
+                <div class="endpoint-chip">
+                    <span style="color: #d8b4fe">Anthropic BaseURL:</span>
+                    <code id="proxyEndpointAnthropic" style="color: #e9d5ff; user-select: all;">http://127.0.0.1:8080</code>
                 </div>
-                <!-- P3: 编译器熔断器实时状态徽章 -->
-                <div id="circuitStatusPill" class="flex items-center gap-1.5 px-2.5 py-1 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300">
-                    <span>● 编译器熔断器: CLOSED</span>
-                </div>
-                <button id="resetCircuitBtn" onclick="resetCircuitBreaker()" class="hidden text-[11px] bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 px-2 py-1 rounded text-amber-200 transition">
-                    立即恢复编译
-                </button>
+                <div id="circuitStatusPill" class="cb-pill cb-closed">● 编译器熔断器: CLOSED</div>
+                <button id="resetCircuitBtn" type="button" class="btn btn-danger hidden" onclick="resetCircuitBreaker()">立即恢复编译</button>
             </div>
-            <p class="text-slate-300">默认使用 <code class="text-cyan-300">token</code> 方言压缩，支持请求头 <code class="text-amber-300">X-Babel-Dialect: code-audit</code> 动态切换词典；编译器连续故障 3 次自动熔断 60s 零延迟直通原文。</p>
+            <p style="font-size: 12px; color: var(--text-secondary);">
+                默认使用 <code style="color: var(--cyan-light)">token</code> 方言压缩，支持请求头 <code style="color: var(--amber)">X-Babel-Dialect: code-audit</code> 动态切换词典；编译器连续故障 3 次自动熔断 60s 零延迟直通原文。
+            </p>
         </div>
-        <div class="flex flex-wrap items-center gap-3 text-xs">
-            <label class="flex items-center gap-1.5 text-slate-300 cursor-pointer" title="写入日志前自动遮蔽 sk-、Bearer Token、JWT 及密码键值对">
-                <input id="redactCheck" type="checkbox" checked onchange="toggleLogRedaction(this.checked)" class="accent-emerald-500"> 凭据自动脱敏
+
+        <div class="pane-actions">
+            <label class="checkbox-label">
+                <input id="redactCheck" type="checkbox" checked onchange="toggleLogRedaction(this.checked)"> 凭据自动脱敏
             </label>
-            <label class="flex items-center gap-1.5 text-slate-300 cursor-pointer">
-                <input id="autoRefreshCheck" type="checkbox" checked class="accent-emerald-500"> 自动刷新 (3s)
+            <label class="checkbox-label">
+                <input id="autoRefreshCheck" type="checkbox" checked> 自动刷新 (3s)
             </label>
-            <button onclick="loadLogs()" class="bg-slate-800 hover:bg-slate-700 border border-slate-700 px-3 py-1.5 rounded-lg text-slate-200 transition">立即刷新</button>
-            <button onclick="clearLogs()" class="bg-rose-950/80 hover:bg-rose-900 border border-rose-500/30 px-3 py-1.5 rounded-lg text-rose-300 transition">清空记录</button>
+            <button type="button" class="btn" onclick="loadLogs()">立即刷新</button>
+            <button type="button" class="btn btn-danger" onclick="clearLogs()">清空记录</button>
         </div>
     </div>
 
-    <div id="logsContainer" class="space-y-3"></div>
+    <div id="logsContainer" class="log-list"></div>
 </main>
 
-<!-- 方言词典热插拔编辑器弹窗 -->
-<div id="dialectModal" class="hidden fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-    <div class="bg-slate-900/95 rounded-2xl max-w-3xl w-full p-6 space-y-4 border border-cyan-500/30 shadow-2xl">
-        <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+<!-- 方言词典热插拔弹窗 -->
+<div id="dialectModal" class="modal-backdrop hidden">
+    <div class="modal-box wide">
+        <div class="modal-header">
             <div>
-                <h3 class="text-base font-bold text-cyan-300">📖 方言词典热插拔管理 (Hot-Reload Dialects)</h3>
-                <p class="text-[11px] text-slate-400 mt-0.5">目录: <span id="dialectDirLabel" class="text-slate-300">~/.babel_dialects</span> (支持编辑本地 .md 后点击热重载)</p>
+                <div class="modal-title cyan">📖 方言词典热插拔管理 (Hot-Reload Dialects)</div>
+                <div class="modal-sub">目录: <span id="dialectDirLabel">~/.babel_dialects</span></div>
             </div>
-            <div class="flex items-center gap-2">
-                <button onclick="hotReloadDialects(true)" class="text-xs bg-cyan-950 hover:bg-cyan-900 border border-cyan-500/30 px-3 py-1 rounded-lg text-cyan-200 transition">↻ 从磁盘热重载</button>
-                <button onclick="toggleDialectModal(false)" class="text-slate-400 hover:text-white text-lg px-2">✕</button>
+            <div class="pane-actions">
+                <button type="button" class="btn" onclick="resetBuiltinDialects()">重置内置词典</button>
+                <button type="button" class="btn btn-cyan" onclick="hotReloadDialects(true)">↻ 从磁盘热重载</button>
+                <button type="button" class="btn" onclick="toggleDialectModal(false)">✕</button>
             </div>
         </div>
 
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
-            <div class="space-y-2 border-r border-slate-800 pr-3">
-                <div class="flex items-center justify-between">
-                    <span class="text-slate-400 font-semibold">已加载词典</span>
-                    <button onclick="prepareNewDialect()" class="text-emerald-400 hover:underline">+ 新建</button>
+        <div class="dialect-layout">
+            <div class="dialect-sidebar">
+                <div style="display: flex; justify-content: space-between; align-items: center; font-size: 12px;">
+                    <span style="color: var(--text-secondary); font-weight: 600;">已加载词典</span>
+                    <button type="button" class="link-btn" onclick="prepareNewDialect()">+ 新建</button>
                 </div>
-                <div id="dialectListContainer" class="space-y-1.5 max-h-80 overflow-y-auto"></div>
+                <div id="dialectListContainer" style="display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto;"></div>
             </div>
 
-            <div class="md:col-span-2 space-y-3">
-                <div class="grid grid-cols-2 gap-2.5">
-                    <div>
-                        <label class="block text-slate-400 mb-1">方言标识 (文件名, 如 sql-gen)</label>
-                        <input id="dlName" type="text" placeholder="code-audit" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-cyan-300 focus:outline-none focus:border-cyan-500">
+            <div style="display: flex; flex-direction: column; gap: 12px;">
+                <div class="form-grid-2">
+                    <div class="form-group">
+                        <label class="form-label">方言标识 (文件名)</label>
+                        <input id="dlName" type="text" class="form-input" placeholder="例如: code-audit">
                     </div>
-                    <div>
-                        <label class="block text-slate-400 mb-1">显示名称 (Label)</label>
-                        <input id="dlLabel" type="text" placeholder="代码与安全审计" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-200 focus:outline-none focus:border-cyan-500">
+                    <div class="form-group">
+                        <label class="form-label">显示名称 (Label)</label>
+                        <input id="dlLabel" type="text" class="form-input" placeholder="例如: 代码与安全审计">
                     </div>
                 </div>
 
-                <div class="flex items-center gap-4 text-[11px] text-slate-400">
+                <div style="display: flex; align-items: center; gap: 16px; font-size: 12px; color: var(--text-secondary);">
                     <span>保存位置:</span>
-                    <label class="flex items-center gap-1 cursor-pointer text-slate-200">
-                        <input type="radio" name="dlScope" value="global" checked class="accent-cyan-500"> 全局 (~/.babel_dialects)
-                    </label>
-                    <label class="flex items-center gap-1 cursor-pointer text-slate-200">
-                        <input type="radio" name="dlScope" value="workspace" class="accent-cyan-500"> 当前工作区 (./dialects)
-                    </label>
+                    <label class="checkbox-label"><input type="radio" name="dlScope" value="global" checked> 全局 (~/.babel_dialects)</label>
+                    <label class="checkbox-label"><input type="radio" name="dlScope" value="workspace"> 当前工作区 (./dialects)</label>
                 </div>
 
-                <div>
-                    <label class="block text-slate-400 mb-1">方言编译规则 (System Prompt)</label>
-                    <textarea id="dlPrompt" rows="9" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-3 text-xs text-slate-200 leading-relaxed focus:outline-none focus:border-cyan-500" placeholder="输入该领域的符号映射与压缩约束规则..."></textarea>
+                <div class="form-group">
+                    <label class="form-label">方言编译规则 (System Prompt)</label>
+                    <textarea id="dlPrompt" rows="8" class="form-input" style="line-height: 1.6; resize: vertical;" placeholder="输入该领域的符号映射与压缩约束规则..."></textarea>
                 </div>
 
-                <div class="flex items-center justify-between pt-1">
-                    <button onclick="deleteDialect()" class="px-3 py-1.5 rounded-lg bg-rose-950/70 hover:bg-rose-900 border border-rose-500/30 text-rose-300">删除词典</button>
-                    <button onclick="saveDialect()" class="cyber-btn px-4 py-1.5 rounded-lg text-white font-semibold">保存并热加载</button>
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <button type="button" class="btn btn-danger" onclick="deleteDialect()">删除词典</button>
+                    <button type="button" class="btn btn-primary" onclick="saveDialect()">保存并热加载</button>
                 </div>
             </div>
         </div>
@@ -269,165 +913,206 @@
 </div>
 
 <!-- 模型与持久化配置弹窗 -->
-<div id="configModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-    <div class="bg-slate-900/95 rounded-2xl max-w-xl w-full p-6 space-y-5 border border-emerald-500/30 shadow-2xl">
-        <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+<div id="configModal" class="modal-backdrop hidden">
+    <div class="modal-box">
+        <div class="modal-header">
             <div>
-                <h3 class="text-base font-bold text-emerald-300">⚙ 模型与持久化配置中心</h3>
-                <p class="text-[11px] text-slate-400 mt-0.5">配置自动持久化至磁盘 (<span id="cfgPathLabel" class="text-slate-300">~/.babel_config.json</span>) 及本地存储</p>
+                <div class="modal-title">⚙ 模型与持久化配置中心</div>
+                <div class="modal-sub">持久化路径: <span id="cfgPathLabel">~/.babel_config.json</span></div>
             </div>
-            <button onclick="toggleConfigModal(false)" class="text-slate-400 hover:text-white text-lg px-2">✕</button>
+            <button type="button" class="btn" onclick="toggleConfigModal(false)">✕</button>
         </div>
 
-        <div class="space-y-1.5">
-            <span class="text-[11px] text-slate-400">快速填充服务商模板 (注意中转站通常需要带 /v1 后缀):</span>
-            <div class="flex flex-wrap gap-2 text-xs">
-                <button onclick="applyPreset('deepseek', '[https://api.deepseek.com/v1](https://api.deepseek.com/v1)', 'deepseek-chat')" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-300 transition">DeepSeek</button>
-                <button onclick="applyPreset('openai', '[https://api.openai.com/v1](https://api.openai.com/v1)', 'gpt-4o-mini')" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-emerald-300 transition">OpenAI (4o-mini)</button>
-                <button onclick="applyPreset('openrouter', '[https://openrouter.ai/api/v1](https://openrouter.ai/api/v1)', 'google/gemini-2.5-flash')" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-purple-300 transition">OpenRouter</button>
-                <button onclick="applyPreset('ollama', '[http://127.0.0.1:11434/v1](http://127.0.0.1:11434/v1)', 'qwen2.5:7b')" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-amber-300 transition">Ollama 本地</button>
+        <div class="form-group">
+            <span class="form-label">快速填充服务商模板 (注意中转站通常需要带 /v1 后缀):</span>
+            <div class="preset-row">
+                <button type="button" class="btn btn-cyan" onclick="applyPreset('deepseek', 'https://api.deepseek.com/v1', 'deepseek-chat')">DeepSeek</button>
+                <button type="button" class="btn btn-emerald" onclick="applyPreset('openai', 'https://api.openai.com/v1', 'gpt-4o-mini')">OpenAI (4o-mini)</button>
+                <button type="button" class="btn" onclick="applyPreset('openrouter', 'https://openrouter.ai/api/v1', 'google/gemini-2.5-flash')">OpenRouter</button>
+                <button type="button" class="btn" onclick="applyPreset('ollama', 'http://127.0.0.1:11434/v1', 'qwen2.5:7b')">Ollama 本地</button>
             </div>
         </div>
 
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-            <div>
-                <label class="block text-slate-400 mb-1">配置方案名称 (可新建或覆盖)</label>
-                <input id="cfgProfileName" type="text" placeholder="例如: default / deepseek" class="w-full bg-slate-950/90 border border-slate-700 rounded-lg px-3 py-2 text-emerald-300 focus:outline-none focus:border-emerald-500">
+        <div class="form-grid-2">
+            <div class="form-group">
+                <label class="form-label">配置方案名称 (新建或覆盖)</label>
+                <input id="cfgProfileName" type="text" class="form-input" placeholder="default / deepseek">
             </div>
-            <div>
-                <label class="block text-slate-400 mb-1">切换到已有方案</label>
-                <div class="flex gap-1.5">
-                    <select id="modalProfileSelect" onchange="fillFormFromProfile(this.value)" class="flex-1 bg-slate-950/90 border border-slate-700 rounded-lg px-2.5 py-2 text-slate-200 focus:outline-none focus:border-emerald-500"></select>
-                    <button onclick="deleteCurrentProfile()" title="删除该方案" class="px-2.5 py-2 bg-rose-950/70 hover:bg-rose-900 border border-rose-500/30 rounded-lg text-rose-300">删</button>
+            <div class="form-group">
+                <label class="form-label">切换到已有方案</label>
+                <div style="display: flex; gap: 6px;">
+                    <select id="modalProfileSelect" class="select-dark" style="flex: 1;" onchange="fillFormFromProfile(this.value)"></select>
+                    <button type="button" class="btn btn-danger" onclick="deleteCurrentProfile()">删</button>
                 </div>
             </div>
         </div>
 
-        <div class="space-y-3 text-xs">
-            <div>
-                <label class="block text-slate-400 mb-1">编译器 API Base URL (末尾请带 /v1)</label>
-                <input id="cfgBaseUrl" type="text" placeholder="[https://api.openai.com/v1](https://api.openai.com/v1)" class="w-full bg-slate-950/90 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-emerald-500">
+        <div class="form-group">
+            <label class="form-label">编译器 API Base URL (末尾请带 /v1)</label>
+            <input id="cfgBaseUrl" type="text" class="form-input" placeholder="https://api.openai.com/v1">
+        </div>
+
+        <div class="form-grid-2">
+            <div class="form-group">
+                <label class="form-label">API Key (留空保留已存密钥)</label>
+                <input id="cfgApiKey" type="password" class="form-input" placeholder="sk-...">
             </div>
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                    <label class="block text-slate-400 mb-1">API Key (留空则保留已存密钥)</label>
-                    <input id="cfgApiKey" type="password" placeholder="sk-..." class="w-full bg-slate-950/90 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-emerald-500">
-                </div>
-                <div>
-                    <label class="block text-slate-400 mb-1">编译器模型名称 (Model)</label>
-                    <input id="cfgModel" type="text" placeholder="gpt-4o-mini / deepseek-chat" class="w-full bg-slate-950/90 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-emerald-500">
-                </div>
-            </div>
-            <div>
-                <label class="block text-slate-400 mb-1">上游 Agent Base URL (可选，仅透明代理转发时使用)</label>
-                <input id="cfgUpstreamUrl" type="text" placeholder="留空则默认转发至上方 Base URL" class="w-full bg-slate-950/90 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-emerald-500">
+            <div class="form-group">
+                <label class="form-label">编译器模型名称 (Model)</label>
+                <input id="cfgModel" type="text" class="form-input" placeholder="gpt-4o-mini / deepseek-chat">
             </div>
         </div>
 
-        <div class="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-800 text-xs">
-            <button onclick="toggleConfigModal(false)" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300">取消</button>
-            <button onclick="saveProfileConfig()" class="cyber-btn px-5 py-2 rounded-lg text-white font-semibold">保存并激活方案</button>
+        <div class="form-group">
+            <label class="form-label">上游 Agent Base URL (可选，仅透明代理转发时使用)</label>
+            <input id="cfgUpstreamUrl" type="text" class="form-input" placeholder="留空则默认转发至上方 Base URL">
+        </div>
+
+        <div class="modal-footer">
+            <button type="button" class="btn" onclick="toggleConfigModal(false)">取消</button>
+            <button type="button" class="btn btn-primary" onclick="saveProfileConfig()">保存并激活方案</button>
         </div>
     </div>
 </div>
 
 <script>
-    // ==================== 1. 简洁二十面体线框 + 三层细轨星环背景 ====================
+    // ==================== 1. 原生 3D 透视巴别星盘背景 (零外部依赖) ====================
     let isOverdrive = false;
-    (function initThreeBackground() {
+    (function initNative3DAstrolabe() {
         const canvas = document.getElementById('bg-canvas');
-        if (!window.THREE || !canvas) return;
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
 
-        const scene = new THREE.Scene();
-        const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 1000);
-        camera.position.z = 26;
-
-        const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-
-        const astrolabe = new THREE.Group();
-        scene.add(astrolabe);
-
-        const coreGeo = new THREE.IcosahedronGeometry(4.4, 1);
-        const coreMat = new THREE.MeshBasicMaterial({
-            color: 0x10b981,
-            wireframe: true,
-            transparent: true,
-            opacity: 0.34
-        });
-        const coreMesh = new THREE.Mesh(coreGeo, coreMat);
-        astrolabe.add(coreMesh);
-
-        const ringConfigs = [
-            { r: 7.6, tube: 0.04, color: 0x34d399, opacity: 0.45, rx: 0.6, ry: 0.2 },
-            { r: 10.4, tube: 0.03, color: 0x06b6d4, opacity: 0.35, rx: -0.5, ry: 0.8 },
-            { r: 13.4, tube: 0.025, color: 0x10b981, opacity: 0.24, rx: 1.1, ry: -0.4 }
-        ];
-        const rings = ringConfigs.map(cfg => {
-            const geo = new THREE.TorusGeometry(cfg.r, cfg.tube, 12, 128);
-            const mat = new THREE.MeshBasicMaterial({ color: cfg.color, transparent: true, opacity: cfg.opacity });
-            const mesh = new THREE.Mesh(geo, mat);
-            mesh.rotation.set(cfg.rx, cfg.ry, 0);
-            astrolabe.add(mesh);
-            return mesh;
-        });
-
-        const particleCount = 480;
-        const posArray = new Float32Array(particleCount * 3);
-        for (let i = 0; i < particleCount * 3; i += 3) {
-            const radius = 8 + Math.random() * 24;
-            const theta = Math.random() * Math.PI * 2;
-            const phi = Math.acos((Math.random() * 2) - 1);
-            posArray[i] = radius * Math.sin(phi) * Math.cos(theta);
-            posArray[i + 1] = radius * Math.sin(phi) * Math.sin(theta);
-            posArray[i + 2] = radius * Math.cos(phi);
-        }
-        const particlesGeo = new THREE.BufferGeometry();
-        particlesGeo.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
-        const particlesMat = new THREE.PointsMaterial({
-            size: 0.16,
-            color: 0x6ee7b7,
-            transparent: true,
-            opacity: 0.65
-        });
-        const particlesMesh = new THREE.Points(particlesGeo, particlesMat);
-        scene.add(particlesMesh);
-
-        let targetX = 0, targetY = 0;
-        window.addEventListener('mousemove', (e) => {
-            targetX = (e.clientX / window.innerWidth - 0.5) * 0.65;
-            targetY = (e.clientY / window.innerHeight - 0.5) * 0.65;
-        });
-
+        let width = canvas.width = window.innerWidth;
+        let height = canvas.height = window.innerHeight;
         window.addEventListener('resize', () => {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
+            width = canvas.width = window.innerWidth;
+            height = canvas.height = window.innerHeight;
         });
 
-        function animate() {
-            requestAnimationFrame(animate);
-            const speed = isOverdrive ? 5.5 : 1.0;
+        // 正二十面体顶点与边
+        const t = (1 + Math.sqrt(5)) / 2;
+        const rawVerts = [
+            [-1, t, 0], [1, t, 0], [-1, -t, 0], [1, -t, 0],
+            [0, -1, t], [0, 1, t], [0, -1, -t], [0, 1, -t],
+            [t, 0, -1], [t, 0, 1], [-t, 0, -1], [-t, 0, 1]
+        ].map(v => {
+            const len = Math.hypot(v[0], v[1], v[2]);
+            return { x: (v[0] / len) * 115, y: (v[1] / len) * 115, z: (v[2] / len) * 115 };
+        });
 
-            coreMesh.rotation.y += 0.004 * speed;
-            coreMesh.rotation.x += 0.002 * speed;
-            coreMat.opacity = isOverdrive ? 0.68 : 0.34;
-
-            rings[0].rotation.z += 0.003 * speed;
-            rings[0].rotation.x += 0.002 * speed;
-            rings[1].rotation.y -= 0.004 * speed;
-            rings[2].rotation.z -= 0.0015 * speed;
-            rings[2].rotation.y += 0.002 * speed;
-
-            particlesMesh.rotation.y -= 0.0008 * speed;
-
-            astrolabe.rotation.y += (targetX - astrolabe.rotation.y) * 0.04;
-            astrolabe.rotation.x += (targetY - astrolabe.rotation.x) * 0.04;
-
-            renderer.render(scene, camera);
+        const edges = [];
+        for (let i = 0; i < rawVerts.length; i++) {
+            for (let j = i + 1; j < rawVerts.length; j++) {
+                const d = Math.hypot(rawVerts[i].x - rawVerts[j].x, rawVerts[i].y - rawVerts[j].y, rawVerts[i].z - rawVerts[j].z);
+                if (d < 130) edges.push([i, j]);
+            }
         }
-        animate();
+
+        // 空间星尘粒子
+        const particles = Array.from({ length: 140 }, () => ({
+            x: (Math.random() - 0.5) * 950,
+            y: (Math.random() - 0.5) * 650,
+            z: (Math.random() - 0.5) * 700,
+            size: 1 + Math.random() * 1.6,
+            color: Math.random() > 0.35 ? '52, 211, 153' : '56, 189, 248'
+        }));
+
+        let rotX = 0.25, rotY = 0.4, rotZ = 0;
+        let mouseX = 0, mouseY = 0;
+        window.addEventListener('mousemove', (e) => {
+            mouseX = (e.clientX / width - 0.5) * 0.6;
+            mouseY = (e.clientY / height - 0.5) * 0.6;
+        });
+
+        function project(x, y, z, rx, ry, rz) {
+            // Rotate X
+            let y1 = y * Math.cos(rx) - z * Math.sin(rx);
+            let z1 = y * Math.sin(rx) + z * Math.cos(rx);
+            // Rotate Y
+            let x2 = x * Math.cos(ry) + z1 * Math.sin(ry);
+            let z2 = -x * Math.sin(ry) + z1 * Math.cos(ry);
+            // Rotate Z
+            let x3 = x2 * Math.cos(rz) - y1 * Math.sin(rz);
+            let y3 = x2 * Math.sin(rz) + y1 * Math.cos(rz);
+
+            const fov = 680;
+            const scale = fov / (fov + z2 + 320);
+            return { x: width / 2 + x3 * scale, y: height / 2 + y3 * scale, scale, z: z2 };
+        }
+
+        function drawRing(radius, segs, rx, ry, rz, color, alpha, withTicks) {
+            ctx.beginPath();
+            let first = null;
+            for (let i = 0; i <= segs; i++) {
+                const a = (i / segs) * Math.PI * 2;
+                const p = project(Math.cos(a) * radius, Math.sin(a) * radius, 0, rx, ry, rz);
+                if (i === 0) {
+                    ctx.moveTo(p.x, p.y);
+                    first = p;
+                } else {
+                    ctx.lineTo(p.x, p.y);
+                }
+                if (withTicks && i % 4 === 0 && i < segs) {
+                    const pIn = project(Math.cos(a) * (radius - 7), Math.sin(a) * (radius - 7), 0, rx, ry, rz);
+                    ctx.moveTo(pIn.x, pIn.y);
+                    ctx.lineTo(p.x, p.y);
+                }
+            }
+            ctx.strokeStyle = `rgba(${color}, ${alpha})`;
+            ctx.lineWidth = 1;
+            ctx.stroke();
+        }
+
+        function render() {
+            ctx.clearRect(0, 0, width, height);
+            const speed = isOverdrive ? 4.8 : 1.0;
+            rotY += 0.0035 * speed;
+            rotX += 0.0018 * speed;
+            rotZ += 0.001 * speed;
+
+            const curRx = rotX + mouseY;
+            const curRy = rotY + mouseX;
+
+            // 1. 绘制粒子
+            particles.forEach(pt => {
+                const p = project(pt.x, pt.y, pt.z, curRx * 0.35, curRy * 0.35, 0);
+                if (p.scale > 0) {
+                    ctx.fillStyle = `rgba(${pt.color}, ${Math.min(0.75, p.scale * 0.65)})`;
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, pt.size * p.scale, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            });
+
+            // 2. 绘制三层陀螺仪刻度星环
+            const ringAlphaBoost = isOverdrive ? 1.6 : 1.0;
+            drawRing(210, 96, curRx + 0.55, curRy * 0.8, rotZ * 1.4, '52, 211, 153', 0.28 * ringAlphaBoost, true);
+            drawRing(285, 108, -curRx * 0.7, curRy + 0.4, -rotZ * 1.1, '56, 189, 248', 0.22 * ringAlphaBoost, true);
+            drawRing(365, 120, curRx * 0.4 + 1.0, -curRy * 0.6, rotZ * 0.7, '16, 185, 129', 0.16 * ringAlphaBoost, false);
+
+            // 3. 绘制核心二十面体线框
+            const projVerts = rawVerts.map(v => project(v.x, v.y, v.z, curRx, curRy, rotZ));
+            ctx.strokeStyle = isOverdrive ? 'rgba(52, 211, 153, 0.55)' : 'rgba(16, 185, 129, 0.26)';
+            ctx.lineWidth = 1.1;
+            ctx.beginPath();
+            edges.forEach(([a, b]) => {
+                ctx.moveTo(projVerts[a].x, projVerts[a].y);
+                ctx.lineTo(projVerts[b].x, projVerts[b].y);
+            });
+            ctx.stroke();
+
+            // 顶点高光节点
+            projVerts.forEach(p => {
+                ctx.fillStyle = isOverdrive ? 'rgba(110, 231, 183, 0.9)' : 'rgba(52, 211, 153, 0.55)';
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 2.1 * p.scale, 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            requestAnimationFrame(render);
+        }
+        render();
     })();
 
     // ==================== 2. 安全 JSON 请求包装器 ====================
@@ -447,7 +1132,18 @@
         return data;
     }
 
-    // ==================== 3. 纯享背景开关 ====================
+    // ==================== 3. 算子快捷插入 & 纯享背景开关 ====================
+    function insertOperator(sym) {
+        const el = document.getElementById('rawInput');
+        const start = el.selectionStart || 0;
+        const end = el.selectionEnd || 0;
+        const val = el.value;
+        el.value = val.slice(0, start) + sym + val.slice(end);
+        el.focus();
+        el.selectionStart = el.selectionEnd = start + sym.length;
+        updateInputCount();
+    }
+
     let isZen = false;
     function toggleZenMode() {
         isZen = !isZen;
@@ -489,20 +1185,38 @@
         }
     }
 
+    async function resetBuiltinDialects() {
+        if (!confirm('将全局目录下的内置默认方言更新为最新零码本算子版本，是否继续？')) return;
+        try {
+            await fetchJSON('/api/dialects', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'reset_defaults' })
+            });
+            await hotReloadDialects(false);
+            const cur = document.getElementById('modeSelect').value;
+            if (cur) selectDialectForEdit(cur);
+            alert('内置默认方言已更新！');
+        } catch (e) {
+            alert(e.message);
+        }
+    }
+
     function renderDialectSidebar() {
         const box = document.getElementById('dialectListContainer');
         if (!box) return;
         box.innerHTML = '';
         dialectList.forEach(d => {
             const btn = document.createElement('button');
-            btn.className = 'w-full text-left px-2.5 py-2 rounded-lg bg-slate-950/80 hover:bg-slate-800 border border-slate-800 transition flex flex-col gap-0.5';
+            btn.type = 'button';
+            btn.className = 'dialect-item';
             btn.onclick = () => selectDialectForEdit(d.name);
             btn.innerHTML = `
-          <div class="flex items-center justify-between">
-            <span class="text-cyan-300 font-semibold">${d.name}.md</span>
-            <span class="text-[10px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-400">${d.source}</span>
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span style="color: var(--cyan-light); font-family: var(--font-mono); font-weight: 600; font-size: 12px;">${d.name}.md</span>
+            <span style="font-size: 10px; padding: 1px 6px; border-radius: 4px; background: rgba(30,41,59,0.9); color: var(--text-secondary);">${d.source}</span>
           </div>
-          <span class="text-slate-300 truncate">${d.label}</span>
+          <span style="color: var(--text-primary); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${d.label}</span>
         `;
             box.appendChild(btn);
         });
@@ -548,7 +1262,7 @@
     async function deleteDialect() {
         const name = document.getElementById('dlName').value.trim();
         if (!name) return;
-        if (!confirm(`确定删除自定义方言 [${name}.md] 吗？（内置默认方言删除后会恢复内置版本）`)) return;
+        if (!confirm(`确定删除自定义方言 [${name}.md] 吗？`)) return;
         try {
             await fetchJSON('/api/dialects', {
                 method: 'POST',
@@ -710,24 +1424,20 @@
         if (show) fillFormFromProfile(serverConfig.active_profile);
     }
 
-    // ==================== 6. P3 关键不变量可视化校验胶囊 ====================
+    // ==================== 6. 关键不变量可视化状态胶囊 ====================
     function renderInvariantCapsules(origText, compiledText) {
         const box = document.getElementById('invariantCapsules');
         box.innerHTML = '';
 
         const capsules = [];
-
-        // 1. 提取原文中的所有数值/阈值/IP
         const numMatches = origText.match(/\b\d+(?:\.\d+)*%?\b/g) || [];
         const seenNums = new Set();
         numMatches.forEach(num => {
             if (seenNums.has(num)) return;
             seenNums.add(num);
-            const ok = compiledText.includes(num);
-            capsules.push({ label: num, ok });
+            capsules.push({ label: num, ok: compiledText.includes(num) });
         });
 
-        // 2. 提取原文中的否定/禁止约束短语
         const negMatches = origText.match(/((?:不|不得|禁止|严禁|绝不|不能|不可|无需|免|无|非)[\u4e00-\u9fa5A-Za-z0-9_-]{1,5}|只读不写|脱敏)/g) || [];
         const seenNegs = new Set();
         const hasNegOperator = /[¬!不禁止无非免]|脱敏|只读/.test(compiledText);
@@ -743,19 +1453,15 @@
         }
 
         const title = document.createElement('span');
-        title.className = 'text-slate-400 font-semibold mr-1';
+        title.style.color = 'var(--text-secondary)';
+        title.style.fontWeight = '600';
         title.textContent = '不变量核验:';
         box.appendChild(title);
 
         capsules.forEach(item => {
             const pill = document.createElement('span');
-            if (item.ok) {
-                pill.className = 'px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30';
-                pill.textContent = `✓ ${item.label}`;
-            } else {
-                pill.className = 'px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40 font-semibold';
-                pill.textContent = `✕ 缺失 ${item.label}`;
-            }
+            pill.className = item.ok ? 'inv-pill-ok' : 'inv-pill-fail';
+            pill.textContent = item.ok ? `✓ ${item.label}` : `✕ 缺失 ${item.label}`;
             box.appendChild(pill);
         });
 
@@ -767,14 +1473,9 @@
         const isCompiler = tab === 'compiler';
         document.getElementById('viewCompiler').classList.toggle('hidden', !isCompiler);
         document.getElementById('viewProxy').classList.toggle('hidden', isCompiler);
-        document.getElementById('viewProxy').classList.toggle('flex', !isCompiler);
 
-        document.getElementById('tabBtnCompiler').className = isCompiler
-            ? 'px-3.5 py-1.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-semibold transition'
-            : 'px-3.5 py-1.5 rounded-md text-slate-400 hover:text-slate-200 transition';
-        document.getElementById('tabBtnProxy').className = !isCompiler
-            ? 'px-3.5 py-1.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-semibold transition flex items-center gap-1.5'
-            : 'px-3.5 py-1.5 rounded-md text-slate-400 hover:text-slate-200 transition flex items-center gap-1.5';
+        document.getElementById('tabBtnCompiler').classList.toggle('active', isCompiler);
+        document.getElementById('tabBtnProxy').classList.toggle('active', !isCompiler);
 
         if (!isCompiler) loadLogs();
     }
@@ -785,7 +1486,7 @@
     }
 
     function fillDemoText() {
-        document.getElementById('rawInput').value = `你是一名授权渗透测试者，目标是找出业务系统里扫描器永远发现不了的那类漏洞:逻辑缺陷、越权、状态机绕过、并发问题。先做入口与权限模型测绘:把所有接口按[未认证/普通用户/高权限角色」三档标注，标出哪些接口只在返回体里做权限过滤、哪些接口用请求参数里的userId、orderId、tenantId判断归属，这类就是IDOR(越权访问)的名单，对每个名单项做一次「换ID重放」，看能否读取或修改他人对象。SSRF打云元数据重点探测 169.254.169.254 与 302 跳转。全程要求:对生产系统只发最小必要流量，能只读不写，写操作前说明副作用并征得同意，不批量拉取真实用户数据，截图与报告中的凭据和个人信息一律脱敏。`;
+        document.getElementById('rawInput').value = `你是一名授权渗透测试者，目标是找出业务系统里扫描器永远发现不了的那类漏洞:逻辑缺陷、越权、状态机绕过、并发问题。先做入口与权限模型测绘:把所有接口按[未认证/普通用户/高权限角色」三档标注，标出哪些接口只在返回体里做权限过滤、哪些接口用请求参数里的userId、orderId、tenantId判断归属，这类就是IDOR(越权访问)的名单，对每个名单项做一次「换ID重放」，看能否读取或修改他人对象。因为部分接口无回显，所以SQLi盲注用 LOAD_FILE 或 DNS 外带；SSRF打云元数据重点探测 169.254.169.254 与 302 跳转。全程要求:对生产系统只发最小必要流量，能只读不写，写操作前说明副作用并征得同意，不批量拉取真实用户数据，截图与报告中的凭据和个人信息一律脱敏；未验证的猜测单独列在待确认中，不要混入漏洞清单。`;
         updateInputCount();
     }
 
@@ -822,11 +1523,7 @@
             badge.classList.remove('hidden');
 
             const cacheBadge = document.getElementById('cacheBadge');
-            if (data.cache_hit) {
-                cacheBadge.classList.remove('hidden');
-            } else {
-                cacheBadge.classList.add('hidden');
-            }
+            cacheBadge.classList.toggle('hidden', !data.cache_hit);
 
             const auditBox = document.getElementById('auditBox');
             if (data.audit) {
@@ -861,16 +1558,16 @@
         const resetBtn = document.getElementById('resetCircuitBtn');
 
         if (circuit.state === 'OPEN') {
-            pill.className = 'flex items-center gap-1.5 px-2.5 py-1 rounded bg-rose-500/20 border border-rose-500/40 text-rose-300 font-semibold';
-            pill.innerHTML = `<span>▲ 熔断直通中: OPEN (剩余 ${circuit.remaining_sec}s)</span>`;
+            pill.className = 'cb-pill cb-open';
+            pill.textContent = `▲ 熔断直通中: OPEN (剩余 ${circuit.remaining_sec}s)`;
             resetBtn.classList.remove('hidden');
         } else if (circuit.state === 'HALF-OPEN') {
-            pill.className = 'flex items-center gap-1.5 px-2.5 py-1 rounded bg-amber-500/20 border border-amber-500/40 text-amber-200 font-semibold';
-            pill.innerHTML = `<span>◐ 熔断探测中: HALF-OPEN</span>`;
+            pill.className = 'cb-pill cb-half';
+            pill.textContent = '◐ 熔断探测中: HALF-OPEN';
             resetBtn.classList.remove('hidden');
         } else {
-            pill.className = 'flex items-center gap-1.5 px-2.5 py-1 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300';
-            pill.innerHTML = `<span>● 编译器熔断器: CLOSED (${circuit.failures}/${circuit.threshold})</span>`;
+            pill.className = 'cb-pill cb-closed';
+            pill.textContent = `● 编译器熔断器: CLOSED (${circuit.failures}/${circuit.threshold})`;
             resetBtn.classList.add('hidden');
         }
     }
@@ -903,9 +1600,7 @@
             if (typeof payload.redact_enabled === 'boolean') {
                 document.getElementById('redactCheck').checked = payload.redact_enabled;
             }
-            if (payload.circuit) {
-                renderCircuitStatus(payload.circuit);
-            }
+            if (payload.circuit) renderCircuitStatus(payload.circuit);
 
             const badge = document.getElementById('logCountBadge');
             if (logs.length > 0) {
@@ -919,56 +1614,47 @@
             container.innerHTML = '';
 
             if (!logs.length) {
-                container.innerHTML = '<div class="glass-panel text-center text-slate-400 text-xs py-14 rounded-xl">暂无代理拦截记录。将 Product 的 OPENAI_BASE_URL 指向 <code class="text-cyan-300">' + window.location.origin + '/v1</code>（或将 Claude Code 的 ANTHROPIC_BASE_URL 指向 <code class="text-purple-300">' + window.location.origin + '</code>）即可实时透视压缩后的消息与 MCP Tools Schema。</div>';
+                container.innerHTML = `<div class="glass-card empty-state">暂无代理拦截记录。<br>将 Product 的 <code>OPENAI_BASE_URL</code> 指向 <code style="color: var(--cyan-light)">${window.location.origin}/v1</code>（或将 Claude Code 的 <code>ANTHROPIC_BASE_URL</code> 指向 <code style="color: #d8b4fe">${window.location.origin}</code>）即可实时透视。</div>`;
                 return;
             }
 
             logs.forEach(item => {
                 const card = document.createElement('div');
-                card.className = 'glass-panel rounded-xl overflow-hidden text-xs';
+                card.className = 'glass-card log-card';
 
                 const isTool = (item.role || '').startsWith('tool:');
-                const roleClass = isTool
-                    ? 'px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 font-semibold'
-                    : 'px-2 py-0.5 rounded bg-slate-800 text-slate-200 uppercase font-semibold';
-
+                const roleClass = isTool ? 'tag tag-tool' : 'tag tag-role';
                 const protoBadge = item.protocol === 'anthropic'
-                    ? '<span class="px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30 text-[10px]">ANTHROPIC</span>'
-                    : '<span class="px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 border border-sky-500/30 text-[10px]">OPENAI</span>';
-
-                const dialectBadge = item.dialect
-                    ? `<span class="px-1.5 py-0.5 rounded bg-teal-500/15 text-teal-300 border border-teal-500/30 text-[10px]">${item.dialect}</span>`
-                    : '';
-
-                const redactBadge = item.redacted
-                    ? '<span class="px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-300 border border-rose-500/30 text-[10px]">🛡 已脱敏</span>'
-                    : '';
+                    ? '<span class="tag tag-anthropic">ANTHROPIC</span>'
+                    : '<span class="tag tag-openai">OPENAI</span>';
+                const dialectBadge = item.dialect ? `<span class="tag tag-dialect">${item.dialect}</span>` : '';
+                const redactBadge = item.redacted ? '<span class="tag tag-redact">🛡 已脱敏</span>' : '';
 
                 const header = document.createElement('div');
-                header.className = 'px-4 py-2.5 bg-slate-950/50 border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-2';
+                header.className = 'log-card-header';
                 header.innerHTML = `
-            <div class="flex flex-wrap items-center gap-2">
-              <span class="text-slate-500">[${item.timestamp}]</span>
+            <div class="log-tags">
+              <span style="color: var(--text-muted)">[${item.timestamp}]</span>
               ${protoBadge}
               ${dialectBadge}
               <span class="${roleClass}">${item.role}</span>
-              <span class="text-slate-300">${item.ratio}</span>
-              ${item.real_billing_ratio ? `<span class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-semibold">💰 ${item.real_billing_ratio}</span>` : ''}
-              ${item.cache_hit ? '<span class="px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">⚡ CACHE HIT</span>' : ''}
+              <span style="color: var(--text-primary)">${item.ratio}</span>
+              ${item.real_billing_ratio ? `<span class="tag tag-billing">💰 ${item.real_billing_ratio}</span>` : ''}
+              ${item.cache_hit ? '<span class="cache-pill">⚡ CACHE HIT</span>' : ''}
               ${redactBadge}
             </div>
-            <span class="text-slate-500">#${item.id}</span>
+            <span style="color: var(--text-muted); font-family: var(--font-mono);">#${item.id}</span>
           `;
 
                 const grid = document.createElement('div');
-                grid.className = 'grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-slate-800/80';
+                grid.className = 'log-diff';
 
                 const left = document.createElement('pre');
-                left.className = 'p-3.5 whitespace-pre-wrap text-slate-400 leading-relaxed max-h-64 overflow-y-auto';
+                left.className = 'log-col';
                 left.textContent = item.original;
 
                 const right = document.createElement('pre');
-                right.className = 'p-3.5 whitespace-pre-wrap text-emerald-300 leading-relaxed max-h-64 overflow-y-auto';
+                right.className = 'log-col';
                 right.textContent = item.compiled;
 
                 grid.appendChild(left);
