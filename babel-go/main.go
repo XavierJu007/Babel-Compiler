@@ -99,12 +99,128 @@ type ProxyLog struct {
 	Compiled         string `json:"compiled"`
 	Ratio            string `json:"ratio"`
 	CacheHit         bool   `json:"cache_hit"`
+	Redacted         bool   `json:"redacted"`
 	RealPromptTokens int    `json:"real_prompt_tokens,omitempty"`
 	EstOrigTokens    int    `json:"est_orig_tokens,omitempty"`
 	RealBillingRatio string `json:"real_billing_ratio,omitempty"`
 }
 
-// 零外部依赖 Singleflight 防缓存击穿
+// ==================== P3 核心 1：编译器故障熔断器 (Circuit Breaker) ====================
+
+type CircuitBreaker struct {
+	mu           sync.RWMutex
+	failures     int
+	threshold    int
+	cooldown     time.Duration
+	openedAt     time.Time
+	halfOpenBusy bool
+}
+
+func newCircuitBreaker(threshold int, cooldown time.Duration) *CircuitBreaker {
+	return &CircuitBreaker{
+		threshold: threshold,
+		cooldown:  cooldown,
+	}
+}
+
+func (cb *CircuitBreaker) Allow() bool {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+
+	if cb.failures < cb.threshold {
+		return true
+	}
+	if time.Since(cb.openedAt) < cb.cooldown {
+		return false
+	}
+	if !cb.halfOpenBusy {
+		cb.halfOpenBusy = true
+		return true
+	}
+	return false
+}
+
+func (cb *CircuitBreaker) RecordSuccess() {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	cb.failures = 0
+	cb.halfOpenBusy = false
+	cb.openedAt = time.Time{}
+}
+
+func (cb *CircuitBreaker) RecordFailure() {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	cb.halfOpenBusy = false
+	cb.failures++
+	if cb.failures >= cb.threshold && cb.openedAt.IsZero() {
+		cb.openedAt = time.Now()
+	} else if cb.failures >= cb.threshold {
+		cb.openedAt = time.Now()
+	}
+}
+
+func (cb *CircuitBreaker) Reset() {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	cb.failures = 0
+	cb.halfOpenBusy = false
+	cb.openedAt = time.Time{}
+}
+
+func (cb *CircuitBreaker) Status() map[string]any {
+	cb.mu.RLock()
+	defer cb.mu.RUnlock()
+
+	state := "CLOSED"
+	remainingSec := 0
+	if cb.failures >= cb.threshold {
+		elapsed := time.Since(cb.openedAt)
+		if elapsed < cb.cooldown {
+			state = "OPEN"
+			remainingSec = int((cb.cooldown - elapsed).Seconds()) + 1
+		} else {
+			state = "HALF-OPEN"
+		}
+	}
+	return map[string]any{
+		"state":         state,
+		"failures":      cb.failures,
+		"threshold":     cb.threshold,
+		"remaining_sec": remainingSec,
+	}
+}
+
+// ==================== P3 核心 2：敏感凭据自动脱敏过滤器 ====================
+
+var secretPatterns = []struct {
+	re   *regexp.Regexp
+	repl string
+}{
+	// OpenAI / Anthropic / DeepSeek API Keys
+	{regexp.MustCompile(`\bsk-(?:ant-|proj-)?[a-zA-Z0-9_-]{16,}\b`), `sk-***[REDACTED]`},
+	// AWS Access Key ID
+	{regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`), `AKIA***[REDACTED]`},
+	// GitHub Personal / OAuth / App Tokens
+	{regexp.MustCompile(`\bgh[pousr]_[a-zA-Z0-9]{20,}\b`), `gh*_***[REDACTED]`},
+	// JWT Tokens
+	{regexp.MustCompile(`\beyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\b`), `eyJ***[JWT_REDACTED]`},
+	// HTTP Authorization Bearer Header
+	{regexp.MustCompile(`(?i)(\bBearer\s+)[a-zA-Z0-9._\-+/=]{12,}`), `${1}***[REDACTED]`},
+	// 常见键值对凭据 (api_key, secret, password, token 等)
+	{regexp.MustCompile(`(?i)((?:api[_-]?key|secret[_-]?key|password|passwd|pwd|access[_-]?token|auth[_-]?token)\s*[:=]\s*["']?)[a-zA-Z0-9._\-+/=!@#$%^&*]{6,}(["']?)`), `${1}***[REDACTED]${2}`},
+}
+
+func redactSecrets(text string) string {
+	res := text
+	for _, p := range secretPatterns {
+		res = p.re.ReplaceAllString(res, p.repl)
+	}
+	return res
+}
+
+// ==================== Singleflight 防缓存击穿 ====================
+
 type flightCall struct {
 	wg  sync.WaitGroup
 	res CompileResp
@@ -157,13 +273,30 @@ var (
 	calibMutex          sync.RWMutex
 	bpeCalibrationScale = 1.0
 
+	compilerCB = newCircuitBreaker(3, 60*time.Second)
+
+	redactMutex      sync.RWMutex
+	logRedactEnabled = true // 默认开启敏感信息脱敏
+
 	logsMutex sync.RWMutex
 	proxyLogs []ProxyLog
 
 	numRegex = regexp.MustCompile(`\d+(?:\.\d+)?`)
 )
 
-// 内置默认方言模板（首次启动自动释放为 .md 文件，方便热修改）
+func isLogRedactEnabled() bool {
+	redactMutex.RLock()
+	defer redactMutex.RUnlock()
+	return logRedactEnabled
+}
+
+func setLogRedactEnabled(v bool) {
+	redactMutex.Lock()
+	defer redactMutex.Unlock()
+	logRedactEnabled = v
+}
+
+// 内置默认方言模板
 var builtinDialectTemplates = map[string]struct {
 	Label  string
 	Prompt string
@@ -327,13 +460,11 @@ func scanDialectDir(dir, source string, target map[string]Dialect) {
 	}
 }
 
-// 热重载所有磁盘方言词典（全局 ~/.babel_dialects + 项目级 ./dialects 覆盖）
 func reloadDialects() int {
 	gDir := globalDialectsDir()
 	seedDefaultDialectsIfNeeded(gDir)
 
 	nextMap := make(map[string]Dialect)
-	// 1. 兜底加载内置模板
 	for name, tpl := range builtinDialectTemplates {
 		nextMap[name] = Dialect{
 			Name:       name,
@@ -343,9 +474,7 @@ func reloadDialects() int {
 			Source:     "builtin",
 		}
 	}
-	// 2. 加载全局方言目录 ~/.babel_dialects/*.md
 	scanDialectDir(gDir, "global", nextMap)
-	// 3. 加载当前工作区目录 ./dialects/*.md（优先级最高，可覆盖全局）
 	wDir := workspaceDialectsDir()
 	if st, err := os.Stat(wDir); err == nil && st.IsDir() {
 		scanDialectDir(wDir, "workspace", nextMap)
@@ -573,6 +702,16 @@ func maskKey(k string) string {
 }
 
 func appendProxyLog(entry ProxyLog) {
+	if isLogRedactEnabled() {
+		redactedOrig := redactSecrets(entry.Original)
+		redactedComp := redactSecrets(entry.Compiled)
+		if redactedOrig != entry.Original || redactedComp != entry.Compiled {
+			entry.Redacted = true
+		}
+		entry.Original = redactedOrig
+		entry.Compiled = redactedComp
+	}
+
 	logsMutex.Lock()
 	defer logsMutex.Unlock()
 	proxyLogs = append([]ProxyLog{entry}, proxyLogs...)
@@ -873,7 +1012,6 @@ func runAuditGate(p Profile, orig, comp string, requiredKeywords []string) (bool
 	return false, "[语义门禁拦截] " + cleaned
 }
 
-// 缓存 Key 绑定方言内容哈希：热修改某份 .md 方言后自动失效该方言旧缓存
 func makeCacheKey(dialect Dialect, model, text string) string {
 	raw := fmt.Sprintf("%s#%s|%s|%s", dialect.Name, dialect.PromptHash, model, strings.TrimSpace(text))
 	h := sha256.Sum256([]byte(raw))
@@ -1016,6 +1154,11 @@ func translateMessageBlock(protocol, role, text string, p Profile, dialect Diale
 		return text, "", origTok, origTok
 	}
 
+	// P3 熔断器检查：若编译器处于 OPEN 熔断状态，0ms 直接透传原始自然语言，保障主业务高可用
+	if !compilerCB.Allow() {
+		return text, "", origTok, origTok
+	}
+
 	var activeKeywords []string
 	textLower := strings.ToLower(text)
 	for _, kw := range reqKeywords {
@@ -1033,7 +1176,16 @@ func translateMessageBlock(protocol, role, text string, p Profile, dialect Diale
 		BaseURL:          p.BaseURL,
 		Model:            p.Model,
 	})
-	if err != nil || res.Compiled == "" {
+	if err != nil {
+		// 仅上游网络/接口故障计入熔断计数；硬门禁拦截属于预期语义保护，不触发熔断
+		if !strings.Contains(err.Error(), "门禁拦截") {
+			compilerCB.RecordFailure()
+		}
+		return text, "", origTok, origTok
+	}
+
+	compilerCB.RecordSuccess()
+	if res.Compiled == "" {
 		return text, "", origTok, origTok
 	}
 
@@ -1637,11 +1789,9 @@ func startServer(preferredAddr string, autoOpen bool) {
 		fmt.Fprint(w, indexHTML)
 	})
 
-	// 方言词典热插拔管理 API
 	http.HandleFunc("/api/dialects", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == "GET" {
-			// 每次请求自动从磁盘重新扫描，实现即改即生效的热重载
 			reloadDialects()
 			json.NewEncoder(w).Encode(map[string]any{
 				"global_dir":    globalDialectsDir(),
@@ -1836,6 +1986,7 @@ func startServer(preferredAddr string, autoOpen bool) {
 		json.NewEncoder(w).Encode(res)
 	})
 
+	// P3: 代理日志查询、清空、脱敏开关与熔断器状态/重置
 	http.HandleFunc("/api/logs", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == "DELETE" {
@@ -1845,13 +1996,38 @@ func startServer(preferredAddr string, autoOpen bool) {
 			json.NewEncoder(w).Encode(map[string]string{"status": "cleared"})
 			return
 		}
-		logsMutex.RLock()
-		defer logsMutex.RUnlock()
-		if proxyLogs == nil {
-			w.Write([]byte("[]"))
+
+		if r.Method == "POST" {
+			var req struct {
+				Action  string `json:"action"` // toggle_redact | reset_circuit
+				Enabled bool   `json:"enabled"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+				switch req.Action {
+				case "toggle_redact":
+					setLogRedactEnabled(req.Enabled)
+				case "reset_circuit":
+					compilerCB.Reset()
+				}
+			}
+			json.NewEncoder(w).Encode(map[string]any{
+				"status":         "ok",
+				"redact_enabled": isLogRedactEnabled(),
+				"circuit":        compilerCB.Status(),
+			})
 			return
 		}
-		json.NewEncoder(w).Encode(proxyLogs)
+
+		logsMutex.RLock()
+		list := make([]ProxyLog, len(proxyLogs))
+		copy(list, proxyLogs)
+		logsMutex.RUnlock()
+
+		json.NewEncoder(w).Encode(map[string]any{
+			"redact_enabled": isLogRedactEnabled(),
+			"circuit":        compilerCB.Status(),
+			"logs":           list,
+		})
 	})
 
 	http.HandleFunc("/v1/chat/completions", openAIProxyHandler)
