@@ -32,3 +32,11 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Project local additions
+bin/
+babel-go/babel
+.babel_config.json
+.DS_Store
+.idea/
+.vscode/

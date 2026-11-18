@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Babel-DSL 巴别语高密度编译器</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-200 min-h-screen flex flex-col font-mono">
+<!-- 顶部配置栏 -->
+<header class="border-b border-slate-800 bg-slate-900/80 px-6 py-3 flex flex-wrap items-center justify-between gap-4">
+    <div class="flex items-center gap-2">
+        <span class="text-emerald-400 font-bold text-lg">⌘ Babel-DSL</span>
+        <span class="text-xs bg-slate-800 text-slate-400 px-2 py-0.5 rounded">高密度提示词编译器</span>
+    </div>
+    <div class="flex flex-wrap items-center gap-2 text-xs">
+        <input id="baseUrl" type="text" placeholder="Base URL (e.g. https://api.openai.com/v1)" class="bg-slate-800 border border-slate-700 rounded px-2.5 py-1.5 w-60 focus:outline-none focus:border-emerald-500">
+        <input id="apiKey" type="password" placeholder="API Key (sk-...)" class="bg-slate-800 border border-slate-700 rounded px-2.5 py-1.5 w-44 focus:outline-none focus:border-emerald-500">
+        <input id="model" type="text" placeholder="Model (gpt-4o-mini)" class="bg-slate-800 border border-slate-700 rounded px-2.5 py-1.5 w-36 focus:outline-none focus:border-emerald-500">
+        <button onclick="saveConfig()" class="bg-slate-700 hover:bg-slate-600 px-3 py-1.5 rounded text-white transition">保存默认配置</button>
+    </div>
+</header>
+
+<!-- 主工作区 -->
+<main class="flex-1 grid grid-cols-1 md:grid-cols-2 gap-4 p-6">
+    <!-- 左侧输入 -->
+    <div class="flex flex-col bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+        <div class="px-4 py-2.5 border-b border-slate-800 flex justify-between items-center bg-slate-900/50">
+            <span class="text-xs text-slate-400">自然语言输入 (Raw Prompt)</span>
+            <div class="flex items-center gap-3 text-xs">
+                <label class="flex items-center gap-1 cursor-pointer">
+                    <input id="verifyCheck" type="checkbox" class="accent-emerald-500"> 无损审计
+                </label>
+                <select id="modeSelect" class="bg-slate-800 border border-slate-700 rounded px-2 py-1">
+                    <option value="extreme">极限数理符号 (Extreme)</option>
+                    <option value="standard">标准树状结构 (Standard)</option>
+                </select>
+                <button id="runBtn" onclick="runCompile()" class="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold px-4 py-1 rounded transition">编译 →</button>
+            </div>
+        </div>
+        <textarea id="rawInput" class="flex-1 bg-transparent p-4 text-sm resize-none focus:outline-none leading-relaxed" placeholder="在此粘贴冗长的自然语言提示词或SOP规范..."></textarea>
+    </div>
+
+    <!-- 右侧输出 -->
+    <div class="flex flex-col bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
+        <div class="px-4 py-2.5 border-b border-slate-800 flex justify-between items-center bg-slate-900/50">
+            <div class="flex items-center gap-2">
+                <span class="text-xs text-emerald-400">巴别语输出 (Compiled DSL)</span>
+                <span id="statsBadge" class="hidden text-xs bg-emerald-950 text-emerald-300 border border-emerald-800 px-2 py-0.5 rounded"></span>
+            </div>
+            <button onclick="copyResult()" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1 rounded transition">复制结果</button>
+        </div>
+        <textarea id="dslOutput" readonly class="flex-1 bg-transparent p-4 text-sm text-emerald-300 resize-none focus:outline-none leading-relaxed" placeholder="编译后的高密度符号文本将显示在这里..."></textarea>
+        <div id="auditBox" class="hidden border-t border-slate-800 bg-slate-950 p-3 text-xs text-amber-300"></div>
+    </div>
+</main>
+
+<script>
+    async function loadInitConfig() {
+        const res = await fetch('/api/config');
+        const data = await res.json();
+        if (data.base_url) document.getElementById('baseUrl').value = data.base_url;
+        if (data.model) document.getElementById('model').value = data.model;
+        if (data.api_key_masked) document.getElementById('apiKey').placeholder = `已配置 (${data.api_key_masked})`;
+    }
+
+    async function saveConfig() {
+        const api_key = document.getElementById('apiKey').value;
+        const base_url = document.getElementById('baseUrl').value;
+        const model = document.getElementById('model').value;
+        if (!api_key) return alert('请输入新的 API Key 再保存');
+        await fetch('/api/config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ api_key, base_url, model })
+        });
+        alert('默认配置已保存，CLI 与 API 均可共享使用！');
+    }
+
+    async function runCompile() {
+        const text = document.getElementById('rawInput').value.trim();
+        if (!text) return;
+        const btn = document.getElementById('runBtn');
+        btn.textContent = '编译中...';
+        btn.disabled = true;
+
+        try {
+            const res = await fetch('/api/compile', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    text,
+                    mode: document.getElementById('modeSelect').value,
+                    verify: document.getElementById('verifyCheck').checked,
+                    api_key: document.getElementById('apiKey').value || null,
+                    base_url: document.getElementById('baseUrl').value || null,
+                    model: document.getElementById('model').value || null
+                })
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || '编译失败');
+
+            document.getElementById('dslOutput').value = data.compiled;
+            const badge = document.getElementById('statsBadge');
+            badge.textContent = `${data.stats.original_chars} → ${data.stats.compiled_chars} 字符 (压缩 ${data.stats.compression_ratio})`;
+            badge.classList.remove('hidden');
+
+            const auditBox = document.getElementById('auditBox');
+            if (data.audit) {
+                auditBox.textContent = `语义审计结果：${data.audit}`;
+                auditBox.classList.remove('hidden');
+            } else {
+                auditBox.classList.add('hidden');
+            }
+        } catch (err) {
+            alert(err.message);
+        } finally {
+            btn.textContent = '编译 →';
+            btn.disabled = false;
+        }
+    }
+
+    function copyResult() {
+        const out = document.getElementById('dslOutput');
+        out.select();
+        document.execCommand('copy');
+    }
+
+    loadInitConfig();
+</script>
+</body>
+</html>
