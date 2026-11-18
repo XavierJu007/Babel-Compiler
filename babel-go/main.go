@@ -11,14 +11,17 @@ import (
 func main() {
 	initDiskCache()
 	reloadDialects()
+	_, domainLoadErr := reloadDomains()
 
 	serveAddr := flag.String("serve", "", "指定 Web/API/代理服务地址 (留空则自动探测可用端口)")
 	profileName := flag.String("profile", "", "指定使用的已保存配置方案名称")
-	mode := flag.String("m", "extreme", "指定方言名称 (如 extreme | token | standard | code-audit | 自定义.md名称)")
-	listDialects := flag.Bool("list-dialects", false, "列出所有已加载的方言词典并退出")
-	verify := flag.Bool("v", false, "开启往返语义审计")
-	strictGate := flag.Bool("gate", false, "开启硬门禁：缺失数值、阈值或否定约束时直接报错失败")
-	noCache := flag.Bool("no-cache", false, "跳过本地确定性缓存强制重新编译")
+	mode := flag.String("m", "extreme", "指定输出预设 (extreme | token | standard | code-audit | en-terse | 自定义.md名称)")
+	domains := flag.String("domains", "", "组合领域名称，以逗号分隔 (如 application-security,api-contract)")
+	listDialects := flag.Bool("list-dialects", false, "列出所有已加载的输出预设并退出")
+	listDomains := flag.Bool("list-domains", false, "列出所有已加载的领域表达库并退出")
+	verify := flag.Bool("v", false, "开启原文与候选的语义对照审计")
+	strictGate := flag.Bool("gate", false, "严格检查：无法通过本次审计时返回错误")
+	noCache := flag.Bool("no-cache", false, "跳过缓存读写，强制重新编译")
 	quiet := flag.Bool("q", false, "静默模式，仅输出纯文本")
 	file := flag.String("f", "", "从文件读取输入")
 	apiKey := flag.String("api-key", "", "指定 API Key")
@@ -26,6 +29,15 @@ func main() {
 	model := flag.String("model", "", "指定编译器模型名称")
 	saveCfg := flag.Bool("save-config", false, "保存当前参数为配置方案")
 	flag.Parse()
+	if domainLoadErr != nil && !*quiet {
+		fmt.Fprintf(os.Stderr, "[领域加载] %v\n", domainLoadErr)
+	}
+	if *listDomains {
+		for _, d := range listSortedDomains() {
+			fmt.Printf("%-22s | %-20s | %d 词条 | [%s] %s\n", d.Name, d.Label, len(d.Entries), d.Source, d.FilePath)
+		}
+		return
+	}
 
 	if *listDialects {
 		for _, d := range listSortedDialects() {
@@ -91,9 +103,14 @@ func main() {
 		}
 	}
 
+	var domainNames []string
+	if strings.TrimSpace(*domains) != "" {
+		domainNames = strings.Split(*domains, ",")
+	}
 	res, err := doCompile(CompileReq{
-		Text:       strings.TrimSpace(input),
+		Text:       input,
 		Mode:       *mode,
+		Domains:    domainNames,
 		Verify:     *verify,
 		StrictGate: *strictGate,
 		NoCache:    *noCache,

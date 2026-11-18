@@ -403,6 +403,8 @@
             display: flex;
             align-items: center;
             gap: 10px;
+            flex-wrap: wrap;
+            min-width: 0;
         }
 
         .pane-label {
@@ -719,6 +721,8 @@
         }
         .dialect-item {
             width: 100%;
+            min-width: 0;
+            overflow-wrap: anywhere;
             text-align: left;
             background: rgba(6, 10, 18, 0.8);
             border: 1px solid var(--border-subtle);
@@ -731,6 +735,28 @@
             transition: all 0.15s ease;
         }
         .dialect-item:hover { border-color: rgba(56, 189, 248, 0.45); background: rgba(15, 23, 42, 0.95); }
+        .dialect-item.active { border-color: var(--cyan-light); background: rgba(8, 47, 73, 0.5); }
+        .domain-select-bar { padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; }
+        .domain-choices { display: flex; align-items: center; gap: 10px 16px; flex-wrap: wrap; }
+        .domain-note { color: var(--text-secondary); font-size: 11px; line-height: 1.6; }
+        .modal-box.domains-wide { max-width: 1080px; }
+        .domain-form { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+        .domain-form textarea { resize: vertical; line-height: 1.6; }
+        .domain-entry-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+        .domain-entry-tabs .btn { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+        .domain-entry-tabs .btn.active { border-color: var(--cyan-light); color: var(--cyan-light); background: rgba(8, 47, 73, 0.5); }
+        .domain-entry-editor { border-top: 1px solid var(--border-subtle); padding-top: 14px; display: flex; flex-direction: column; gap: 12px; }
+        .domain-row { display: grid; grid-template-columns: 92px minmax(0, 1fr) auto; gap: 8px; align-items: start; }
+        .domain-example { padding: 10px; border: 1px solid var(--border-subtle); border-radius: 8px; display: flex; flex-direction: column; gap: 8px; }
+        .domain-row-list { display: flex; flex-direction: column; gap: 8px; }
+        .domain-section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+        .domain-source { font-size: 11px; color: var(--text-secondary); overflow-wrap: anywhere; line-height: 1.6; }
+        .domain-status { border-radius: 8px; }
+        @media (max-width: 640px) {
+            .modal-header { flex-wrap: wrap; }
+            .domain-row { grid-template-columns: 70px minmax(0, 1fr) auto; }
+            .modal-box { padding: 16px; }
+        }
 
         .modal-footer {
             display: flex;
@@ -775,7 +801,7 @@
         </button>
 
         <div id="headerControls" class="topbar-right ui-fade">
-            <button class="btn btn-cyan" onclick="toggleDialectModal(true)">📖 方言词典</button>
+            <button class="btn btn-cyan" onclick="toggleDomainModal(true)">📖 领域表达库</button>
 
             <div class="profile-pill">
                 <span style="color: var(--text-muted)">方案</span>
@@ -793,23 +819,30 @@
     <!-- 算子速查条（点击可直接插入光标处） -->
     <div class="glass-card operator-bar">
         <div class="operator-list">
-            <span class="op-title">零码本算子 (点击插入):</span>
+            <span class="op-title">公共符号 (点击插入):</span>
             <button type="button" class="op-chip" onclick="insertOperator('∵')"><code>∵</code>因为</button>
-            <button type="button" class="op-chip" onclick="insertOperator('⇒')"><code>⇒</code>导致</button>
+            <button type="button" class="op-chip" onclick="insertOperator('⇒')"><code>⇒</code>逻辑蕴涵</button>
             <button type="button" class="op-chip" onclick="insertOperator('∧')"><code>∧</code>且</button>
-            <button type="button" class="op-chip" onclick="insertOperator('|')"><code>|</code>或</button>
-            <button type="button" class="op-chip" onclick="insertOperator('¬')"><code>¬</code>非/禁</button>
+            <button type="button" class="op-chip" onclick="insertOperator('∨')"><code>∨</code>或</button>
+            <button type="button" class="op-chip" onclick="insertOperator('¬')"><code>¬</code>命题否定</button>
             <button type="button" class="op-chip" onclick="insertOperator('∈')"><code>∈</code>属于</button>
             <button type="button" class="op-chip" onclick="insertOperator('∉')"><code>∉</code>排除</button>
-            <button type="button" class="op-chip" onclick="insertOperator('@')"><code>@</code>归属/状态</button>
-            <button type="button" class="op-chip" onclick="insertOperator('∅')"><code>∅</code>空/null</button>
+            <button type="button" class="op-chip" onclick="insertOperator('∅')"><code>∅</code>空集合</button>
             <button type="button" class="op-chip" onclick="insertOperator('∀')"><code>∀</code>全部</button>
             <button type="button" class="op-chip" onclick="insertOperator('∃')"><code>∃</code>存在</button>
-            <button type="button" class="op-chip" onclick="insertOperator('↔')"><code>↔</code>篡改</button>
-            <button type="button" class="op-chip" onclick="insertOperator('?')"><code>?</code>探测</button>
-            <button type="button" class="op-chip warn" onclick="insertOperator('⚠')"><code>⚠</code>红线</button>
+            <button type="button" class="op-chip" onclick="insertOperator('⇔')"><code>⇔</code>当且仅当</button>
+            <button type="button" class="op-chip" onclick="insertOperator('>=')"><code>&gt;=</code>大于等于</button>
         </div>
         <button type="button" class="link-btn" onclick="fillDemoText()">填入测试样本</button>
+    </div>
+
+    <div class="glass-card domain-select-bar">
+        <div class="domain-choices">
+            <span class="form-label">领域（可多选）</span>
+            <div id="domainChoices" class="domain-choices"><span class="domain-note">正在加载领域…</span></div>
+            <button type="button" class="link-btn" onclick="toggleDomainModal(true)">编辑领域词条</button>
+        </div>
+        <div id="domainSelectionHint" class="domain-note">公共逻辑始终参与；只选用与原文相关的词条，保留实体和关系，不增加业务要求。</div>
     </div>
 
     <!-- 双栏编辑器 -->
@@ -826,8 +859,8 @@
                         <input id="verifyCheck" type="checkbox" checked> 严格校验
                     </label>
                     <div class="dialect-group">
-                        <select id="modeSelect" class="select-dark"></select>
-                        <button type="button" class="btn" onclick="hotReloadDialects(true)" title="从磁盘热重载方言词典">↻</button>
+                        <select id="modeSelect" class="select-dark" aria-label="输出预设" onchange="updateDomainSelectionHint()"></select>
+                        <button type="button" class="btn" onclick="toggleDialectModal(true)" title="高级：编辑输出风格预设">⚙</button>
                     </div>
                     <button id="runBtn" type="button" class="btn btn-primary" onclick="runCompile(false)">编译 ⚡</button>
                 </div>
@@ -872,7 +905,7 @@
                 <button id="resetCircuitBtn" type="button" class="btn btn-danger hidden" onclick="resetCircuitBreaker()">立即恢复编译</button>
             </div>
             <p style="font-size: 12px; color: var(--text-secondary);">
-                默认使用 <code style="color: var(--cyan-light)">token</code> 方言压缩，支持请求头 <code style="color: var(--amber)">X-Babel-Dialect: code-audit</code> 动态切换词典；编译器连续故障 3 次自动熔断 60s，期间转发原文。Token 减少为文本估算；上游 usage 是整次请求用量。
+                默认使用 <code style="color: var(--cyan-light)">token</code> 输出预设，<code style="color: var(--amber)">X-Babel-Dialect</code> 切换输出风格，<code style="color: var(--amber)">X-Babel-Domains</code> 选择领域（逗号分隔）。编译器连续故障 3 次自动熔断 60s，期间转发原文。Token 减少为文本估算；上游 usage 是整次请求用量。
             </p>
         </div>
 
@@ -892,16 +925,17 @@
     <div id="logsContainer" class="log-list"></div>
 </main>
 
-<!-- 方言词典热插拔弹窗 -->
+<!-- 高级输出预设编辑；领域词条独立管理 -->
 <div id="dialectModal" class="modal-backdrop hidden">
     <div class="modal-box wide">
         <div class="modal-header">
             <div>
-                <div class="modal-title cyan">📖 方言词典热插拔管理 (Hot-Reload Dialects)</div>
+                <div class="modal-title cyan">输出预设 · 高级编辑</div>
+                <div class="modal-sub">设置语言与排版偏好；公共语义规则始终生效。领域术语与公共符号请在“领域表达库”编辑。</div>
                 <div class="modal-sub">目录: <span id="dialectDirLabel">~/.babel_dialects</span></div>
             </div>
             <div class="pane-actions">
-                <button type="button" class="btn" onclick="resetBuiltinDialects()">重置内置词典</button>
+                <button type="button" class="btn" onclick="resetBuiltinDialects()">重置内置预设</button>
                 <button type="button" class="btn btn-cyan" onclick="hotReloadDialects(true)">↻ 从磁盘热重载</button>
                 <button type="button" class="btn" onclick="toggleDialectModal(false)">✕</button>
             </div>
@@ -910,7 +944,7 @@
         <div class="dialect-layout">
             <div class="dialect-sidebar">
                 <div style="display: flex; justify-content: space-between; align-items: center; font-size: 12px;">
-                    <span style="color: var(--text-secondary); font-weight: 600;">已加载词典</span>
+                    <span style="color: var(--text-secondary); font-weight: 600;">已加载预设</span>
                     <button type="button" class="link-btn" onclick="prepareNewDialect()">+ 新建</button>
                 </div>
                 <div id="dialectListContainer" style="display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto;"></div>
@@ -919,7 +953,7 @@
             <div style="display: flex; flex-direction: column; gap: 12px;">
                 <div class="form-grid-2">
                     <div class="form-group">
-                        <label class="form-label">方言标识 (文件名)</label>
+                        <label class="form-label">预设标识 (文件名)</label>
                         <input id="dlName" type="text" class="form-input" placeholder="例如: code-audit">
                     </div>
                     <div class="form-group">
@@ -935,13 +969,132 @@
                 </div>
 
                 <div class="form-group">
-                    <label class="form-label">方言编译规则 (System Prompt)</label>
-                    <textarea id="dlPrompt" rows="8" class="form-input" style="line-height: 1.6; resize: vertical;" placeholder="输入该领域的符号映射与压缩约束规则..."></textarea>
+                    <label class="form-label">输出风格提示（高级）</label>
+                    <textarea id="dlPrompt" rows="8" class="form-input" style="line-height: 1.6; resize: vertical;" placeholder="例如：使用简洁中文规则列表，保留关系类型与作用域，适量使用公开符号。"></textarea>
                 </div>
 
                 <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <button type="button" class="btn btn-danger" onclick="deleteDialect()">删除词典</button>
+                    <button type="button" class="btn btn-danger" onclick="deleteDialect()">删除预设覆盖</button>
                     <button type="button" class="btn btn-primary" onclick="saveDialect()">保存并热加载</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 领域表达库：逐词条编辑公开语义、适用条件与保留边界 -->
+<div id="domainModal" class="modal-backdrop hidden">
+    <div class="modal-box domains-wide" role="dialog" aria-modal="true" aria-labelledby="domainModalTitle">
+        <div class="modal-header">
+            <div>
+                <div id="domainModalTitle" class="modal-title cyan">📖 领域表达库</div>
+                <div class="modal-sub">词条指导编译器选择公共表达；最终文本无需词典或图例即可理解。</div>
+            </div>
+            <div class="pane-actions">
+                <button type="button" class="btn" onclick="reloadDomainLibrary()">↻ 从磁盘重载</button>
+                <button type="button" class="btn" onclick="toggleDomainModal(false)" aria-label="关闭领域表达库">✕</button>
+            </div>
+        </div>
+        <div id="domainWarning" class="audit-bar is-error domain-status hidden" role="status"></div>
+        <div id="domainStatus" class="audit-bar domain-status hidden" role="status" aria-live="polite"></div>
+        <div class="dialect-layout">
+            <div class="dialect-sidebar">
+                <div class="domain-section-head">
+                    <span class="form-label">领域库</span>
+                    <button type="button" class="link-btn" onclick="prepareNewDomain()">+ 新建领域</button>
+                </div>
+                <div id="domainPackList" class="domain-row-list"></div>
+                <div class="domain-note">优先级：工作区覆盖 → 全局覆盖 → 内置。删除覆盖后，下一层同名领域重新生效。</div>
+            </div>
+            <div class="domain-form">
+                <div class="form-grid-2">
+                    <div class="form-group">
+                        <label for="dmName" class="form-label">领域标识</label>
+                        <input id="dmName" class="form-input" maxlength="64" placeholder="例如 application-security" oninput="markDomainDirty()">
+                    </div>
+                    <div class="form-group">
+                        <label for="dmLabel" class="form-label">显示名称</label>
+                        <input id="dmLabel" class="form-input" maxlength="120" placeholder="例如 应用安全" oninput="markDomainDirty()">
+                    </div>
+                </div>
+                <div class="form-grid-2">
+                    <div class="form-group">
+                        <label for="dmVersion" class="form-label">词典版本</label>
+                        <input id="dmVersion" type="number" min="1" step="1" class="form-input" value="1" oninput="markDomainDirty()">
+                    </div>
+                    <div class="form-group">
+                        <label for="dmScope" class="form-label">保存位置</label>
+                        <select id="dmScope" class="form-input" onchange="updateDomainDeleteButton()">
+                            <option value="global">全局覆盖</option>
+                            <option value="workspace">工作区覆盖</option>
+                        </select>
+                    </div>
+                </div>
+                <div id="domainSourceInfo" class="domain-source"></div>
+                <div class="domain-section-head">
+                    <span class="form-label">词条</span>
+                    <button type="button" class="link-btn" onclick="addDomainEntry()">+ 新增词条</button>
+                </div>
+                <div id="domainEntryList" class="domain-entry-tabs"></div>
+                <div id="domainEntryEditor" class="domain-entry-editor">
+                    <div class="form-grid-2">
+                        <div class="form-group">
+                            <label for="deId" class="form-label">词条标识（仅内部管理）</label>
+                            <input id="deId" class="form-input" maxlength="128" oninput="updateDomainEntryField('id', this.value)">
+                        </div>
+                        <div class="form-group">
+                            <label for="deCanonical" class="form-label">公开术语 / 关系名称</label>
+                            <input id="deCanonical" class="form-input" maxlength="240" oninput="updateDomainEntryField('canonical', this.value)">
+                        </div>
+                    </div>
+                    <div class="form-grid-2">
+                        <div class="form-group">
+                            <label for="deAliases" class="form-label">等价表达候选（每行一项）</label>
+                            <textarea id="deAliases" rows="2" class="form-input" oninput="updateDomainEntryField('aliases', this.value)"></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label for="deTriggers" class="form-label">相关关键词（用于选出词条，每行一项）</label>
+                            <textarea id="deTriggers" rows="2" class="form-input" oninput="updateDomainEntryField('triggers', this.value)"></textarea>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="deUseWhen" class="form-label">适用条件（必填，每行一项）</label>
+                        <textarea id="deUseWhen" rows="3" class="form-input" placeholder="何时可采用这个表达；何时必须保留原文" oninput="updateDomainEntryField('use_when', this.value)"></textarea>
+                    </div>
+                    <div class="form-grid-2">
+                        <div class="form-group">
+                            <label for="dePreserve" class="form-label">原文出现时必须保留（每行一项）</label>
+                            <textarea id="dePreserve" rows="3" class="form-input" oninput="updateDomainEntryField('preserve', this.value)"></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label for="deDoNotMerge" class="form-label">不可混淆的概念（每行一项）</label>
+                            <textarea id="deDoNotMerge" rows="3" class="form-input" oninput="updateDomainEntryField('do_not_merge_with', this.value)"></textarea>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <div class="domain-section-head">
+                            <span class="form-label">公共符号及其含义</span>
+                            <button type="button" class="link-btn" onclick="addDomainSymbol()">+ 添加符号</button>
+                        </div>
+                        <div class="domain-note">从公共符号目录选用；标准含义只读。该领域的使用前提请写在“适用条件”，不能重新定义符号。</div>
+                        <div id="domainSymbolRows" class="domain-row-list"></div>
+                    </div>
+                    <div class="form-group">
+                        <div class="domain-section-head">
+                            <span class="form-label">输入 → 输出示例</span>
+                            <button type="button" class="link-btn" onclick="addDomainExample()">+ 添加示例</button>
+                        </div>
+                        <div id="domainExampleRows" class="domain-row-list"></div>
+                    </div>
+                    <div><button id="deleteDomainEntryBtn" type="button" class="btn btn-danger" onclick="removeDomainEntry()">删除当前词条</button></div>
+                </div>
+                <details ontoggle="if (this.open) refreshDomainJSON()">
+                    <summary class="form-label" style="cursor: pointer;">高级：查看完整 JSON</summary>
+                    <textarea id="domainJSON" readonly rows="10" class="form-input" aria-label="领域完整 JSON" style="margin-top: 8px;"></textarea>
+                </details>
+                <div class="modal-footer">
+                    <button id="deleteDomainBtn" type="button" class="btn btn-danger" onclick="deleteDomainPack()" disabled>内置领域不可删除</button>
+                    <button id="saveDomainBtn" type="button" class="btn btn-primary" onclick="saveDomainPack()">保存并加载领域</button>
                 </div>
             </div>
         </div>
@@ -1202,14 +1355,14 @@
         document.getElementById('zenIcon').textContent = isZen ? '⌘' : '◎';
     }
 
-    // ==================== 4. 方言词典热插拔管理 ====================
+    // ==================== 4. 输出预设与领域表达库 ====================
     let dialectList = [];
 
     async function hotReloadDialects(showToast = false) {
         try {
             const data = await fetchJSON('/api/dialects');
             dialectList = data.dialects || [];
-            document.getElementById('dialectDirLabel').textContent = `${data.global_dir} | ${data.workspace_dir}`;
+            document.getElementById('dialectDirLabel').textContent = '~/.babel_dialects | ./dialects';
 
             const modeSel = document.getElementById('modeSelect');
             const currentVal = modeSel.value || 'extreme';
@@ -1221,19 +1374,20 @@
             });
 
             renderDialectSidebar();
+            updateDomainSelectionHint();
             if (showToast) {
                 const btn = document.getElementById('runBtn');
                 const orig = btn.textContent;
-                btn.textContent = `已加载 ${dialectList.length} 套方言 ✓`;
+                btn.textContent = `已加载 ${dialectList.length} 套预设`;
                 setTimeout(() => { if (!btn.disabled) btn.textContent = orig; }, 1400);
             }
         } catch (e) {
-            console.error('加载方言失败:', e);
+            console.error('加载输出预设失败:', e);
         }
     }
 
     async function resetBuiltinDialects() {
-        if (!confirm('将全局目录下的内置默认方言更新为最新零码本算子版本，是否继续？')) return;
+        if (!confirm('将全局目录中的内置输出预设覆盖为当前版本；自定义的同名修改会被替换。继续？')) return;
         try {
             await fetchJSON('/api/dialects', {
                 method: 'POST',
@@ -1243,7 +1397,7 @@
             await hotReloadDialects(false);
             const cur = document.getElementById('modeSelect').value;
             if (cur) selectDialectForEdit(cur);
-            alert('内置默认方言已更新！');
+            alert('内置输出预设已更新。');
         } catch (e) {
             alert(e.message);
         }
@@ -1258,13 +1412,14 @@
             btn.type = 'button';
             btn.className = 'dialect-item';
             btn.onclick = () => selectDialectForEdit(d.name);
-            btn.innerHTML = `
-          <div style="display: flex; justify-content: space-between; align-items: center;">
-            <span style="color: var(--cyan-light); font-family: var(--font-mono); font-weight: 600; font-size: 12px;">${d.name}.md</span>
-            <span style="font-size: 10px; padding: 1px 6px; border-radius: 4px; background: rgba(30,41,59,0.9); color: var(--text-secondary);">${d.source}</span>
-          </div>
-          <span style="color: var(--text-primary); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${d.label}</span>
-        `;
+            const name = document.createElement('span');
+            name.style.color = 'var(--cyan-light)';
+            name.textContent = `${d.name}.md · ${d.source}`;
+            const label = document.createElement('span');
+            label.className = 'domain-note';
+            label.textContent = d.label;
+            btn.appendChild(name);
+            btn.appendChild(label);
             box.appendChild(btn);
         });
     }
@@ -1290,7 +1445,7 @@
         const label = document.getElementById('dlLabel').value.trim();
         const prompt = document.getElementById('dlPrompt').value.trim();
         const scope = document.querySelector('input[name="dlScope"]:checked')?.value || 'global';
-        if (!name || !prompt) return alert('请填写方言标识与编译规则');
+        if (!name || !prompt) return alert('请填写预设标识与输出风格提示');
 
         try {
             await fetchJSON('/api/dialects', {
@@ -1300,7 +1455,8 @@
             });
             await hotReloadDialects(false);
             document.getElementById('modeSelect').value = name;
-            alert(`方言 [${name}.md] 已保存并热重载生效！`);
+            updateDomainSelectionHint();
+            alert(`输出预设 [${name}.md] 已保存并加载。`);
         } catch (e) {
             alert(e.message);
         }
@@ -1309,7 +1465,7 @@
     async function deleteDialect() {
         const name = document.getElementById('dlName').value.trim();
         if (!name) return;
-        if (!confirm(`确定删除自定义方言 [${name}.md] 吗？`)) return;
+        if (!confirm(`确定删除输出预设覆盖 [${name}.md] 吗？同名内置预设仍会保留。`)) return;
         try {
             await fetchJSON('/api/dialects', {
                 method: 'POST',
@@ -1330,6 +1486,464 @@
                 const cur = document.getElementById('modeSelect').value;
                 if (cur) selectDialectForEdit(cur);
             });
+        }
+    }
+
+    let domainPacks = [];
+    let publicSymbols = [];
+    let selectedDomains = new Set();
+    let domainDraft = null;
+    let domainEntryIndex = 0;
+    let domainEditingName = '';
+    let domainLibraryDirty = false;
+    let domainSavePending = false;
+    const domainEntryFields = {
+        id: 'deId', canonical: 'deCanonical', aliases: 'deAliases', triggers: 'deTriggers',
+        use_when: 'deUseWhen', preserve: 'dePreserve', do_not_merge_with: 'deDoNotMerge'
+    };
+
+    function showDomainMessage(message, kind = '') {
+        const box = document.getElementById('domainStatus');
+        box.textContent = message;
+        box.className = `audit-bar domain-status${kind ? ` is-${kind}` : ''}${message ? '' : ' hidden'}`;
+    }
+
+    function updateDomainSelectionHint() {
+        const hint = document.getElementById('domainSelectionHint');
+        if (!hint) return;
+        const unavailable = [...selectedDomains].filter(name => !domainPacks.some(pack => pack.name === name));
+        if (unavailable.length) {
+            hint.textContent = `所选领域当前不可用：${unavailable.join('、')}。请恢复领域文件或取消对应选择；编译不会静默忽略它们。`;
+            return;
+        }
+        const implicitSecurity = document.getElementById('modeSelect').value === 'code-audit' && selectedDomains.size === 0;
+        hint.textContent = implicitSecurity ?
+            '公共逻辑始终参与。当前未显式选领域，code-audit 预设默认启用“应用安全”；勾选领域后按所选范围编译。' :
+            '公共逻辑始终参与；只选用与原文相关的词条，保留实体和关系，不增加业务要求。';
+    }
+
+    function renderDomainChoices() {
+        const box = document.getElementById('domainChoices');
+        box.replaceChildren();
+        const unavailable = [...selectedDomains].filter(name => !domainPacks.some(pack => pack.name === name))
+            .map(name => ({ name, label: `${name}（不可用）` }));
+        const packs = [{ name: 'common', label: '公共逻辑（始终启用）' }, ...domainPacks.filter(p => p.name !== 'common'), ...unavailable];
+        for (const pack of packs) {
+            const label = document.createElement('label');
+            label.className = 'checkbox-label';
+            const input = document.createElement('input');
+            input.type = 'checkbox';
+            input.value = pack.name;
+            input.checked = pack.name === 'common' || selectedDomains.has(pack.name);
+            input.disabled = pack.name === 'common';
+            input.onchange = () => {
+                input.checked ? selectedDomains.add(pack.name) : selectedDomains.delete(pack.name);
+                updateDomainSelectionHint();
+            };
+            label.appendChild(input);
+            const text = document.createElement('span');
+            text.textContent = pack.label;
+            label.appendChild(text);
+            box.appendChild(label);
+        }
+        updateDomainSelectionHint();
+    }
+
+    async function loadDomainPacks(reload = false) {
+        if (reload) await fetchJSON('/api/domains', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'reload' })
+        });
+        const data = await fetchJSON('/api/domains');
+        if (!Array.isArray(data.domains) || data.domains.some(pack =>
+            typeof pack.name !== 'string' || typeof pack.label !== 'string' || !Array.isArray(pack.entries))) {
+            throw new Error('领域库响应格式无效。');
+        }
+        domainPacks = data.domains;
+        publicSymbols = Array.isArray(data.public_symbols) ? data.public_symbols.filter(item =>
+            typeof item.symbol === 'string' && typeof item.meaning === 'string') : [];
+        const warning = document.getElementById('domainWarning');
+        warning.textContent = Array.isArray(data.warning) ? data.warning.join('\n') : data.warning || '';
+        warning.classList.toggle('hidden', !warning.textContent);
+        renderDomainChoices();
+        renderDomainSidebar();
+        return data;
+    }
+
+    function renderDomainSidebar() {
+        const box = document.getElementById('domainPackList');
+        box.replaceChildren();
+        for (const pack of domainPacks) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'dialect-item' + (domainEditingName === pack.name ? ' active' : '');
+            button.onclick = () => selectDomainPackForEdit(pack.name);
+            const label = document.createElement('span');
+            label.style.color = 'var(--cyan-light)';
+            label.textContent = pack.label;
+            const info = document.createElement('span');
+            info.className = 'domain-note';
+            const source = { builtin: '内置', global: '全局覆盖', workspace: '工作区覆盖' }[pack.source] || '来源未知';
+            info.textContent = `${pack.name} · v${pack.version} · ${source} · ${pack.entries.length} 词条`;
+            button.appendChild(label);
+            button.appendChild(info);
+            box.appendChild(button);
+        }
+    }
+
+    function mayDiscardDomainDraft() {
+        return !domainSavePending && (!domainLibraryDirty || confirm('领域库有未保存的修改。放弃这些修改并继续？'));
+    }
+
+    function setDomainDraft(pack, editingName) {
+        domainDraft = JSON.parse(JSON.stringify(pack));
+        domainEditingName = editingName;
+        domainEntryIndex = 0;
+        domainLibraryDirty = false;
+        document.getElementById('dmName').value = pack.name || '';
+        document.getElementById('dmLabel').value = pack.label || '';
+        document.getElementById('dmVersion').value = pack.version || 1;
+        document.getElementById('dmScope').value = pack.source === 'workspace' ? 'workspace' : 'global';
+        const source = { builtin: '内置；保存后建立同名覆盖', global: '全局覆盖', workspace: '工作区覆盖' }[pack.source] || '新领域，尚未保存';
+        document.getElementById('domainSourceInfo').textContent = `当前来源：${source}。修改后需保存；编译只读取已保存的版本。`;
+        showDomainMessage('');
+        renderDomainSidebar();
+        renderDomainEntryList();
+        renderDomainEntryEditor();
+        updateDomainDeleteButton();
+        refreshDomainJSON();
+    }
+
+    function selectDomainPackForEdit(name, discard = false) {
+        const pack = domainPacks.find(item => item.name === name);
+        if (!pack || (!discard && !mayDiscardDomainDraft())) return;
+        setDomainDraft(pack, name);
+    }
+
+    function newDomainEntry(id = 'new-entry') {
+        return { id, canonical: '', aliases: [], triggers: [], use_when: [], preserve: [], do_not_merge_with: [], symbols: [], examples: [] };
+    }
+
+    function prepareNewDomain() {
+        if (!mayDiscardDomainDraft()) return;
+        setDomainDraft({ schema_version: 1, name: '', label: '', version: 1, entries: [newDomainEntry()] }, '');
+        markDomainDirty();
+        document.getElementById('dmName').focus();
+    }
+
+    function currentDomainEntry() { return domainDraft?.entries[domainEntryIndex]; }
+
+    function markDomainDirty() {
+        if (domainSavePending || !domainDraft) return;
+        domainLibraryDirty = true;
+        showDomainMessage('未保存：编译仍使用已保存的版本。');
+        updateDomainDeleteButton();
+        refreshDomainJSON();
+    }
+
+    function updateDomainEntryField(field, value) {
+        const entry = currentDomainEntry();
+        if (!entry || domainSavePending || !Object.hasOwn(domainEntryFields, field)) return;
+        entry[field] = ['id', 'canonical'].includes(field) ? value : value.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+        if (field === 'id' || field === 'canonical') renderDomainEntryList();
+        markDomainDirty();
+    }
+
+    function renderDomainEntryList() {
+        const box = document.getElementById('domainEntryList');
+        box.replaceChildren();
+        (domainDraft?.entries || []).forEach((entry, index) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'btn' + (index === domainEntryIndex ? ' active' : '');
+            button.textContent = entry.canonical || entry.id || `词条 ${index + 1}`;
+            button.onclick = () => {
+                if (domainSavePending) return;
+                domainEntryIndex = index;
+                renderDomainEntryList();
+                renderDomainEntryEditor();
+            };
+            box.appendChild(button);
+        });
+    }
+
+    function renderDomainEntryEditor() {
+        const entry = currentDomainEntry();
+        document.getElementById('domainEntryEditor').classList.toggle('hidden', !entry);
+        if (!entry) return;
+        for (const [field, id] of Object.entries(domainEntryFields)) {
+            document.getElementById(id).value = Array.isArray(entry[field]) ? entry[field].join('\n') : entry[field] || '';
+        }
+        document.getElementById('deleteDomainEntryBtn').disabled = domainDraft.entries.length <= 1;
+        renderDomainSymbolRows();
+        renderDomainExampleRows();
+    }
+
+    function addDomainEntry() {
+        if (!domainDraft || domainSavePending) return;
+        if (domainDraft.entries.length >= 128) return showDomainMessage('每个领域最多 128 个词条。', 'error');
+        let index = domainDraft.entries.length + 1;
+        while (domainDraft.entries.some(entry => entry.id === `entry-${index}`)) index++;
+        domainDraft.entries.push(newDomainEntry(`entry-${index}`));
+        domainEntryIndex = domainDraft.entries.length - 1;
+        renderDomainEntryList();
+        renderDomainEntryEditor();
+        markDomainDirty();
+        document.getElementById('deCanonical').focus();
+    }
+
+    function removeDomainEntry() {
+        if (!domainDraft || domainSavePending || domainDraft.entries.length <= 1) return;
+        domainDraft.entries.splice(domainEntryIndex, 1);
+        domainEntryIndex = Math.min(domainEntryIndex, domainDraft.entries.length - 1);
+        renderDomainEntryList();
+        renderDomainEntryEditor();
+        markDomainDirty();
+    }
+
+    function renderDomainSymbolRows() {
+        const box = document.getElementById('domainSymbolRows');
+        box.replaceChildren();
+        const entry = currentDomainEntry();
+        if (!entry) return;
+        (entry.symbols || []).forEach((symbol, index) => {
+            const row = document.createElement('div');
+            row.className = 'domain-row';
+            const select = document.createElement('select');
+            select.className = 'form-input';
+            select.setAttribute('aria-label', `符号 ${index + 1}：公共符号`);
+            const empty = document.createElement('option');
+            empty.value = '';
+            empty.textContent = '请选择';
+            select.appendChild(empty);
+            for (const item of publicSymbols) {
+                const option = document.createElement('option');
+                option.value = item.symbol;
+                option.textContent = item.symbol;
+                select.appendChild(option);
+            }
+            const known = publicSymbols.find(item => item.symbol === symbol.symbol);
+            if (symbol.symbol && !known) {
+                const unsupported = document.createElement('option');
+                unsupported.value = symbol.symbol;
+                unsupported.textContent = `${symbol.symbol}（不受支持）`;
+                select.appendChild(unsupported);
+            }
+            select.value = symbol.symbol || '';
+            const meaning = document.createElement('input');
+            meaning.className = 'form-input';
+            meaning.readOnly = true;
+            meaning.value = symbol.meaning || '';
+            meaning.placeholder = '选用后显示标准含义';
+            meaning.setAttribute('aria-label', `符号 ${index + 1}：标准含义（只读）`);
+            select.onchange = () => {
+                const selected = publicSymbols.find(item => item.symbol === select.value);
+                symbol.symbol = selected?.symbol || '';
+                symbol.meaning = selected?.meaning || '';
+                renderDomainSymbolRows();
+                markDomainDirty();
+            };
+            row.appendChild(select);
+            row.appendChild(meaning);
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'btn btn-danger';
+            remove.textContent = '移除';
+            remove.setAttribute('aria-label', `移除符号 ${index + 1}`);
+            remove.onclick = () => { entry.symbols.splice(index, 1); renderDomainSymbolRows(); markDomainDirty(); };
+            row.appendChild(remove);
+            box.appendChild(row);
+            if (symbol.symbol && (!known || known.meaning !== symbol.meaning)) {
+                const warning = document.createElement('div');
+                warning.className = 'domain-note';
+                warning.style.color = '#fda4af';
+                warning.textContent = `符号 ${index + 1} 不在目录中或含义与标准不一致，请重新从目录选用后再保存。`;
+                box.appendChild(warning);
+            }
+        });
+        if (!entry.symbols?.length) box.textContent = '此词条暂未指定公共符号，可直接使用领域术语。';
+    }
+
+    function addDomainSymbol() {
+        const entry = currentDomainEntry();
+        if (!entry || domainSavePending) return;
+        entry.symbols ||= [];
+        if (entry.symbols.length >= 16) return showDomainMessage('每个词条最多 16 个公共符号。', 'error');
+        entry.symbols.push({ symbol: '', meaning: '' });
+        renderDomainSymbolRows();
+        markDomainDirty();
+    }
+
+    function renderDomainExampleRows() {
+        const box = document.getElementById('domainExampleRows');
+        box.replaceChildren();
+        const entry = currentDomainEntry();
+        if (!entry) return;
+        (entry.examples || []).forEach((example, index) => {
+            const row = document.createElement('div');
+            row.className = 'domain-example';
+            for (const [field, label] of [['input', '输入原文'], ['output', '等义候选']]) {
+                const title = document.createElement('label');
+                title.className = 'form-group';
+                const caption = document.createElement('span');
+                caption.className = 'form-label';
+                caption.textContent = `示例 ${index + 1} · ${label}`;
+                const input = document.createElement('textarea');
+                input.className = 'form-input';
+                input.rows = 2;
+                input.value = example[field] || '';
+                input.setAttribute('aria-label', `示例 ${index + 1}：${label}`);
+                input.oninput = () => { example[field] = input.value; markDomainDirty(); };
+                title.appendChild(caption);
+                title.appendChild(input);
+                row.appendChild(title);
+            }
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'btn btn-danger';
+            remove.textContent = `移除示例 ${index + 1}`;
+            remove.onclick = () => { entry.examples.splice(index, 1); renderDomainExampleRows(); markDomainDirty(); };
+            row.appendChild(remove);
+            box.appendChild(row);
+        });
+        if (!entry.examples?.length) box.textContent = '尚无示例。示例应保留原文已有信息，不补写业务要求。';
+    }
+
+    function addDomainExample() {
+        const entry = currentDomainEntry();
+        if (!entry || domainSavePending) return;
+        entry.examples ||= [];
+        if (entry.examples.length >= 4) return showDomainMessage('每个词条最多 4 组示例。', 'error');
+        entry.examples.push({ input: '', output: '' });
+        renderDomainExampleRows();
+        markDomainDirty();
+    }
+
+    function collectDomainPack() {
+        return {
+            schema_version: 1,
+            name: document.getElementById('dmName').value.trim(),
+            label: document.getElementById('dmLabel').value.trim(),
+            version: Number(document.getElementById('dmVersion').value),
+            entries: JSON.parse(JSON.stringify(domainDraft?.entries || []))
+        };
+    }
+
+    function refreshDomainJSON() {
+        document.getElementById('domainJSON').value = domainDraft ? JSON.stringify(collectDomainPack(), null, 2) : '';
+    }
+
+    function validateDomainEditor(pack) {
+        if (!/^[a-z][a-z0-9_-]{0,63}$/.test(pack.name)) throw new Error('领域标识须以小写字母开头，只含小写字母、数字、下划线或连字符。');
+        if (!pack.label) throw new Error('请填写领域显示名称。');
+        if (!Number.isSafeInteger(pack.version) || pack.version < 1) throw new Error('词典版本必须为正整数。');
+        if (!pack.entries.length) throw new Error('领域至少需要一个词条。');
+        const ids = new Set();
+        for (const entry of pack.entries) {
+            if (!entry.id?.trim() || ids.has(entry.id)) throw new Error('词条标识不能为空或重复。');
+            ids.add(entry.id);
+            if (!entry.canonical?.trim()) throw new Error(`词条 ${entry.id} 缺少公开术语或关系名称。`);
+            if (!entry.use_when?.length) throw new Error(`词条 ${entry.id} 至少需要一条适用条件。`);
+            if ((entry.symbols || []).some(item => !item.symbol.trim() || !item.meaning.trim())) throw new Error(`词条 ${entry.id} 的符号和公开含义都必须填写。`);
+            if ((entry.symbols || []).some(item => !publicSymbols.some(known => known.symbol === item.symbol && known.meaning === item.meaning))) {
+                throw new Error(`词条 ${entry.id} 含有未支持的符号或自定义含义，请从公共符号目录重新选择。`);
+            }
+            if ((entry.examples || []).some(item => !item.input.trim() || !item.output.trim())) throw new Error(`词条 ${entry.id} 的示例输入和输出都必须填写。`);
+        }
+    }
+
+    function updateDomainDeleteButton() {
+        const button = document.getElementById('deleteDomainBtn');
+        const scope = document.getElementById('dmScope').value;
+        const pack = domainPacks.find(item => item.name === domainEditingName);
+        const sameName = document.getElementById('dmName').value.trim() === domainEditingName;
+        const canDelete = pack && pack.source === scope && sameName;
+        button.disabled = domainSavePending || !canDelete;
+        button.textContent = canDelete ? `删除${scope === 'workspace' ? '工作区' : '全局'}覆盖` :
+            pack?.source === 'builtin' ? '内置领域不可删除' : '此位置无当前覆盖';
+    }
+
+    function setDomainBusy(busy) {
+        domainSavePending = busy;
+        document.getElementById('domainModal').querySelectorAll('input, textarea, select, button').forEach(el => el.disabled = busy);
+        if (!busy) {
+            updateDomainDeleteButton();
+            document.getElementById('deleteDomainEntryBtn').disabled = (domainDraft?.entries.length || 0) <= 1;
+        }
+    }
+
+    async function saveDomainPack() {
+        if (!domainDraft || domainSavePending) return;
+        try {
+            const pack = collectDomainPack();
+            validateDomainEditor(pack);
+            const scope = document.getElementById('dmScope').value;
+            setDomainBusy(true);
+            showDomainMessage('正在保存领域…');
+            await fetchJSON('/api/domains', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'save', scope, domain: pack }) });
+            await loadDomainPacks();
+            selectDomainPackForEdit(pack.name, true);
+            const effective = domainPacks.find(item => item.name === pack.name);
+            showDomainMessage(effective?.source !== scope ?
+                '保存成功；当前生效的是更高优先级的覆盖。请检查当前来源。' :
+                '领域已保存并加载。勾选该领域后用于编译；示例与词条尚不代表跨模型验证结果。', 'passed');
+        } catch (error) {
+            showDomainMessage(`保存失败：${error.message}`, 'error');
+        } finally {
+            setDomainBusy(false);
+        }
+    }
+
+    async function deleteDomainPack() {
+        if (domainSavePending || document.getElementById('deleteDomainBtn').disabled) return;
+        const name = domainEditingName;
+        const scope = document.getElementById('dmScope').value;
+        if (!confirm(`删除 ${name} 的${scope === 'workspace' ? '工作区' : '全局'}覆盖？下一层同名领域会重新生效；未保存修改会丢弃。`)) return;
+        try {
+            setDomainBusy(true);
+            await fetchJSON('/api/domains', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'delete', scope, name }) });
+            await loadDomainPacks();
+            if (!domainPacks.some(pack => pack.name === name)) {
+                selectedDomains.delete(name);
+                renderDomainChoices();
+            }
+            const next = domainPacks.find(pack => pack.name === name) || domainPacks[0];
+            if (next) selectDomainPackForEdit(next.name, true);
+            showDomainMessage('覆盖已删除；当前显示重新加载后的生效版本。', 'passed');
+        } catch (error) {
+            showDomainMessage(`删除失败：${error.message}`, 'error');
+        } finally {
+            setDomainBusy(false);
+        }
+    }
+
+    async function reloadDomainLibrary() {
+        if (!mayDiscardDomainDraft()) return;
+        try {
+            const name = domainEditingName;
+            await loadDomainPacks(true);
+            const next = domainPacks.find(pack => pack.name === name) || domainPacks[0];
+            if (next) selectDomainPackForEdit(next.name, true);
+            showDomainMessage('领域库已从磁盘重载。');
+        } catch (error) {
+            showDomainMessage(`重载失败：${error.message}`, 'error');
+        }
+    }
+
+    async function toggleDomainModal(show) {
+        if (domainSavePending) return;
+        document.getElementById('domainModal').classList.toggle('hidden', !show);
+        if (!show) return;
+        try {
+            await loadDomainPacks();
+            if (!domainLibraryDirty && domainPacks.length) {
+                const current = domainPacks.find(pack => pack.name === domainEditingName) || domainPacks[0];
+                selectDomainPackForEdit(current.name, true);
+            }
+        } catch (error) {
+            showDomainMessage(`加载领域失败：${error.message}`, 'error');
         }
     }
 
@@ -1700,6 +2314,7 @@
                 body: JSON.stringify({
                     text,
                     mode: document.getElementById('modeSelect').value,
+                    domains: [...selectedDomains],
                     verify: strictGate,
                     strict_gate: strictGate,
                     no_cache: noCache
@@ -1842,6 +2457,7 @@
                 addTag(item.protocol === 'anthropic' ? 'ANTHROPIC' : 'OPENAI',
                     item.protocol === 'anthropic' ? 'tag tag-anthropic' : 'tag tag-openai');
                 if (item.dialect) addTag(item.dialect, 'tag tag-dialect');
+                if (Array.isArray(item.domains) && item.domains.length) addTag(`领域：${item.domains.join(' · ')}`, 'tag tag-dialect');
                 addTag(item.role || '', roleClass);
                 const adopted = item.decision === 'adopted';
                 const keptOriginal = item.decision === 'kept_original';
@@ -1908,6 +2524,10 @@
     }, 3000);
 
     hotReloadDialects(false);
+    loadDomainPacks().catch(error => {
+        document.getElementById('domainChoices').textContent = '领域加载失败';
+        document.getElementById('domainSelectionHint').textContent = `无法加载领域库：${error.message}。可打开领域表达库重试。`;
+    });
     loadInitConfig();
 </script>
 </body>

@@ -564,7 +564,10 @@ func doCompile(req CompileReq) (CompileResp, error) {
 	}
 	p = effectiveCompilerProfile(p)
 
-	dialect := getDialect(req.Mode)
+	dialect, err := composeDialect(req.Mode, req.Domains, req.Text)
+	if err != nil {
+		return CompileResp{}, err
+	}
 	cacheKey := makeCacheKey(dialect, p, req.Text)
 	readCandidate := func() (CompileResp, bool) {
 		cacheMutex.Lock()
@@ -619,7 +622,6 @@ func doCompile(req CompileReq) (CompileResp, error) {
 	}
 
 	var out CompileResp
-	var err error
 	if req.NoCache {
 		out, err = generate() // neither cache access nor in-flight result sharing
 	} else {

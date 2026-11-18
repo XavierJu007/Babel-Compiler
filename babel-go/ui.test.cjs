@@ -40,6 +40,9 @@ class Element {
     set innerHTML(value) { this._text = String(value); this.children = []; }
     appendChild(child) { this.children.push(child); return child; }
     replaceChildren(...children) { this._text = ''; this.children = children; }
+    setAttribute(name, value) { this[name] = value; }
+    querySelectorAll() { return []; }
+    focus() {}
 }
 
 function setup(responses = []) {
@@ -63,6 +66,7 @@ function setup(responses = []) {
                 text: async () => response.raw ?? JSON.stringify(response.data) };
         },
         setTimeout: () => {},
+        confirm: () => true,
         navigator: { clipboard: { writeText: async () => {} } },
         alert: message => { throw new Error(`Unexpected alert: ${message}`); }
     });
@@ -199,4 +203,138 @@ test('proxy decisions and reasons are rendered as text, and refresh errors are v
     await context.loadLogs();
     assert.equal(get('logsError').classList.contains('hidden'), false);
     assert.match(get('logsError').textContent, /offline.*当前记录可能过期/);
+});
+
+function domainPack(name, source = 'builtin') {
+    return { schema_version: 1, name, label: name === 'common' ? '公共逻辑' : 'API 契约',
+        version: 1, source, entries: [{ id: 'protocol', canonical: '接口契约',
+            aliases: ['HTTP 方法'], triggers: ['POST'], use_when: ['原文规定接口方法时'],
+            preserve: ['方法及路径'], do_not_merge_with: ['GET 与 POST'],
+            symbols: [{ symbol: '∈', meaning: '集合成员' }],
+            examples: [{ input: '缺少字段时拒绝请求', output: '缺少字段：拒绝请求' }] }] };
+}
+
+function domainPayload(domains) {
+    return { domains, public_symbols: [{ symbol: '∈', meaning: '集合成员' }, { symbol: '!=', meaning: '不等于' }] };
+}
+
+test('domain selection is independent of the output preset and common is implicit', async () => {
+    const { context, get, requests } = setup([
+        { data: domainPayload([domainPack('common'), domainPack('api-contract')]) }, { data: result() }
+    ]);
+    await context.loadDomainPacks();
+    const labels = get('domainChoices').children;
+    assert.equal(labels[0].children[0].checked, true);
+    assert.equal(labels[0].children[0].disabled, true);
+    const input = labels[1].children[0];
+    input.checked = true;
+    input.onchange();
+    get('modeSelect').value = 'en-terse';
+    await context.runCompile();
+    const body = JSON.parse(requests[1].options.body);
+    assert.equal(body.mode, 'en-terse');
+    assert.deepEqual(body.domains, ['api-contract']);
+});
+
+test('domain field edits, public symbols and examples survive entry navigation and save', async () => {
+    const base = domainPack('api-contract');
+    const saved = structuredClone(base);
+    saved.source = 'global';
+    const { context, get, requests } = setup([
+        { data: domainPayload([domainPack('common'), base]) },
+        { data: { success: true } }, { data: domainPayload([domainPack('common'), saved]) }
+    ]);
+    await context.loadDomainPacks();
+    context.selectDomainPackForEdit('api-contract');
+    context.updateDomainEntryField('canonical', '请求契约');
+    context.updateDomainEntryField('preserve', '方法及路径\n字段大小写\n');
+    context.addDomainSymbol();
+    const symbolInputs = get('domainSymbolRows').children[1].children;
+    symbolInputs[0].value = '!=';
+    symbolInputs[0].onchange();
+    assert.equal(get('domainSymbolRows').children[1].children[1].readOnly, true);
+    assert.equal(get('domainSymbolRows').children[1].children[1].value, '不等于');
+    context.addDomainExample();
+    const example = get('domainExampleRows').children[1];
+    example.children[0].children[1].value = '值不是 null 才处理';
+    example.children[0].children[1].oninput();
+    example.children[1].children[1].value = '处理前提：值 != null';
+    example.children[1].children[1].oninput();
+    context.addDomainEntry();
+    context.updateDomainEntryField('canonical', '备用词条');
+    context.updateDomainEntryField('use_when', '仅用于示例');
+    get('domainEntryList').children[0].onclick();
+    assert.equal(get('deCanonical').value, '请求契约');
+    await context.saveDomainPack();
+    const request = JSON.parse(requests[1].options.body);
+    assert.equal(request.action, 'save');
+    assert.equal(request.scope, 'global');
+    assert.equal(request.domain.source, undefined);
+    assert.equal(request.domain.entries.length, 2);
+    assert.deepEqual(request.domain.entries[0].preserve, ['方法及路径', '字段大小写']);
+    assert.deepEqual(request.domain.entries[0].symbols[1], { symbol: '!=', meaning: '不等于' });
+    assert.equal(request.domain.entries[0].examples[1].output, '处理前提：值 != null');
+    assert.match(get('domainStatus').textContent, /已保存并加载/);
+});
+
+test('domain editor refuses incomplete entries and never deletes a builtin', async () => {
+    const { context, get, requests } = setup([{ data: domainPayload([domainPack('common')]) }]);
+    await context.loadDomainPacks();
+    context.selectDomainPackForEdit('common');
+    assert.equal(get('deleteDomainBtn').disabled, true);
+    await context.deleteDomainPack();
+    context.updateDomainEntryField('use_when', '');
+    await context.saveDomainPack();
+    assert.equal(requests.length, 1);
+    assert.match(get('domainStatus').textContent, /适用条件/);
+    assert.match(get('domainStatus').className, /is-error/);
+});
+
+test('deleting a scoped override reloads the builtin and preserves domain selection', async () => {
+    const { context, get, requests } = setup([
+        { data: domainPayload([domainPack('common'), domainPack('api-contract', 'workspace')]) },
+        { data: { success: true } },
+        { data: domainPayload([domainPack('common'), domainPack('api-contract')]) }
+    ]);
+    await context.loadDomainPacks();
+    const choice = get('domainChoices').children[1].children[0];
+    choice.checked = true;
+    choice.onchange();
+    context.selectDomainPackForEdit('api-contract');
+    assert.equal(get('dmScope').value, 'workspace');
+    assert.equal(get('deleteDomainBtn').disabled, false);
+    await context.deleteDomainPack();
+    assert.deepEqual(JSON.parse(requests[1].options.body), { action: 'delete', scope: 'workspace', name: 'api-contract' });
+    assert.equal(get('deleteDomainBtn').disabled, true);
+    assert.match(get('domainSourceInfo').textContent, /内置/);
+    assert.equal(get('domainChoices').children[1].children[0].checked, true);
+});
+
+test('unsupported or redefined symbols remain visible errors and cannot be saved', async () => {
+    const modified = domainPack('api-contract');
+    modified.entries[0].symbols = [{ symbol: 'A17', meaning: '任意业务段落' }, { symbol: '∈', meaning: '删除数据' }];
+    const { context, get, requests } = setup([{ data: domainPayload([modified]) }]);
+    await context.loadDomainPacks();
+    context.selectDomainPackForEdit('api-contract');
+    assert.match(get('domainSymbolRows').textContent, /不在目录中或含义与标准不一致/);
+    await context.saveDomainPack();
+    assert.equal(requests.length, 1);
+    assert.match(get('domainStatus').textContent, /未支持的符号或自定义含义/);
+});
+
+test('a disappeared selected domain stays explicit instead of silently changing the compile request', async () => {
+    const { context, get, requests } = setup([
+        { data: domainPayload([domainPack('common'), domainPack('api-contract')]) },
+        { data: domainPayload([domainPack('common')]) }, { status: 400, data: { detail: '领域不存在' } }
+    ]);
+    await context.loadDomainPacks();
+    const choice = get('domainChoices').children[1].children[0];
+    choice.checked = true;
+    choice.onchange();
+    await context.loadDomainPacks();
+    assert.match(get('domainChoices').textContent, /api-contract（不可用）/);
+    assert.match(get('domainSelectionHint').textContent, /不会静默忽略/);
+    await context.runCompile();
+    assert.deepEqual(JSON.parse(requests[2].options.body).domains, ['api-contract']);
+    assert.equal(get('invariantCapsules').dataset.validationStatus, 'error');
 });

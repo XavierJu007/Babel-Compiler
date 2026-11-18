@@ -9,8 +9,8 @@ Babel 的思路是：把句子里展开叙述的关系，整理为语义图的�
 ## 能做什么
 
 - 压缩长提示词、SOP、API 契约和工具描述中的重复措辞，保留条件、关系与约束。
-- 通过 Web UI、命令行或 HTTP API 编译文本；支持自定义编译提示词模板。
-- 作为 OpenAI Chat Completions / Anthropic Messages 代理，在转发请求前尝试压缩，编译报错时保留原文。
+- 独立组合领域表达库与输出预设；通过 Web UI、命令行或 HTTP API 编译文本。
+- 作为 OpenAI Chat Completions / Anthropic Messages 代理，检查失败或候选未减少估算 Token 时保留原文。
 
 ### 表达效果示意
 
@@ -28,7 +28,7 @@ Babel 的思路是：把句子里展开叙述的关系，整理为语义图的�
 否则: 禁止修改订单
 ```
 
-这是表达方式示意。实际输出与节省幅度取决于输入和模型；当前 Token 统计为估算，审计结果不代表语义无损保证。独立的领域词条库仍在设计中。
+这是表达方式示意。实际输出与节省幅度取决于输入和模型；当前 Token 统计为估算，审计结果不代表语义无损保证。
 
 ## 怎么用
 
@@ -41,7 +41,7 @@ go build -o bin/babel ./babel-go
 ./bin/babel
 ```
 
-在终端直接启动后，程序会从 `127.0.0.1:8080–8099` 选择可用端口并尝试打开浏览器。在「模型配置中心」填入 Base URL、API Key 和模型名，测试连接并保存，即可粘贴文本编译。
+在终端直接启动后，程序会从 `127.0.0.1:8080–8099` 选择可用端口并尝试打开浏览器。在「模型配置中心」保存 Base URL、API Key 和模型名，选择输出预设与领域，即可粘贴文本编译。内置公共符号、应用安全、API 契约和并发领域，可在「领域表达库」编辑词条。
 
 ### 命令行
 
@@ -51,8 +51,8 @@ go build -o bin/babel ./babel-go
 # 编译一段文本
 ./bin/babel -m token "你的提示词"
 
-# 从文件读取，输出编译结果及审计报告
-./bin/babel -f prompt.md -v
+# 组合领域，从文件读取并执行严格审计
+./bin/babel -m standard -domains application-security,api-contract -gate -f prompt.md
 
 # 只输出编译文本，便于管道使用
 ./bin/babel -q -f prompt.md > compiled.txt
@@ -60,6 +60,7 @@ go build -o bin/babel ./babel-go
 # 查看全部参数与可用模板
 ./bin/babel -h
 ./bin/babel -list-dialects
+./bin/babel -list-domains
 ```
 
 也可通过 `BABEL_API_KEY`、`BABEL_BASE_URL`、`BABEL_MODEL` 配置首次运行的编译服务；已有保存配置时，可在界面修改或使用 CLI 参数覆盖本次编译。
@@ -75,12 +76,13 @@ go build -o bin/babel ./babel-go
 ```bash
 curl http://127.0.0.1:8080/api/compile \
   -H 'Content-Type: application/json' \
-  -d '{"text":"你的提示词","mode":"token","verify":true}'
+  -d '{"text":"你的提示词","mode":"token","domains":["api-contract"],"strict_gate":true}'
 ```
 
 代理使用前，在模型配置中设置最终服务的 `upstream_url`。**配置中的模型用于编译，请求体中的 `model` 用于最终执行。**
 
 客户端请求携带最终服务的认证信息：OpenAI 使用 `Authorization`，Anthropic 使用 `x-api-key`。
+可用 `X-Babel-Dialect` 选择输出预设，`X-Babel-Domains` 以逗号分隔选择领域。
 
 | 客户端协议 | Babel 代理端点 |
 | --- | --- |
@@ -91,7 +93,7 @@ curl http://127.0.0.1:8080/api/compile \
 
 ## 设计与后续改进
 
-[语义图表达与领域词典设计](docs/design/semantic-compression.md) · [演进路线图](docs/plans/ROADMAP.md)
+[领域表达库使用指南](docs/usage/domain-library.md) · [语义图表达与领域词典设计](docs/design/semantic-compression.md)
 
 ## License
 

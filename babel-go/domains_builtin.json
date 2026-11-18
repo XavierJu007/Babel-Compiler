@@ -1,0 +1,558 @@
+[
+  {
+    "schema_version": 1,
+    "name": "common",
+    "label": "公共逻辑与关系",
+    "version": 1,
+    "entries": [
+      {
+        "id": "conditions",
+        "canonical": "条件与逻辑关系",
+        "aliases": [
+          "必要条件",
+          "充分条件",
+          "当且仅当"
+        ],
+        "triggers": [
+          "如果",
+          "若",
+          "仅当",
+          "只要",
+          "并且",
+          "或者",
+          "if",
+          "only if",
+          "and",
+          "or",
+          "unless"
+        ],
+        "use_when": [
+          "原文明确表达命题条件、合取或析取时，才使用对应的公开符号",
+          "保留必要条件与充分条件的方向；无法确定时沿用原文连接词"
+        ],
+        "preserve": [
+          "条件作用对象",
+          "条件分组和作用域",
+          "例外",
+          "排他或与非排他或的区别"
+        ],
+        "do_not_merge_with": [
+          "条件与原因",
+          "逻辑蕴涵与执行顺序",
+          "仅当与只要"
+        ],
+        "symbols": [
+          {
+            "symbol": "∧",
+            "meaning": "命题逻辑合取；不表示先后执行"
+          },
+          {
+            "symbol": "∨",
+            "meaning": "命题逻辑非排他或；原文要求恰好一个时保留该要求"
+          },
+          {
+            "symbol": "⇒",
+            "meaning": "逻辑蕴涵；不作为因果、动作顺序或无条件执行的替代符号"
+          },
+          {
+            "symbol": "⇔",
+            "meaning": "当且仅当；只有原文明确双向条件时使用"
+          }
+        ],
+        "examples": [
+          {
+            "input": "仅在签名有效并且订单未取消时，才允许处理回调",
+            "output": "允许处理回调的必要条件: 签名有效 ∧ 订单未取消"
+          }
+        ]
+      },
+      {
+        "id": "modality",
+        "canonical": "事实否定与规范模态",
+        "aliases": [
+          "禁止",
+          "必须",
+          "允许",
+          "建议"
+        ],
+        "triggers": [
+          "不得",
+          "尚未",
+          "不允许",
+          "not",
+          "must",
+          "must not",
+          "may",
+          "should"
+        ],
+        "use_when": [
+          "原文包含事实否定、义务、许可或建议时，保留各自强度",
+          "¬只用于范围明确的命题否定；权限禁止优先保留禁止或MUST NOT"
+        ],
+        "preserve": [
+          "否定谓词和作用对象",
+          "义务/许可/建议强度",
+          "例外条件"
+        ],
+        "do_not_merge_with": [
+          "未执行与禁止执行",
+          "允许与必须",
+          "建议与要求"
+        ],
+        "symbols": [
+          {
+            "symbol": "¬",
+            "meaning": "命题否定；不能单独表示禁止操作或尚未发生"
+          }
+        ],
+        "examples": [
+          {
+            "input": "审计日志尚未删除，且禁止删除审计日志",
+            "output": "审计日志尚未删除；禁止删除审计日志"
+          }
+        ]
+      },
+      {
+        "id": "sets",
+        "canonical": "集合成员与空集合",
+        "aliases": [
+          "属于",
+          "不属于",
+          "子集",
+          "空集合"
+        ],
+        "triggers": [
+          "集合",
+          "成员",
+          "membership",
+          "subset",
+          "empty set"
+        ],
+        "use_when": [
+          "原文明确对象属于集合或一个集合包含于另一集合",
+          "空集合符号仅用于已确定的集合语境"
+        ],
+        "preserve": [
+          "成员对象",
+          "集合名称",
+          "开放或封闭枚举边界"
+        ],
+        "do_not_merge_with": [
+          "空集合与null",
+          "字段缺失与空字符串",
+          "工作于组织与集合成员"
+        ],
+        "symbols": [
+          {
+            "symbol": "∈",
+            "meaning": "对象是指定集合的成员"
+          },
+          {
+            "symbol": "∉",
+            "meaning": "对象不是指定集合的成员"
+          },
+          {
+            "symbol": "⊆",
+            "meaning": "左侧集合是右侧集合的子集"
+          },
+          {
+            "symbol": "∅",
+            "meaning": "空集合；不泛指null、未知或字段缺失"
+          }
+        ],
+        "examples": [
+          {
+            "input": "文件扩展名属于允许扩展名集合时才允许上传",
+            "output": "允许上传的必要条件: 文件扩展名 ∈ 允许扩展名集合"
+          }
+        ]
+      },
+      {
+        "id": "relations",
+        "canonical": "带类型关系与比较",
+        "aliases": [
+          "数据流",
+          "状态迁移",
+          "先后",
+          "阈值"
+        ],
+        "triggers": [
+          "之后",
+          "之前",
+          "大于",
+          "小于",
+          "至少",
+          "不超过",
+          "after",
+          "before",
+          "greater than",
+          "at least"
+        ],
+        "use_when": [
+          "输出箭头时用周围短语明确数据流或时间顺序",
+          "数学比较需保留对象、单位及是否包含边界"
+        ],
+        "preserve": [
+          "关系类型",
+          "真实实体名称",
+          "顺序和成功条件",
+          "单位及比较边界"
+        ],
+        "do_not_merge_with": [
+          "原因与时间先后",
+          "单向变化与双向等价",
+          "大于与大于等于"
+        ],
+        "symbols": [
+          {
+            "symbol": "→",
+            "meaning": "在明确标注的关系中表示方向；不能省略其关系类型"
+          },
+          {
+            "symbol": ">=",
+            "meaning": "大于或等于，包含边界"
+          },
+          {
+            "symbol": "<",
+            "meaning": "小于，不包含边界"
+          }
+        ],
+        "examples": [
+          {
+            "input": "只有审批通过之后才执行变更",
+            "output": "执行变更的必要前提: 审批已通过"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "schema_version": 1,
+    "name": "application-security",
+    "label": "应用安全",
+    "version": 1,
+    "entries": [
+      {
+        "id": "authorization",
+        "canonical": "授权",
+        "aliases": [
+          "操作权限校验",
+          "访问权限判定"
+        ],
+        "triggers": [
+          "权限",
+          "认证",
+          "登录",
+          "authorization",
+          "authentication",
+          "tenant",
+          "租户"
+        ],
+        "use_when": [
+          "原文要求判断主体是否有权对资源执行某项动作",
+          "原文只有认证检查时不得新增授权步骤"
+        ],
+        "preserve": [
+          "主体",
+          "资源",
+          "动作",
+          "租户边界",
+          "允许条件",
+          "拒绝行为"
+        ],
+        "do_not_merge_with": [
+          "认证与授权",
+          "已登录与具有资源权限"
+        ],
+        "examples": [
+          {
+            "input": "登录成功后，仍需校验用户是否有权删除该订单",
+            "output": "登录成功后，仍须校验用户对该订单的删除权限"
+          }
+        ]
+      },
+      {
+        "id": "evidence",
+        "canonical": "证据状态",
+        "aliases": [
+          "待确认",
+          "已确认漏洞"
+        ],
+        "triggers": [
+          "猜测",
+          "未验证",
+          "漏洞",
+          "证据",
+          "confirmed",
+          "unverified",
+          "hypothesis"
+        ],
+        "use_when": [
+          "原文区分观察、猜测、已验证结论或来源时",
+          "只保留原文证据等级，不把关联推断成因果"
+        ],
+        "preserve": [
+          "事实来源",
+          "验证状态",
+          "适用范围",
+          "不确定性"
+        ],
+        "do_not_merge_with": [
+          "可能与确定",
+          "猜测与已确认漏洞",
+          "相关与因果"
+        ],
+        "examples": [
+          {
+            "input": "未验证的猜测单列待确认，不得加入已确认漏洞",
+            "output": "未验证猜测: 单列待确认，禁止加入已确认漏洞"
+          }
+        ]
+      },
+      {
+        "id": "scope",
+        "canonical": "操作范围与副作用",
+        "aliases": [
+          "只读检查",
+          "测试环境"
+        ],
+        "triggers": [
+          "只读",
+          "禁止写入",
+          "生产环境",
+          "scope",
+          "read-only",
+          "production"
+        ],
+        "use_when": [
+          "原文限定环境、资产范围、允许操作或禁止副作用时"
+        ],
+        "preserve": [
+          "资产和环境范围",
+          "只读或可写边界",
+          "明确禁止项",
+          "例外授权条件"
+        ],
+        "do_not_merge_with": [
+          "未写入与禁止写入",
+          "测试环境与生产环境"
+        ],
+        "examples": [
+          {
+            "input": "仅在测试环境执行只读检查，不得写入数据",
+            "output": "范围: 仅测试环境；检查须只读，禁止写入数据"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "schema_version": 1,
+    "name": "api-contract",
+    "label": "API 契约",
+    "version": 1,
+    "entries": [
+      {
+        "id": "protocol",
+        "canonical": "接口契约字面量",
+        "aliases": [
+          "HTTP方法",
+          "响应码"
+        ],
+        "triggers": [
+          "http",
+          "api",
+          "GET",
+          "POST",
+          "PUT",
+          "PATCH",
+          "DELETE",
+          "状态码",
+          "请求",
+          "响应"
+        ],
+        "use_when": [
+          "原文规定接口方法、路径、参数、响应码或格式时"
+        ],
+        "preserve": [
+          "方法及路径",
+          "字段原始拼写与大小写",
+          "状态码与对应条件",
+          "必填与可选",
+          "JSON及其他协议保留词"
+        ],
+        "do_not_merge_with": [
+          "401与403",
+          "字段缺失与空值",
+          "GET与POST",
+          "格式要求与示例数据"
+        ],
+        "examples": [
+          {
+            "input": "POST /orders 缺少 Idempotency-Key 时返回 400",
+            "output": "POST /orders: 缺少 Idempotency-Key 则返回 400"
+          }
+        ]
+      },
+      {
+        "id": "idempotency",
+        "canonical": "幂等与重试",
+        "aliases": [
+          "Idempotency-Key",
+          "幂等键"
+        ],
+        "triggers": [
+          "幂等",
+          "重试",
+          "retry",
+          "idempotency"
+        ],
+        "use_when": [
+          "原文明确规定重复请求、幂等键、请求体匹配或重试行为时"
+        ],
+        "preserve": [
+          "键的作用范围",
+          "请求体一致性条件",
+          "首次结果",
+          "冲突响应",
+          "重试次数和间隔"
+        ],
+        "do_not_merge_with": [
+          "幂等与允许自动重试",
+          "相同键与相同请求体",
+          "首次结果与重新执行"
+        ],
+        "examples": [
+          {
+            "input": "同一 Idempotency-Key 且请求体相同，返回首次结果；请求体不同则返回 409，不创建新订单",
+          "output": "同一 Idempotency-Key: 请求体相同则返回首次结果；请求体不同则返回 409，不创建新订单"
+          }
+        ]
+      },
+      {
+        "id": "absence",
+        "canonical": "字段存在性与空值",
+        "aliases": [
+          "字段缺失",
+          "空字符串",
+          "null"
+        ],
+        "triggers": [
+          "默认值",
+          "missing",
+          "empty",
+          "null",
+          "undefined"
+        ],
+        "use_when": [
+          "原文区分字段缺失、null、空字符串、空集合或默认值时"
+        ],
+        "preserve": [
+          "具体值的原始字面量",
+          "字段是否存在",
+          "默认值生效条件"
+        ],
+        "do_not_merge_with": [
+          "null与空字符串",
+          "字段缺失与null",
+          "空集合与未知"
+        ],
+        "examples": [
+          {
+            "input": "字段缺失时使用默认值；值为 null 时拒绝请求",
+            "output": "字段缺失: 使用默认值；值为 null: 拒绝请求"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "schema_version": 1,
+    "name": "concurrency",
+    "label": "并发与状态一致性",
+    "version": 1,
+    "entries": [
+      {
+        "id": "atomic-version",
+        "canonical": "原子条件更新",
+        "aliases": [
+          "compare-and-swap",
+          "CAS"
+        ],
+        "triggers": [
+          "原子",
+          "版本",
+          "version",
+          "expectedVersion",
+          "atomic",
+          "transaction",
+          "事务"
+        ],
+        "use_when": [
+          "原文明确要求检查条件与修改状态构成一个原子操作",
+          "原文未要求原子性时不得补充该保证"
+        ],
+        "preserve": [
+          "原子性",
+          "检查字段与预期值",
+          "更新内容",
+          "版本变化",
+          "冲突响应与副作用"
+        ],
+        "do_not_merge_with": [
+          "先检查再写入与原子条件写入",
+          "版本冲突与服务异常"
+        ],
+        "examples": [
+          {
+          "input": "以一个原子操作检查 version 是否等于 expectedVersion，并在相等时更新 value 且将 version 加 1，否则返回 409 且禁止写入",
+            "output": "原子操作: 仅当 version == expectedVersion，更新 value，version += 1；否则返回 409，禁止写入"
+          }
+        ]
+      },
+      {
+        "id": "ordering",
+        "canonical": "操作顺序与终止",
+        "aliases": [
+          "取消",
+          "终止",
+          "顺序"
+        ],
+        "triggers": [
+          "并发",
+          "并行",
+          "之后",
+          "之前",
+          "cancel",
+          "abort",
+          "concurrent",
+          "parallel",
+          "retry",
+          "重试"
+        ],
+        "use_when": [
+          "原文明确先后、并发、取消、终止或重试行为时"
+        ],
+        "preserve": [
+          "先后与并行关系",
+          "取消后允许和禁止的动作",
+          "完成条件",
+          "重试上限",
+          "失败后副作用"
+        ],
+        "do_not_merge_with": [
+          "请求取消与任务已经停止",
+          "完成与成功",
+          "并行与顺序执行"
+        ],
+        "examples": [
+          {
+            "input": "收到取消后禁止启动新任务，等待已运行任务结束，再保存最终状态",
+            "output": "收到取消后: 禁止启动新任务；等待已运行任务结束后，再保存最终状态"
+          }
+        ]
+      }
+    ]
+  }
+]
+

@@ -64,7 +64,7 @@ func TestProxyAdoptsOnlySmallerVerifiedCandidates(t *testing.T) {
 			}))
 			defer server.Close()
 			profile := Profile{APIKey: "test", BaseURL: server.URL, Model: "test-model"}
-			output, id, before, after := translateMessageBlock("openai", "user", original, profile, getDialect("token"), nil)
+			output, id, before, after := translateMessageBlock("openai", "user", original, profile, getDialect("token"), nil, nil)
 			if id == "" {
 				t.Fatal("expected a request-specific log ID")
 			}
@@ -81,7 +81,7 @@ func TestProxyAdoptsOnlySmallerVerifiedCandidates(t *testing.T) {
 			if entry.Decision != tc.want {
 				t.Fatalf("decision %q; want %q", entry.Decision, tc.want)
 			}
-			_, repeatedID, _, _ := translateMessageBlock("openai", "user", original, profile, getDialect("token"), nil)
+			_, repeatedID, _, _ := translateMessageBlock("openai", "user", original, profile, getDialect("token"), nil, nil)
 			if repeatedID == id {
 				t.Fatal("repeated source reused a request log ID")
 			}

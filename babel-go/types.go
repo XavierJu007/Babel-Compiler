@@ -237,9 +237,6 @@ var (
 	dialectsMutex  sync.RWMutex
 	loadedDialects = make(map[string]Dialect)
 
-	calibMutex          sync.RWMutex
-	bpeCalibrationScale = 1.0
-
 	compilerCB = newCircuitBreaker(3, 60*time.Second)
 
 	redactMutex      sync.RWMutex

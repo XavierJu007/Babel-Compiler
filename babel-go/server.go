@@ -99,13 +99,19 @@ func newServerMux() *http.ServeMux {
 			targetDir := globalDialectsDir()
 			if req.Scope == "workspace" {
 				targetDir = workspaceDialectsDir()
+			} else if req.Scope != "" && req.Scope != "global" {
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]string{"detail": "输出预设保存位置仅支持 global 或 workspace"})
+				return
 			}
-			_ = os.MkdirAll(targetDir, 0755)
 			filePath := filepath.Join(targetDir, name+".md")
 
 			if req.Action == "delete" {
-				_ = os.Remove(filepath.Join(workspaceDialectsDir(), name+".md"))
-				_ = os.Remove(filepath.Join(globalDialectsDir(), name+".md"))
+				if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+					w.WriteHeader(http.StatusInternalServerError)
+					json.NewEncoder(w).Encode(map[string]string{"detail": "删除预设覆盖失败: " + err.Error()})
+					return
+				}
 				reloadDialects()
 				json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
 				return
@@ -123,6 +129,11 @@ func newServerMux() *http.ServeMux {
 			}
 
 			mdContent := fmt.Sprintf("# Label: %s\n%s\n", label, prompt)
+			if err := os.MkdirAll(targetDir, 0755); err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(map[string]string{"detail": "创建预设目录失败: " + err.Error()})
+				return
+			}
 			if err := os.WriteFile(filePath, []byte(mdContent), 0644); err != nil {
 				w.WriteHeader(500)
 				json.NewEncoder(w).Encode(map[string]string{"detail": "写入方言文件失败: " + err.Error()})
@@ -132,6 +143,7 @@ func newServerMux() *http.ServeMux {
 			json.NewEncoder(w).Encode(map[string]string{"status": "saved", "file_path": filePath})
 		}
 	})
+	mux.HandleFunc("/api/domains", domainAPIHandler)
 
 	mux.HandleFunc("/api/config", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -365,7 +377,8 @@ func startServer(preferredAddr string, autoOpen bool) {
 	webURL := "http://" + actualAddr
 	fmt.Printf("[+] Babel-DSL 服务已就绪:\n")
 	fmt.Printf("    - 配置文件:       %s\n", configPath())
-	fmt.Printf("    - 方言词典目录:   %s (支持 ./dialects 覆盖)\n", globalDialectsDir())
+	fmt.Printf("    - 输出预设目录:   %s (支持 ./dialects 覆盖)\n", globalDialectsDir())
+	fmt.Printf("    - 领域表达目录:   %s (支持 ./domains 覆盖)\n", globalDomainsDir())
 	fmt.Printf("    - LRU 缓存池:     %s (上限 %d 条)\n", cacheFilePath(), maxCacheEntries)
 	fmt.Printf("    - Web 控制台:     %s\n", webURL)
 	fmt.Printf("    - OpenAI 代理:    %s/v1/chat/completions\n", webURL)
