@@ -44,15 +44,16 @@ type Config struct {
 }
 
 type CompileReq struct {
-	Text       string `json:"text"`
-	Mode       string `json:"mode"`        // extreme | standard | token
-	Verify     bool   `json:"verify"`      // 开启语义审计
-	StrictGate bool   `json:"strict_gate"` // 硬门禁：缺失数值/阈值/否定约束时直接报错失败
-	NoCache    bool   `json:"no_cache"`    // 强制跳过缓存重新编译
-	Profile    string `json:"profile,omitempty"`
-	APIKey     string `json:"api_key,omitempty"`
-	BaseURL    string `json:"base_url,omitempty"`
-	Model      string `json:"model,omitempty"`
+	Text             string   `json:"text"`
+	Mode             string   `json:"mode"`              // extreme | standard | token
+	Verify           bool     `json:"verify"`            // 开启语义审计
+	StrictGate       bool     `json:"strict_gate"`       // 硬门禁：缺失数值/阈值/否定约束/保留词时直接报错
+	NoCache          bool     `json:"no_cache"`          // 强制跳过缓存重新编译
+	RequiredKeywords []string `json:"required_keywords"` // 动态强制保留词（如 json_object 模式下的 "json"）
+	Profile          string   `json:"profile,omitempty"`
+	APIKey           string   `json:"api_key,omitempty"`
+	BaseURL          string   `json:"base_url,omitempty"`
+	Model            string   `json:"model,omitempty"`
 }
 
 type CompileResp struct {
@@ -80,6 +81,7 @@ type CacheEntry struct {
 type ProxyLog struct {
 	ID               string `json:"id"`
 	Timestamp        string `json:"timestamp"`
+	Protocol         string `json:"protocol"` // openai | anthropic
 	Role             string `json:"role"`
 	Original         string `json:"original"`
 	Compiled         string `json:"compiled"`
@@ -129,7 +131,7 @@ func (g *flightGroup) Do(key string, fn func() (CompileResp, error)) (CompileRes
 
 const (
 	maxCacheEntries = 2000
-	maxLogs         = 40
+	maxLogs         = 50
 )
 
 var (
@@ -138,7 +140,7 @@ var (
 	compileFlight flightGroup
 
 	calibMutex          sync.RWMutex
-	bpeCalibrationScale = 1.0 // 基于上游真实 usage.prompt_tokens 动态校准的缩放系数
+	bpeCalibrationScale = 1.0
 
 	logsMutex sync.RWMutex
 	proxyLogs []ProxyLog
@@ -165,17 +167,16 @@ var prompts = map[string]string{
 
 	"token": `你是一个「BPE Tokenizer 极致压缩编译器」。为了避免 UTF-8 多字节符号（如 ├ ∀ ∃）触发分词器 Byte-Fallback 消耗 2~3 个 Token，所有结构与逻辑符号必须严格使用单字节 ASCII 字符！
 规范：
-1. 首行格式：Role:=<角色> | Target:=<目标> & <范围>
-2. 树形缩进仅使用单字节 ASCII：|- 1. / |- / '- /   |- （禁止使用 ├ │ ╰）。
-3. 逻辑算子仅使用单字节 ASCII：:= (定义) | -> (因果) | & (与) | | (或) | ! (非/禁止) | ALL (遍历) | HAS (命中) | IN (属于) | <-> (篡改) | ? (探测)。
-4. 严禁丢失任何数字、阈值、Payload 与否定约束。
-5. 零空行，仅输出纯文本，不要 Markdown 代码块包裹。`,
+1. 若输入为长段落指令，首行用 Role:=<角色> | Target:=<目标> & <范围>，并用单字节缩进 |- 1. / |- / '- 分层；若输入为简短的工具/参数描述（如 MCP Tool Description），直接输出紧凑的短语或符号表达式（无需强行套用 Role:= 首行）。
+2. 逻辑算子仅使用单字节 ASCII：:= (定义) | -> (因果) | & (与) | | (或) | ! (非/禁止) | ALL (遍历) | HAS (命中) | IN (属于) | <-> (篡改) | ? (探测)。
+3. 严禁丢失任何数字、阈值、枚举值、格式要求（如 json）与否定约束。
+4. 零空行，仅输出纯文本，不要 Markdown 代码块包裹。`,
 }
 
 const verifyGatePrompt = `你是一个严苛的「语义无损门禁审计器」。对比【原文】与【编译后DSL】，逐项核查以下三类关键不变量是否 100% 保留：
 1. 数值与阈值（所有数字、状态码、IP、端口、倍率、长度限制）；
 2. 否定与禁止约束（如“不写”、“不批量”、“不过期”、“不验签”、“不混入”等是否已用 ¬ / ! / 禁 准确表达）；
-3. 核心技术实体与 Payload（参数名、漏洞类型、协议字段）。
+3. 核心技术实体、枚举值与 Payload（参数名、漏洞类型、协议字段）。
 
 请严格输出合法的 JSON（不要 Markdown 代码块包裹）：
 {"pass": true, "missing": []}
@@ -351,13 +352,11 @@ func appendProxyLog(entry ProxyLog) {
 	}
 }
 
-// 当上游返回真实 usage.prompt_tokens 时，动态校准本地估算因子并回写代理日志
 func applyRealBillingUsage(logIDs []string, estOrigTotal, estCompTotal, realPromptTokens int, hasTools bool) {
 	if realPromptTokens <= 0 || estOrigTotal <= 0 {
 		return
 	}
 
-	// 仅在无额外 tools Schema 干扰时，用真实账单值动态平滑校准 BPE 估算权重
 	if !hasTools && estCompTotal > 20 {
 		observedRatio := float64(realPromptTokens) / float64(estCompTotal)
 		if observedRatio >= 0.65 && observedRatio <= 1.65 {
@@ -371,7 +370,6 @@ func applyRealBillingUsage(logIDs []string, estOrigTotal, estCompTotal, realProm
 		return
 	}
 
-	// 按当前校准系数还原原始自然语言的等效真实 Token 数
 	calibMutex.RLock()
 	scale := bpeCalibrationScale
 	calibMutex.RUnlock()
@@ -402,12 +400,23 @@ func applyRealBillingUsage(logIDs []string, estOrigTotal, estCompTotal, realProm
 	}
 }
 
-func buildCompletionsURL(baseURL string) string {
+func buildOpenAICompletionsURL(baseURL string) string {
 	clean := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if strings.HasSuffix(clean, "/chat/completions") {
 		return clean
 	}
 	return clean + "/chat/completions"
+}
+
+func buildAnthropicMessagesURL(baseURL string) string {
+	clean := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if strings.HasSuffix(clean, "/v1/messages") || strings.HasSuffix(clean, "/messages") {
+		return clean
+	}
+	if strings.HasSuffix(clean, "/v1") {
+		return clean + "/messages"
+	}
+	return clean + "/v1/messages"
 }
 
 func callLLM(p Profile, sysPrompt, userPrompt string, temp float64) (string, error) {
@@ -432,7 +441,7 @@ func callLLM(p Profile, sysPrompt, userPrompt string, temp float64) (string, err
 		"temperature": temp,
 	}
 	jsonBytes, _ := json.Marshal(reqBody)
-	targetURL := buildCompletionsURL(baseURL)
+	targetURL := buildOpenAICompletionsURL(baseURL)
 
 	req, err := http.NewRequest("POST", targetURL, bytes.NewBuffer(jsonBytes))
 	if err != nil {
@@ -489,7 +498,6 @@ func compactDSL(raw string) string {
 	return strings.Join(out, "\n")
 }
 
-// 感知 UTF-8 Byte-Fallback 与动态校准系数的 BPE Token 估算器
 func estimateTokensBPE(s string) int {
 	var total float64
 	asciiWordRun := 0
@@ -557,7 +565,8 @@ func formatStats(orig, comp string) (int, int, int, int, string) {
 	return oChars, cChars, oTok, cTok, summary
 }
 
-func checkDeterministicInvariants(orig, comp string) []string {
+// 本地确定性硬门禁：校验数字/阈值、否定约束、以及协议保留词（如 json_object 模式下的 "json"）
+func checkDeterministicInvariants(orig, comp string, requiredKeywords []string) []string {
 	var failures []string
 
 	origNums := numRegex.FindAllString(orig, -1)
@@ -594,11 +603,21 @@ func checkDeterministicInvariants(orig, comp string) []string {
 		}
 	}
 
+	compLower := strings.ToLower(comp)
+	for _, kw := range requiredKeywords {
+		if kw == "" {
+			continue
+		}
+		if !strings.Contains(compLower, strings.ToLower(kw)) {
+			failures = append(failures, fmt.Sprintf("缺失协议保留词: %s", kw))
+		}
+	}
+
 	return failures
 }
 
-func runAuditGate(p Profile, orig, comp string) (bool, string) {
-	localFails := checkDeterministicInvariants(orig, comp)
+func runAuditGate(p Profile, orig, comp string, requiredKeywords []string) (bool, string) {
+	localFails := checkDeterministicInvariants(orig, comp, requiredKeywords)
 	if len(localFails) > 0 {
 		return false, "[本地硬门禁拦截] " + strings.Join(localFails, "; ")
 	}
@@ -670,8 +689,15 @@ func doCompile(req CompileReq) (CompileResp, error) {
 			out.CacheHit = true
 			out.Audit = cached.Audit
 
+			if req.StrictGate {
+				// 即使命中缓存，仍校验动态传入的 RequiredKeywords（如 json_object）
+				if fails := checkDeterministicInvariants(req.Text, out.Compiled, req.RequiredKeywords); len(fails) > 0 {
+					return CompileResp{}, fmt.Errorf("[本地硬门禁拦截] %s", strings.Join(fails, "; "))
+				}
+			}
+
 			if (req.Verify || req.StrictGate) && out.Audit == "" {
-				passed, report := runAuditGate(p, req.Text, out.Compiled)
+				passed, report := runAuditGate(p, req.Text, out.Compiled, req.RequiredKeywords)
 				out.Audit = report
 				if req.StrictGate && !passed {
 					return CompileResp{}, fmt.Errorf("%s", report)
@@ -685,7 +711,7 @@ func doCompile(req CompileReq) (CompileResp, error) {
 		}
 	}
 
-	// 2. Singleflight 并发合并：同一 CacheKey 并发请求只发起一次上游编译
+	// 2. Singleflight 并发合并
 	flightKey := cacheKey
 	if req.NoCache {
 		flightKey = fmt.Sprintf("%s_force_%d", cacheKey, time.Now().UnixNano())
@@ -700,7 +726,7 @@ func doCompile(req CompileReq) (CompileResp, error) {
 
 		var auditReport string
 		if req.Verify || req.StrictGate {
-			passed, report := runAuditGate(p, req.Text, compiled)
+			passed, report := runAuditGate(p, req.Text, compiled, req.RequiredKeywords)
 			auditReport = report
 			if req.StrictGate && !passed {
 				return CompileResp{}, fmt.Errorf("%s", report)
@@ -737,20 +763,40 @@ func doCompile(req CompileReq) (CompileResp, error) {
 	return res, nil
 }
 
-// 透明代理单条文本编译，返回 (编译后文本, 日志ID, 原始估算Token, 编译后估算Token)
-func translateMessageBlock(role, text string, p Profile) (string, string, int, int) {
+// ==================== P1 核心：协议保护、MCP Tools 压缩与双协议代理 ====================
+
+func isJSONResponseFormat(payload map[string]any) bool {
+	rf, ok := payload["response_format"].(map[string]any)
+	if !ok {
+		return false
+	}
+	rfType, _ := rf["type"].(string)
+	return rfType == "json_object"
+}
+
+func translateMessageBlock(protocol, role, text string, p Profile, reqKeywords []string) (string, string, int, int) {
 	origTok := estimateTokensBPE(text)
 	if len([]rune(strings.TrimSpace(text))) < 35 {
 		return text, "", origTok, origTok
 	}
 
+	// 仅当原文本身包含该保留词时，才强制要求压缩后保留该词
+	var activeKeywords []string
+	textLower := strings.ToLower(text)
+	for _, kw := range reqKeywords {
+		if kw != "" && strings.Contains(textLower, strings.ToLower(kw)) {
+			activeKeywords = append(activeKeywords, kw)
+		}
+	}
+
 	res, err := doCompile(CompileReq{
-		Text:       text,
-		Mode:       "token",
-		StrictGate: true,
-		APIKey:     p.APIKey,
-		BaseURL:    p.BaseURL,
-		Model:      p.Model,
+		Text:             text,
+		Mode:             "token",
+		StrictGate:       true,
+		RequiredKeywords: activeKeywords,
+		APIKey:           p.APIKey,
+		BaseURL:          p.BaseURL,
+		Model:            p.Model,
 	})
 	if err != nil || res.Compiled == "" {
 		return text, "", origTok, origTok
@@ -763,6 +809,7 @@ func translateMessageBlock(role, text string, p Profile) (string, string, int, i
 	appendProxyLog(ProxyLog{
 		ID:        logID,
 		Timestamp: time.Now().Format("15:04:05"),
+		Protocol:  protocol,
 		Role:      role,
 		Original:  text,
 		Compiled:  res.Compiled,
@@ -772,8 +819,124 @@ func translateMessageBlock(role, text string, p Profile) (string, string, int, i
 	return res.Compiled, logID, origTok, compTok
 }
 
-// 从 SSE 尾部文本中提取上游真实返回的 usage.prompt_tokens
-func extractUsageFromSSETail(tail string) int {
+// 递归压缩 JSON Schema 节点中的 description（严格保留 properties 键名与 type/required 等结构）
+func compressSchemaNode(protocol, toolLabel string, node map[string]any, p Profile, logIDs *[]string, estOrig, estComp *int) {
+	if desc, ok := node["description"].(string); ok {
+		comp, id, oTok, cTok := translateMessageBlock(protocol, toolLabel, desc, p, nil)
+		node["description"] = comp
+		*estOrig += oTok
+		*estComp += cTok
+		if id != "" {
+			*logIDs = append(*logIDs, id)
+		}
+	}
+
+	if props, ok := node["properties"].(map[string]any); ok {
+		for propName, propVal := range props {
+			if propMap, ok := propVal.(map[string]any); ok {
+				compressSchemaNode(protocol, toolLabel+"."+propName, propMap, p, logIDs, estOrig, estComp)
+			}
+		}
+	}
+
+	if items, ok := node["items"].(map[string]any); ok {
+		compressSchemaNode(protocol, toolLabel+"[]", items, p, logIDs, estOrig, estComp)
+	}
+}
+
+// 压缩 OpenAI & Anthropic MCP tools[] 定义中的 description 字段
+func compressToolsArray(protocol string, tools []any, p Profile, logIDs *[]string, estOrig, estComp *int) {
+	for _, item := range tools {
+		toolMap, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		// 1. OpenAI 格式: { "type": "function", "function": { "name": "...", "description": "...", "parameters": {...} } }
+		if fnMap, ok := toolMap["function"].(map[string]any); ok {
+			fnName, _ := fnMap["name"].(string)
+			if fnName == "" {
+				fnName = "unknown"
+			}
+			label := "tool:" + fnName
+
+			if desc, ok := fnMap["description"].(string); ok {
+				comp, id, oTok, cTok := translateMessageBlock(protocol, label, desc, p, nil)
+				fnMap["description"] = comp
+				*estOrig += oTok
+				*estComp += cTok
+				if id != "" {
+					*logIDs = append(*logIDs, id)
+				}
+			}
+			if params, ok := fnMap["parameters"].(map[string]any); ok {
+				compressSchemaNode(protocol, label, params, p, logIDs, estOrig, estComp)
+			}
+			continue
+		}
+
+		// 2. Anthropic 原生格式: { "name": "...", "description": "...", "input_schema": {...} }
+		toolName, _ := toolMap["name"].(string)
+		if toolName == "" {
+			toolName = "unknown"
+		}
+		label := "tool:" + toolName
+
+		if desc, ok := toolMap["description"].(string); ok {
+			comp, id, oTok, cTok := translateMessageBlock(protocol, label, desc, p, nil)
+			toolMap["description"] = comp
+			*estOrig += oTok
+			*estComp += cTok
+			if id != "" {
+				*logIDs = append(*logIDs, id)
+			}
+		}
+		if schema, ok := toolMap["input_schema"].(map[string]any); ok {
+			compressSchemaNode(protocol, label, schema, p, logIDs, estOrig, estComp)
+		}
+	}
+}
+
+// 兜底保障：当开启 json_object 模式时，确保消息列表中至少存在一处 "json" 关键词
+func ensureJSONKeywordInOpenAIMessages(msgs []any) {
+	for _, m := range msgs {
+		msgMap, ok := m.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch c := msgMap["content"].(type) {
+		case string:
+			if strings.Contains(strings.ToLower(c), "json") {
+				return
+			}
+		case []any:
+			for _, part := range c {
+				if pm, ok := part.(map[string]any); ok {
+					if txt, ok := pm["text"].(string); ok && strings.Contains(strings.ToLower(txt), "json") {
+						return
+					}
+				}
+			}
+		}
+	}
+
+	// 若所有消息均丢失了 json 词，自动向 system 或首条 user 消息追加 (JSON)
+	for _, m := range msgs {
+		msgMap, ok := m.(map[string]any)
+		if !ok {
+			continue
+		}
+		role, _ := msgMap["role"].(string)
+		if role == "system" || role == "user" {
+			if c, ok := msgMap["content"].(string); ok {
+				msgMap["content"] = c + " (JSON)"
+				return
+			}
+		}
+	}
+}
+
+func extractUsageFromOpenAISSETail(tail string) int {
 	lines := strings.Split(tail, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := strings.TrimSpace(lines[i])
@@ -796,7 +959,39 @@ func extractUsageFromSSETail(tail string) int {
 	return 0
 }
 
-func transparentProxyHandler(w http.ResponseWriter, r *http.Request) {
+func extractUsageFromAnthropicSSE(buf string) int {
+	lines := strings.Split(buf, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		jsonStr := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if jsonStr == "" {
+			continue
+		}
+		var evt struct {
+			Type    string `json:"type"`
+			Message struct {
+				Usage struct {
+					InputTokens              int `json:"input_tokens"`
+					CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+					CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+				} `json:"usage"`
+			} `json:"message"`
+		}
+		if json.Unmarshal([]byte(jsonStr), &evt) == nil && evt.Type == "message_start" {
+			total := evt.Message.Usage.InputTokens + evt.Message.Usage.CacheCreationInputTokens + evt.Message.Usage.CacheReadInputTokens
+			if total > 0 {
+				return total
+			}
+		}
+	}
+	return 0
+}
+
+// 1. OpenAI 兼容透明代理网关: POST /v1/chat/completions
+func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "Method Not Allowed", 405)
 		return
@@ -816,6 +1011,12 @@ func transparentProxyHandler(w http.ResponseWriter, r *http.Request) {
 	cfg := loadConfig()
 	p := getActiveProfile(cfg, r.Header.Get("X-Babel-Profile"))
 
+	var reqKeywords []string
+	requireJSON := isJSONResponseFormat(payload)
+	if requireJSON {
+		reqKeywords = append(reqKeywords, "json")
+	}
+
 	var (
 		logIDs       []string
 		estOrigTotal int
@@ -830,7 +1031,6 @@ func transparentProxyHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			role, _ := msgMap["role"].(string)
 			if role != "system" && role != "user" {
-				// 统计 assistant/tool 历史消息的基础 Token，对齐上游总 prompt_tokens
 				if contentStr, ok := msgMap["content"].(string); ok {
 					t := estimateTokensBPE(contentStr) + 4
 					estOrigTotal += t
@@ -844,7 +1044,7 @@ func transparentProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 			switch content := msgMap["content"].(type) {
 			case string:
-				comp, id, oTok, cTok := translateMessageBlock(role, content, p)
+				comp, id, oTok, cTok := translateMessageBlock("openai", role, content, p, reqKeywords)
 				msgMap["content"] = comp
 				estOrigTotal += oTok
 				estCompTotal += cTok
@@ -856,7 +1056,7 @@ func transparentProxyHandler(w http.ResponseWriter, r *http.Request) {
 					if partMap, ok := part.(map[string]any); ok {
 						if partMap["type"] == "text" {
 							if txt, ok := partMap["text"].(string); ok {
-								comp, id, oTok, cTok := translateMessageBlock(role, txt, p)
+								comp, id, oTok, cTok := translateMessageBlock("openai", role, txt, p, reqKeywords)
 								partMap["text"] = comp
 								estOrigTotal += oTok
 								estCompTotal += cTok
@@ -869,15 +1069,23 @@ func transparentProxyHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+
+		if requireJSON {
+			ensureJSONKeywordInOpenAIMessages(msgs)
+		}
 	}
 
-	// 若为流式请求且未显式关闭 stream_options，则自动注入 include_usage 以捕获真实账单 Token
+	// MCP / Function Calling tools[] Schema 描述压缩
+	toolsList, hasTools := payload["tools"].([]any)
+	if hasTools && len(toolsList) > 0 {
+		compressToolsArray("openai", toolsList, p, &logIDs, &estOrigTotal, &estCompTotal)
+	}
+
 	isStream, _ := payload["stream"].(bool)
 	if isStream && payload["stream_options"] == nil {
 		payload["stream_options"] = map[string]any{"include_usage": true}
 	}
 
-	_, hasTools := payload["tools"]
 	modifiedBody, _ := json.Marshal(payload)
 
 	upstreamBase := r.Header.Get("X-Upstream-BaseURL")
@@ -887,7 +1095,7 @@ func transparentProxyHandler(w http.ResponseWriter, r *http.Request) {
 	if upstreamBase == "" {
 		upstreamBase = p.BaseURL
 	}
-	targetURL := buildCompletionsURL(upstreamBase)
+	targetURL := buildOpenAICompletionsURL(upstreamBase)
 
 	proxyReq, err := http.NewRequest("POST", targetURL, bytes.NewBuffer(modifiedBody))
 	if err != nil {
@@ -935,7 +1143,6 @@ func transparentProxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 流式透传并截取最后 4KB 缓冲以解析 usage chunk
 	flusher, canFlush := w.(http.Flusher)
 	buf := make([]byte, 4096)
 	var tailRing string
@@ -957,7 +1164,217 @@ func transparentProxyHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if realTokens := extractUsageFromSSETail(tailRing); realTokens > 0 {
+	if realTokens := extractUsageFromOpenAISSETail(tailRing); realTokens > 0 {
+		go applyRealBillingUsage(logIDs, estOrigTotal, estCompTotal, realTokens, hasTools)
+	}
+}
+
+// 2. 原生 Anthropic 协议透明代理网关: POST /v1/messages (适配 Claude Code & Anthropic SDK)
+func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method Not Allowed", 405)
+		return
+	}
+	rawBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "读取请求失败", 400)
+		return
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rawBody, &payload); err != nil {
+		http.Error(w, "无效的 JSON 请求体", 400)
+		return
+	}
+
+	cfg := loadConfig()
+	p := getActiveProfile(cfg, r.Header.Get("X-Babel-Profile"))
+
+	var (
+		logIDs       []string
+		estOrigTotal int
+		estCompTotal int
+	)
+
+	// 处理顶层 system（支持字符串或内容块数组，保留 cache_control）
+	switch sysVal := payload["system"].(type) {
+	case string:
+		comp, id, oTok, cTok := translateMessageBlock("anthropic", "system", sysVal, p, nil)
+		payload["system"] = comp
+		estOrigTotal += oTok
+		estCompTotal += cTok
+		if id != "" {
+			logIDs = append(logIDs, id)
+		}
+	case []any:
+		for _, block := range sysVal {
+			if blockMap, ok := block.(map[string]any); ok {
+				if blockMap["type"] == "text" {
+					if txt, ok := blockMap["text"].(string); ok {
+						comp, id, oTok, cTok := translateMessageBlock("anthropic", "system", txt, p, nil)
+						blockMap["text"] = comp
+						estOrigTotal += oTok
+						estCompTotal += cTok
+						if id != "" {
+							logIDs = append(logIDs, id)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 处理 messages[] 中的 user 消息（支持纯字符串或 Anthropic 内容块数组）
+	if msgs, ok := payload["messages"].([]any); ok {
+		for _, m := range msgs {
+			msgMap, ok := m.(map[string]any)
+			if !ok {
+				continue
+			}
+			role, _ := msgMap["role"].(string)
+			if role != "user" {
+				if contentStr, ok := msgMap["content"].(string); ok {
+					t := estimateTokensBPE(contentStr) + 4
+					estOrigTotal += t
+					estCompTotal += t
+				}
+				continue
+			}
+
+			estOrigTotal += 4
+			estCompTotal += 4
+
+			switch content := msgMap["content"].(type) {
+			case string:
+				comp, id, oTok, cTok := translateMessageBlock("anthropic", "user", content, p, nil)
+				msgMap["content"] = comp
+				estOrigTotal += oTok
+				estCompTotal += cTok
+				if id != "" {
+					logIDs = append(logIDs, id)
+				}
+			case []any:
+				for _, part := range content {
+					if partMap, ok := part.(map[string]any); ok {
+						if partMap["type"] == "text" {
+							if txt, ok := partMap["text"].(string); ok {
+								comp, id, oTok, cTok := translateMessageBlock("anthropic", "user", txt, p, nil)
+								partMap["text"] = comp
+								estOrigTotal += oTok
+								estCompTotal += cTok
+								if id != "" {
+									logIDs = append(logIDs, id)
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 压缩 Anthropic 原生 tools[] Schema 描述
+	toolsList, hasTools := payload["tools"].([]any)
+	if hasTools && len(toolsList) > 0 {
+		compressToolsArray("anthropic", toolsList, p, &logIDs, &estOrigTotal, &estCompTotal)
+	}
+
+	isStream, _ := payload["stream"].(bool)
+	modifiedBody, _ := json.Marshal(payload)
+
+	upstreamBase := r.Header.Get("X-Upstream-BaseURL")
+	if upstreamBase == "" {
+		upstreamBase = p.UpstreamURL
+	}
+	if upstreamBase == "" {
+		upstreamBase = p.BaseURL
+	}
+	targetURL := buildAnthropicMessagesURL(upstreamBase)
+
+	proxyReq, err := http.NewRequest("POST", targetURL, bytes.NewBuffer(modifiedBody))
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
+	proxyReq.Header.Set("Content-Type", "application/json")
+	if apiKey := r.Header.Get("x-api-key"); apiKey != "" {
+		proxyReq.Header.Set("x-api-key", apiKey)
+	} else if auth := r.Header.Get("Authorization"); auth != "" {
+		proxyReq.Header.Set("Authorization", auth)
+	} else if p.APIKey != "" {
+		proxyReq.Header.Set("x-api-key", p.APIKey)
+	}
+
+	if ver := r.Header.Get("anthropic-version"); ver != "" {
+		proxyReq.Header.Set("anthropic-version", ver)
+	} else {
+		proxyReq.Header.Set("anthropic-version", "2023-06-01")
+	}
+	if beta := r.Header.Get("anthropic-beta"); beta != "" {
+		proxyReq.Header.Set("anthropic-beta", beta)
+	}
+
+	client := &http.Client{Timeout: 300 * time.Second}
+	resp, err := client.Do(proxyReq)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Anthropic 上游转发失败: %v", err), 502)
+		return
+	}
+	defer resp.Body.Close()
+
+	for k, vals := range resp.Header {
+		if strings.EqualFold(k, "Content-Length") {
+			continue
+		}
+		for _, v := range vals {
+			w.Header().Add(k, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+
+	if !isStream {
+		respBytes, _ := io.ReadAll(resp.Body)
+		w.Write(respBytes)
+
+		var nonStreamResp struct {
+			Usage struct {
+				InputTokens              int `json:"input_tokens"`
+				CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+				CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+			} `json:"usage"`
+		}
+		if json.Unmarshal(respBytes, &nonStreamResp) == nil {
+			realIn := nonStreamResp.Usage.InputTokens + nonStreamResp.Usage.CacheCreationInputTokens + nonStreamResp.Usage.CacheReadInputTokens
+			if realIn > 0 {
+				go applyRealBillingUsage(logIDs, estOrigTotal, estCompTotal, realIn, hasTools)
+			}
+		}
+		return
+	}
+
+	// Anthropic 流式响应在最开始的 message_start 事件里携带 input_tokens，保留前 8KB 捕获
+	flusher, canFlush := w.(http.Flusher)
+	buf := make([]byte, 4096)
+	var headCapture string
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			chunk := buf[:n]
+			w.Write(chunk)
+			if canFlush {
+				flusher.Flush()
+			}
+			if len(headCapture) < 8192 {
+				headCapture += string(chunk)
+			}
+		}
+		if readErr != nil {
+			break
+		}
+	}
+
+	if realTokens := extractUsageFromAnthropicSSE(headCapture); realTokens > 0 {
 		go applyRealBillingUsage(logIDs, estOrigTotal, estCompTotal, realTokens, hasTools)
 	}
 }
@@ -1134,7 +1551,9 @@ func startServer(preferredAddr string, autoOpen bool) {
 		json.NewEncoder(w).Encode(proxyLogs)
 	})
 
-	http.HandleFunc("/v1/chat/completions", transparentProxyHandler)
+	// 双协议透明代理端点
+	http.HandleFunc("/v1/chat/completions", openAIProxyHandler)
+	http.HandleFunc("/v1/messages", anthropicProxyHandler)
 
 	ln, actualAddr, err := bindAvailableListener(preferredAddr)
 	if err != nil {
@@ -1144,10 +1563,11 @@ func startServer(preferredAddr string, autoOpen bool) {
 
 	webURL := "http://" + actualAddr
 	fmt.Printf("[+] Babel-DSL 服务已就绪:\n")
-	fmt.Printf("    - 配置文件:    %s\n", configPath())
-	fmt.Printf("    - LRU 缓存池:  %s (上限 %d 条)\n", cacheFilePath(), maxCacheEntries)
-	fmt.Printf("    - Web 控制台:  %s\n", webURL)
-	fmt.Printf("    - OpenAI 代理: %s/v1/chat/completions\n", webURL)
+	fmt.Printf("    - 配置文件:       %s\n", configPath())
+	fmt.Printf("    - LRU 缓存池:     %s (上限 %d 条)\n", cacheFilePath(), maxCacheEntries)
+	fmt.Printf("    - Web 控制台:     %s\n", webURL)
+	fmt.Printf("    - OpenAI 代理:    %s/v1/chat/completions\n", webURL)
+	fmt.Printf("    - Anthropic 代理: %s/v1/messages\n", webURL)
 
 	if autoOpen {
 		openBrowser(webURL)
