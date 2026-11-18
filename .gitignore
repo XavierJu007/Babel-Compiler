@@ -40,3 +40,6 @@ babel-go/babel
 .DS_Store
 .idea/
 .vscode/
+
+# WorkBuddy workspace memory
+.workbuddy/
