@@ -2,128 +2,660 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>Babel-DSL 巴别语高密度编译器</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BABEL-DSL // 神经符号编译器 & 透明代理网关</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+        body {
+            font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            background: radial-gradient(circle at 50% 42%, #071318 0%, #020408 100%);
+            overflow-x: hidden;
+        }
+        #bg-canvas {
+            position: fixed;
+            inset: 0;
+            z-index: 0;
+            pointer-events: none;
+        }
+        /* 适度透明磨砂：既能透过看到背后的星环粒子，又保证代码文本清晰锐利 */
+        .glass-panel {
+            background: rgba(10, 15, 26, 0.54);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(52, 211, 153, 0.18);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+            transition: border-color 0.25s ease, background-color 0.25s ease;
+        }
+        .glass-panel:focus-within {
+            background: rgba(10, 15, 26, 0.68);
+            border-color: rgba(52, 211, 153, 0.48);
+            box-shadow: 0 0 25px rgba(16, 185, 129, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+        }
+        .cyber-btn {
+            background: linear-gradient(135deg, #059669 0%, #0d9488 100%);
+            box-shadow: 0 0 16px rgba(16, 185, 129, 0.35);
+            transition: all 0.2s ease;
+        }
+        .cyber-btn:hover:not(:disabled) {
+            box-shadow: 0 0 24px rgba(16, 185, 129, 0.65);
+            transform: translateY(-1px);
+        }
+        .cyber-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        .ui-fade {
+            transition: opacity 0.4s ease, transform 0.4s ease;
+        }
+        .ui-hidden {
+            opacity: 0 !important;
+            pointer-events: none !important;
+            transform: scale(0.985);
+        }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(52, 211, 153, 0.25); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(52, 211, 153, 0.5); }
+    </style>
 </head>
-<body class="bg-slate-950 text-slate-200 min-h-screen flex flex-col font-mono">
-<!-- 顶部配置栏 -->
-<header class="border-b border-slate-800 bg-slate-900/80 px-6 py-3 flex flex-wrap items-center justify-between gap-4">
-    <div class="flex items-center gap-2">
-        <span class="text-emerald-400 font-bold text-lg">⌘ Babel-DSL</span>
-        <span class="text-xs bg-slate-800 text-slate-400 px-2 py-0.5 rounded">高密度提示词编译器</span>
+<body class="text-slate-200 min-h-screen flex flex-col relative selection:bg-emerald-500/30 selection:text-emerald-200">
+<canvas id="bg-canvas"></canvas>
+
+<!-- 顶部导航与模型状态栏 -->
+<header class="relative z-20 border-b border-emerald-500/15 bg-slate-950/60 backdrop-blur-xl px-6 py-3.5 flex flex-wrap items-center justify-between gap-4">
+    <div class="flex items-center gap-4">
+        <div class="flex items-center gap-2.5">
+            <div class="w-2.5 h-2.5 rounded-full bg-emerald-400 shadow-[0_0_10px_#34d399] animate-pulse"></div>
+            <span class="text-transparent bg-clip-text bg-gradient-to-r from-emerald-300 via-teal-200 to-cyan-300 font-bold text-lg tracking-wider">BABEL//DSL</span>
+        </div>
+
+        <nav id="mainNav" class="ui-fade flex bg-slate-900/90 border border-slate-800 p-1 rounded-lg text-xs">
+            <button id="tabBtnCompiler" onclick="switchTab('compiler')" class="px-3.5 py-1.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-semibold transition">
+                ⌘ 符号编译器
+            </button>
+            <button id="tabBtnProxy" onclick="switchTab('proxy')" class="px-3.5 py-1.5 rounded-md text-slate-400 hover:text-slate-200 transition flex items-center gap-1.5">
+                <span>⇄ 透明代理透视</span>
+                <span id="logCountBadge" class="hidden px-1.5 py-0.2 bg-cyan-500/20 text-cyan-300 rounded text-[10px]">0</span>
+            </button>
+        </nav>
     </div>
-    <div class="flex flex-wrap items-center gap-2 text-xs">
-        <input id="baseUrl" type="text" placeholder="Base URL (e.g. https://api.openai.com/v1)" class="bg-slate-800 border border-slate-700 rounded px-2.5 py-1.5 w-60 focus:outline-none focus:border-emerald-500">
-        <input id="apiKey" type="password" placeholder="API Key (sk-...)" class="bg-slate-800 border border-slate-700 rounded px-2.5 py-1.5 w-44 focus:outline-none focus:border-emerald-500">
-        <input id="model" type="text" placeholder="Model (gpt-4o-mini)" class="bg-slate-800 border border-slate-700 rounded px-2.5 py-1.5 w-36 focus:outline-none focus:border-emerald-500">
-        <button onclick="saveConfig()" class="bg-slate-700 hover:bg-slate-600 px-3 py-1.5 rounded text-white transition">保存默认配置</button>
+
+    <div class="flex items-center gap-2.5 text-xs">
+        <button id="zenToggleBtn" onclick="toggleZenMode()" class="bg-slate-900/90 hover:bg-slate-800 border border-slate-700 text-slate-300 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition">
+            <span id="zenIcon">◎</span>
+            <span id="zenText">纯享背景</span>
+        </button>
+
+        <div id="headerControls" class="ui-fade flex items-center gap-2.5">
+            <div class="flex items-center bg-slate-900/90 border border-slate-700/80 rounded-lg px-2.5 py-1.5 gap-2">
+                <span class="text-slate-500">方案:</span>
+                <select id="headerProfileSelect" onchange="quickSwitchProfile(this.value)" class="bg-transparent text-emerald-300 font-semibold focus:outline-none cursor-pointer"></select>
+                <span id="headerModelBadge" class="text-slate-400 border-l border-slate-700 pl-2 hidden sm:inline"></span>
+            </div>
+
+            <button onclick="toggleConfigModal(true)" class="bg-slate-900/90 hover:bg-slate-800 border border-emerald-500/30 text-emerald-300 px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 transition">
+                <span>⚙ 模型配置</span>
+            </button>
+        </div>
     </div>
 </header>
 
-<!-- 主工作区 -->
-<main class="flex-1 grid grid-cols-1 md:grid-cols-2 gap-4 p-6">
-    <!-- 左侧输入 -->
-    <div class="flex flex-col bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
-        <div class="px-4 py-2.5 border-b border-slate-800 flex justify-between items-center bg-slate-900/50">
-            <span class="text-xs text-slate-400">自然语言输入 (Raw Prompt)</span>
-            <div class="flex items-center gap-3 text-xs">
-                <label class="flex items-center gap-1 cursor-pointer">
-                    <input id="verifyCheck" type="checkbox" class="accent-emerald-500"> 无损审计
-                </label>
-                <select id="modeSelect" class="bg-slate-800 border border-slate-700 rounded px-2 py-1">
-                    <option value="extreme">极限数理符号 (Extreme)</option>
-                    <option value="standard">标准树状结构 (Standard)</option>
-                </select>
-                <button id="runBtn" onclick="runCompile()" class="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold px-4 py-1 rounded transition">编译 →</button>
-            </div>
+<!-- 视图 1：手动符号编译器 -->
+<main id="viewCompiler" class="ui-fade relative z-10 flex-1 flex flex-col gap-3 p-5 max-w-[1600px] w-full mx-auto">
+    <div class="glass-panel rounded-lg px-4 py-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-300">
+        <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
+            <span class="text-emerald-400 font-semibold">逻辑算子表:</span>
+            <span><code class="text-cyan-300">:=</code> 定义</span>
+            <span><code class="text-cyan-300">→</code> 因果流向</span>
+            <span><code class="text-cyan-300">∧</code> 逻辑与</span>
+            <span><code class="text-cyan-300">|</code> 逻辑或</span>
+            <span><code class="text-cyan-300">¬</code> 否定禁止</span>
+            <span><code class="text-cyan-300">∀</code> 全称遍历</span>
+            <span><code class="text-cyan-300">∃</code> 存在命中</span>
+            <span><code class="text-cyan-300">↔</code> 篡改替换</span>
+            <span><code class="text-cyan-300">?</code> 条件探测</span>
+            <span><code class="text-amber-400">⚠</code> 红线约束</span>
         </div>
-        <textarea id="rawInput" class="flex-1 bg-transparent p-4 text-sm resize-none focus:outline-none leading-relaxed" placeholder="在此粘贴冗长的自然语言提示词或SOP规范..."></textarea>
+        <button onclick="fillDemoText()" class="text-slate-300 hover:text-emerald-300 underline decoration-dotted transition">填入测试样本</button>
     </div>
 
-    <!-- 右侧输出 -->
-    <div class="flex flex-col bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
-        <div class="px-4 py-2.5 border-b border-slate-800 flex justify-between items-center bg-slate-900/50">
-            <div class="flex items-center gap-2">
-                <span class="text-xs text-emerald-400">巴别语输出 (Compiled DSL)</span>
-                <span id="statsBadge" class="hidden text-xs bg-emerald-950 text-emerald-300 border border-emerald-800 px-2 py-0.5 rounded"></span>
+    <div class="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-4 min-h-[540px]">
+        <div class="glass-panel rounded-xl flex flex-col overflow-hidden">
+            <div class="px-4 py-3 border-b border-slate-800/80 flex flex-wrap justify-between items-center gap-2 bg-slate-950/35">
+                <div class="flex items-center gap-2">
+                    <span class="text-xs font-semibold text-slate-300">INPUT // 自然语言提示词</span>
+                    <span id="inputCharCount" class="text-[11px] text-slate-400">0 chars</span>
+                </div>
+                <div class="flex items-center gap-3 text-xs">
+                    <label class="flex items-center gap-1.5 cursor-pointer text-slate-300 hover:text-emerald-300">
+                        <input id="verifyCheck" type="checkbox" class="accent-emerald-500 rounded"> 语义无损审计
+                    </label>
+                    <select id="modeSelect" class="bg-slate-900 border border-slate-700 rounded-md px-2.5 py-1 text-slate-200 focus:outline-none focus:border-emerald-500">
+                        <option value="extreme">极限数理符号 (Extreme)</option>
+                        <option value="standard">标准树状结构 (Standard)</option>
+                    </select>
+                    <button id="runBtn" onclick="runCompile()" class="cyber-btn text-white font-semibold px-4 py-1.5 rounded-md">
+                        编译 ⚡
+                    </button>
+                </div>
             </div>
-            <button onclick="copyResult()" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1 rounded transition">复制结果</button>
+            <textarea id="rawInput" oninput="updateInputCount()" class="flex-1 bg-transparent p-4 text-sm text-slate-100 resize-none focus:outline-none leading-relaxed placeholder-slate-500" placeholder="在此输入冗长的自然语言指令、Agent System Prompt 或安全测试 SOP..."></textarea>
         </div>
-        <textarea id="dslOutput" readonly class="flex-1 bg-transparent p-4 text-sm text-emerald-300 resize-none focus:outline-none leading-relaxed" placeholder="编译后的高密度符号文本将显示在这里..."></textarea>
-        <div id="auditBox" class="hidden border-t border-slate-800 bg-slate-950 p-3 text-xs text-amber-300"></div>
+
+        <div class="glass-panel rounded-xl flex flex-col overflow-hidden">
+            <div class="px-4 py-3 border-b border-slate-800/80 flex justify-between items-center bg-slate-950/35">
+                <div class="flex items-center gap-2.5">
+                    <span class="text-xs font-semibold text-emerald-400">OUTPUT // 巴别语高密度 DSL</span>
+                    <span id="statsBadge" class="hidden text-[11px] bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 px-2.5 py-0.5 rounded-full"></span>
+                </div>
+                <button id="copyBtn" onclick="copyResult()" class="text-xs bg-slate-800/90 hover:bg-slate-700 border border-slate-700 px-3 py-1 rounded-md text-slate-200 transition">
+                    复制 DSL
+                </button>
+            </div>
+            <textarea id="dslOutput" readonly class="flex-1 bg-transparent p-4 text-sm text-emerald-300 resize-none focus:outline-none leading-relaxed placeholder-slate-500" placeholder="编译后的高密度数理符号文本将在此生成..."></textarea>
+            <div id="auditBox" class="hidden border-t border-amber-500/30 bg-amber-950/35 px-4 py-2.5 text-xs text-amber-300"></div>
+        </div>
     </div>
 </main>
 
+<!-- 视图 2：透明代理流量透视 -->
+<main id="viewProxy" class="ui-fade hidden relative z-10 flex-1 flex-col gap-4 p-5 max-w-[1600px] w-full mx-auto">
+    <div class="glass-panel rounded-xl p-4 flex flex-wrap items-center justify-between gap-4">
+        <div class="text-xs space-y-1.5">
+            <div class="flex items-center gap-2">
+                <span class="text-emerald-400 font-semibold">OpenAI 兼容透明代理网关:</span>
+                <code class="text-cyan-300 select-all bg-slate-950/90 px-3 py-1 rounded border border-cyan-500/30" id="proxyEndpoint">http://127.0.0.1:8080/v1</code>
+            </div>
+            <p class="text-slate-300">将你 Product 的 <code class="text-slate-200">OPENAI_BASE_URL</code> 指向此地址：前端 UI 保持自然语言展示，底层请求自动经由当前激活模型压缩为巴别语再发往上游 Agent。</p>
+        </div>
+        <div class="flex items-center gap-2.5 text-xs">
+            <label class="flex items-center gap-1.5 text-slate-300 cursor-pointer mr-2">
+                <input id="autoRefreshCheck" type="checkbox" checked class="accent-emerald-500"> 自动刷新 (3s)
+            </label>
+            <button onclick="loadLogs()" class="bg-slate-800 hover:bg-slate-700 border border-slate-700 px-3 py-1.5 rounded-lg text-slate-200 transition">立即刷新</button>
+            <button onclick="clearLogs()" class="bg-rose-950/80 hover:bg-rose-900 border border-rose-500/30 px-3 py-1.5 rounded-lg text-rose-300 transition">清空记录</button>
+        </div>
+    </div>
+
+    <div id="logsContainer" class="space-y-3"></div>
+</main>
+
+<!-- 模型与持久化配置弹窗 -->
+<div id="configModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-slate-900/95 rounded-2xl max-w-xl w-full p-6 space-y-5 border border-emerald-500/30 shadow-2xl">
+        <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+            <div>
+                <h3 class="text-base font-bold text-emerald-300">⚙ 模型与持久化配置中心</h3>
+                <p class="text-[11px] text-slate-400 mt-0.5">配置自动持久化至磁盘 (<span id="cfgPathLabel" class="text-slate-300">~/.babel_config.json</span>) 及本地存储</p>
+            </div>
+            <button onclick="toggleConfigModal(false)" class="text-slate-400 hover:text-white text-lg px-2">✕</button>
+        </div>
+
+        <div class="space-y-1.5">
+            <span class="text-[11px] text-slate-400">快速填充服务商模板 (注意中转站通常需要带 /v1 后缀):</span>
+            <div class="flex flex-wrap gap-2 text-xs">
+                <button onclick="applyPreset('deepseek', 'https://api.deepseek.com/v1', 'deepseek-chat')" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-300 transition">DeepSeek</button>
+                <button onclick="applyPreset('openai', 'https://api.openai.com/v1', 'gpt-4o-mini')" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-emerald-300 transition">OpenAI (4o-mini)</button>
+                <button onclick="applyPreset('openrouter', 'https://openrouter.ai/api/v1', 'google/gemini-2.5-flash')" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-purple-300 transition">OpenRouter</button>
+                <button onclick="applyPreset('ollama', 'http://127.0.0.1:11434/v1', 'qwen2.5:7b')" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-amber-300 transition">Ollama 本地</button>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+            <div>
+                <label class="block text-slate-400 mb-1">配置方案名称 (可新建或覆盖)</label>
+                <input id="cfgProfileName" type="text" placeholder="例如: default / deepseek" class="w-full bg-slate-950/90 border border-slate-700 rounded-lg px-3 py-2 text-emerald-300 focus:outline-none focus:border-emerald-500">
+            </div>
+            <div>
+                <label class="block text-slate-400 mb-1">切换到已有方案</label>
+                <div class="flex gap-1.5">
+                    <select id="modalProfileSelect" onchange="fillFormFromProfile(this.value)" class="flex-1 bg-slate-950/90 border border-slate-700 rounded-lg px-2.5 py-2 text-slate-200 focus:outline-none focus:border-emerald-500"></select>
+                    <button onclick="deleteCurrentProfile()" title="删除该方案" class="px-2.5 py-2 bg-rose-950/70 hover:bg-rose-900 border border-rose-500/30 rounded-lg text-rose-300">删</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="space-y-3 text-xs">
+            <div>
+                <label class="block text-slate-400 mb-1">编译器 API Base URL (末尾请带 /v1)</label>
+                <input id="cfgBaseUrl" type="text" placeholder="https://api.openai.com/v1" class="w-full bg-slate-950/90 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-emerald-500">
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-slate-400 mb-1">API Key (留空则保留已存密钥)</label>
+                    <input id="cfgApiKey" type="password" placeholder="sk-..." class="w-full bg-slate-950/90 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-emerald-500">
+                </div>
+                <div>
+                    <label class="block text-slate-400 mb-1">编译器模型名称 (Model)</label>
+                    <input id="cfgModel" type="text" placeholder="gpt-4o-mini / deepseek-chat" class="w-full bg-slate-950/90 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-emerald-500">
+                </div>
+            </div>
+            <div>
+                <label class="block text-slate-400 mb-1">上游 Agent Base URL (可选，仅透明代理转发时使用)</label>
+                <input id="cfgUpstreamUrl" type="text" placeholder="留空则默认转发至上方 Base URL" class="w-full bg-slate-950/90 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-emerald-500">
+            </div>
+        </div>
+
+        <div class="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-800 text-xs">
+            <button onclick="toggleConfigModal(false)" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300">取消</button>
+            <button onclick="saveProfileConfig()" class="cyber-btn px-5 py-2 rounded-lg text-white font-semibold">保存并激活方案</button>
+        </div>
+    </div>
+</div>
+
 <script>
-    async function loadInitConfig() {
-        const res = await fetch('/api/config');
-        const data = await res.json();
-        if (data.base_url) document.getElementById('baseUrl').value = data.base_url;
-        if (data.model) document.getElementById('model').value = data.model;
-        if (data.api_key_masked) document.getElementById('apiKey').placeholder = `已配置 (${data.api_key_masked})`;
+    // ==================== 1. 恢复原版简洁二十面体线框 + 三层细轨星环背景 ====================
+    let isOverdrive = false;
+    (function initThreeBackground() {
+        const canvas = document.getElementById('bg-canvas');
+        if (!window.THREE || !canvas) return;
+
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = 26;
+
+        const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+        const astrolabe = new THREE.Group();
+        scene.add(astrolabe);
+
+        // 核心二十面体线框
+        const coreGeo = new THREE.IcosahedronGeometry(4.4, 1);
+        const coreMat = new THREE.MeshBasicMaterial({
+            color: 0x10b981,
+            wireframe: true,
+            transparent: true,
+            opacity: 0.34
+        });
+        const coreMesh = new THREE.Mesh(coreGeo, coreMat);
+        astrolabe.add(coreMesh);
+
+        // 三层细线偏心陀螺仪星环
+        const ringConfigs = [
+            { r: 7.6, tube: 0.04, color: 0x34d399, opacity: 0.45, rx: 0.6, ry: 0.2 },
+            { r: 10.4, tube: 0.03, color: 0x06b6d4, opacity: 0.35, rx: -0.5, ry: 0.8 },
+            { r: 13.4, tube: 0.025, color: 0x10b981, opacity: 0.24, rx: 1.1, ry: -0.4 }
+        ];
+        const rings = ringConfigs.map(cfg => {
+            const geo = new THREE.TorusGeometry(cfg.r, cfg.tube, 12, 128);
+            const mat = new THREE.MeshBasicMaterial({ color: cfg.color, transparent: true, opacity: cfg.opacity });
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.rotation.set(cfg.rx, cfg.ry, 0);
+            astrolabe.add(mesh);
+            return mesh;
+        });
+
+        // 空间微粒群
+        const particleCount = 480;
+        const posArray = new Float32Array(particleCount * 3);
+        for (let i = 0; i < particleCount * 3; i += 3) {
+            const radius = 8 + Math.random() * 24;
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos((Math.random() * 2) - 1);
+            posArray[i] = radius * Math.sin(phi) * Math.cos(theta);
+            posArray[i + 1] = radius * Math.sin(phi) * Math.sin(theta);
+            posArray[i + 2] = radius * Math.cos(phi);
+        }
+        const particlesGeo = new THREE.BufferGeometry();
+        particlesGeo.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
+        const particlesMat = new THREE.PointsMaterial({
+            size: 0.16,
+            color: 0x6ee7b7,
+            transparent: true,
+            opacity: 0.65
+        });
+        const particlesMesh = new THREE.Points(particlesGeo, particlesMat);
+        scene.add(particlesMesh);
+
+        let targetX = 0, targetY = 0;
+        window.addEventListener('mousemove', (e) => {
+            targetX = (e.clientX / window.innerWidth - 0.5) * 0.65;
+            targetY = (e.clientY / window.innerHeight - 0.5) * 0.65;
+        });
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const speed = isOverdrive ? 5.5 : 1.0;
+
+            coreMesh.rotation.y += 0.004 * speed;
+            coreMesh.rotation.x += 0.002 * speed;
+            coreMat.opacity = isOverdrive ? 0.68 : 0.34;
+
+            rings[0].rotation.z += 0.003 * speed;
+            rings[0].rotation.x += 0.002 * speed;
+            rings[1].rotation.y -= 0.004 * speed;
+            rings[2].rotation.z -= 0.0015 * speed;
+            rings[2].rotation.y += 0.002 * speed;
+
+            particlesMesh.rotation.y -= 0.0008 * speed;
+
+            astrolabe.rotation.y += (targetX - astrolabe.rotation.y) * 0.04;
+            astrolabe.rotation.x += (targetY - astrolabe.rotation.x) * 0.04;
+
+            renderer.render(scene, camera);
+        }
+        animate();
+    })();
+
+    // ==================== 2. 安全 JSON 请求包装器 ====================
+    async function fetchJSON(url, options = {}) {
+        const res = await fetch(url, options);
+        const rawText = await res.text();
+        let data;
+        try {
+            data = JSON.parse(rawText);
+        } catch (e) {
+            const preview = rawText.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
+            throw new Error(`HTTP ${res.status}：返回了网页而非 JSON。\n响应摘要: ${preview}`);
+        }
+        if (!res.ok) {
+            throw new Error(data.detail || `请求失败 (HTTP ${res.status})`);
+        }
+        return data;
     }
 
-    async function saveConfig() {
-        const api_key = document.getElementById('apiKey').value;
-        const base_url = document.getElementById('baseUrl').value;
-        const model = document.getElementById('model').value;
-        if (!api_key) return alert('请输入新的 API Key 再保存');
-        await fetch('/api/config', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ api_key, base_url, model })
+    // ==================== 3. 纯享背景开关 ====================
+    let isZen = false;
+    function toggleZenMode() {
+        isZen = !isZen;
+        ['mainNav', 'headerControls', 'viewCompiler', 'viewProxy'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.classList.toggle('ui-hidden', isZen);
         });
-        alert('默认配置已保存，CLI 与 API 均可共享使用！');
+        document.getElementById('zenText').textContent = isZen ? '恢复工作台' : '纯享背景';
+        document.getElementById('zenIcon').textContent = isZen ? '⌘' : '◎';
+    }
+
+    // ==================== 4. 配置持久化与多方案管理 ====================
+    let serverConfig = { active_profile: 'default', profiles: {} };
+    const LOCAL_BACKUP_KEY = 'babel_dsl_backup_v2';
+
+    document.getElementById('proxyEndpoint').textContent = `${window.location.origin}/v1`;
+
+    async function loadInitConfig() {
+        try {
+            serverConfig = await fetchJSON('/api/config');
+            document.getElementById('cfgPathLabel').textContent = serverConfig.config_path || '~/.babel_config.json';
+
+            const activeProf = serverConfig.profiles[serverConfig.active_profile];
+            const localBackup = JSON.parse(localStorage.getItem(LOCAL_BACKUP_KEY) || 'null');
+            if ((!activeProf || !activeProf.has_api_key) && localBackup && localBackup.api_key) {
+                await fetchJSON('/api/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: 'save',
+                        profile_name: localBackup.profile_name || 'default',
+                        api_key: localBackup.api_key,
+                        base_url: localBackup.base_url,
+                        model: localBackup.model,
+                        upstream_url: localBackup.upstream_url || ''
+                    })
+                });
+                serverConfig = await fetchJSON('/api/config');
+            }
+            renderProfileSelectors();
+        } catch (e) {
+            console.error('加载配置失败:', e);
+        }
+    }
+
+    function renderProfileSelectors() {
+        const headerSel = document.getElementById('headerProfileSelect');
+        const modalSel = document.getElementById('modalProfileSelect');
+        headerSel.innerHTML = '';
+        modalSel.innerHTML = '';
+
+        Object.keys(serverConfig.profiles || {}).forEach(name => {
+            headerSel.add(new Option(name, name, false, name === serverConfig.active_profile));
+            modalSel.add(new Option(name, name, false, name === serverConfig.active_profile));
+        });
+
+        const active = serverConfig.profiles[serverConfig.active_profile];
+        if (active) {
+            document.getElementById('headerModelBadge').textContent = `${active.model || '未设模型'} ${active.has_api_key ? '✓' : '⚠缺Key'}`;
+            fillFormFromProfile(serverConfig.active_profile);
+        }
+    }
+
+    function fillFormFromProfile(name) {
+        const p = serverConfig.profiles[name];
+        if (!p) return;
+        document.getElementById('cfgProfileName').value = p.name || name;
+        document.getElementById('cfgBaseUrl').value = p.base_url || '';
+        document.getElementById('cfgModel').value = p.model || '';
+        document.getElementById('cfgUpstreamUrl').value = p.upstream_url || '';
+        document.getElementById('cfgApiKey').value = '';
+        document.getElementById('cfgApiKey').placeholder = p.has_api_key
+            ? `已保存 (${p.api_key_masked})，留空则保持不变`
+            : '请输入 API Key (sk-...)';
+    }
+
+    function applyPreset(name, baseUrl, model) {
+        document.getElementById('cfgProfileName').value = name;
+        document.getElementById('cfgBaseUrl').value = baseUrl;
+        document.getElementById('cfgModel').value = model;
+    }
+
+    async function quickSwitchProfile(name) {
+        await fetchJSON('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'switch', profile_name: name })
+        });
+        await loadInitConfig();
+    }
+
+    async function saveProfileConfig() {
+        const profileName = document.getElementById('cfgProfileName').value.trim() || 'default';
+        const apiKey = document.getElementById('cfgApiKey').value.trim();
+        const baseUrl = document.getElementById('cfgBaseUrl').value.trim();
+        const model = document.getElementById('cfgModel').value.trim();
+        const upstreamUrl = document.getElementById('cfgUpstreamUrl').value.trim();
+
+        try {
+            await fetchJSON('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    action: 'save',
+                    profile_name: profileName,
+                    api_key: apiKey,
+                    base_url: baseUrl,
+                    model: model,
+                    upstream_url: upstreamUrl
+                })
+            });
+
+            const prevBackup = JSON.parse(localStorage.getItem(LOCAL_BACKUP_KEY) || '{}');
+            localStorage.setItem(LOCAL_BACKUP_KEY, JSON.stringify({
+                profile_name: profileName,
+                api_key: apiKey || prevBackup.api_key || '',
+                base_url: baseUrl,
+                model: model,
+                upstream_url: upstreamUrl
+            }));
+
+            await loadInitConfig();
+            toggleConfigModal(false);
+        } catch (e) {
+            alert(e.message);
+        }
+    }
+
+    async function deleteCurrentProfile() {
+        const name = document.getElementById('modalProfileSelect').value;
+        if (!confirm(`确定删除配置方案 [${name}] 吗？`)) return;
+        try {
+            await fetchJSON('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'delete', profile_name: name })
+            });
+            await loadInitConfig();
+        } catch (e) {
+            alert(e.message);
+        }
+    }
+
+    function toggleConfigModal(show) {
+        document.getElementById('configModal').classList.toggle('hidden', !show);
+        if (show) fillFormFromProfile(serverConfig.active_profile);
+    }
+
+    // ==================== 5. 编译与透明代理透视 ====================
+    function switchTab(tab) {
+        const isCompiler = tab === 'compiler';
+        document.getElementById('viewCompiler').classList.toggle('hidden', !isCompiler);
+        document.getElementById('viewProxy').classList.toggle('hidden', isCompiler);
+        document.getElementById('viewProxy').classList.toggle('flex', !isCompiler);
+
+        document.getElementById('tabBtnCompiler').className = isCompiler
+            ? 'px-3.5 py-1.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-semibold transition'
+            : 'px-3.5 py-1.5 rounded-md text-slate-400 hover:text-slate-200 transition';
+        document.getElementById('tabBtnProxy').className = !isCompiler
+            ? 'px-3.5 py-1.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-semibold transition flex items-center gap-1.5'
+            : 'px-3.5 py-1.5 rounded-md text-slate-400 hover:text-slate-200 transition flex items-center gap-1.5';
+
+        if (!isCompiler) loadLogs();
+    }
+
+    function updateInputCount() {
+        const len = document.getElementById('rawInput').value.length;
+        document.getElementById('inputCharCount').textContent = `${len} chars`;
+    }
+
+    function fillDemoText() {
+        document.getElementById('rawInput').value = `你是一名授权渗透测试工程师，目标是找出业务系统里扫描器发现不了的逻辑缺陷、越权、状态机绕过与并发问题。先把所有接口按未认证、普通用户、高权限角色三档标注，标出仅在返回体做权限过滤或用请求参数 userId、orderId 判断归属的接口作为 IDOR 名单，对名单中每一项执行换 ID 重放测试能否读写他人对象。注意检查 GET 改 POST、PUT 改 PATCH、参数从 body 移到 query 以及添加 ?debug=1 绕过鉴权的情况。全程对生产系统只发最小必要流量，能只读不写，写操作前必须征得同意，截图与报告中的敏感凭据一律脱敏。`;
+        updateInputCount();
     }
 
     async function runCompile() {
         const text = document.getElementById('rawInput').value.trim();
         if (!text) return;
         const btn = document.getElementById('runBtn');
-        btn.textContent = '编译中...';
+        btn.textContent = '星盘编译中...';
         btn.disabled = true;
+        isOverdrive = true;
 
         try {
-            const res = await fetch('/api/compile', {
+            const data = await fetchJSON('/api/compile', {
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'},
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     text,
                     mode: document.getElementById('modeSelect').value,
-                    verify: document.getElementById('verifyCheck').checked,
-                    api_key: document.getElementById('apiKey').value || null,
-                    base_url: document.getElementById('baseUrl').value || null,
-                    model: document.getElementById('model').value || null
+                    verify: document.getElementById('verifyCheck').checked
                 })
             });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.detail || '编译失败');
 
             document.getElementById('dslOutput').value = data.compiled;
             const badge = document.getElementById('statsBadge');
-            badge.textContent = `${data.stats.original_chars} → ${data.stats.compiled_chars} 字符 (压缩 ${data.stats.compression_ratio})`;
+            badge.textContent = `${data.stats.original_chars} → ${data.stats.compiled_chars} 字符 (压缩率 ${data.stats.compression_ratio})`;
             badge.classList.remove('hidden');
 
             const auditBox = document.getElementById('auditBox');
             if (data.audit) {
-                auditBox.textContent = `语义审计结果：${data.audit}`;
+                auditBox.textContent = `语义审计：${data.audit}`;
                 auditBox.classList.remove('hidden');
             } else {
                 auditBox.classList.add('hidden');
             }
         } catch (err) {
+            if ((err.message || '').includes('API Key')) toggleConfigModal(true);
             alert(err.message);
         } finally {
-            btn.textContent = '编译 →';
+            btn.textContent = '编译 ⚡';
             btn.disabled = false;
+            isOverdrive = false;
         }
     }
 
     function copyResult() {
         const out = document.getElementById('dslOutput');
-        out.select();
-        document.execCommand('copy');
+        if (!out.value) return;
+        navigator.clipboard.writeText(out.value);
+        const btn = document.getElementById('copyBtn');
+        btn.textContent = '已复制 ✓';
+        setTimeout(() => btn.textContent = '复制 DSL', 1500);
     }
+
+    async function loadLogs() {
+        try {
+            const logs = await fetchJSON('/api/logs');
+            const badge = document.getElementById('logCountBadge');
+            if (logs.length > 0) {
+                badge.textContent = logs.length;
+                badge.classList.remove('hidden');
+            } else {
+                badge.classList.add('hidden');
+            }
+
+            const container = document.getElementById('logsContainer');
+            container.innerHTML = '';
+
+            if (!logs.length) {
+                container.innerHTML = '<div class="glass-panel text-center text-slate-400 text-xs py-14 rounded-xl">暂无代理拦截记录。将你 Product 的 OPENAI_BASE_URL 指向 <code class="text-cyan-300">' + window.location.origin + '/v1</code> 后发起对话，即可在此实时透视底层发送给 Agent 的巴别语。</div>';
+                return;
+            }
+
+            logs.forEach(item => {
+                const card = document.createElement('div');
+                card.className = 'glass-panel rounded-xl overflow-hidden text-xs';
+
+                const header = document.createElement('div');
+                header.className = 'px-4 py-2.5 bg-slate-950/50 border-b border-slate-800/80 flex items-center justify-between';
+                header.innerHTML = `
+            <div class="flex items-center gap-2.5">
+              <span class="text-slate-500">[${item.timestamp}]</span>
+              <span class="px-2 py-0.5 rounded bg-slate-800 text-slate-200 uppercase font-semibold">${item.role}</span>
+              <span class="text-emerald-400 font-semibold">压缩率 ${item.ratio}</span>
+              ${item.cache_hit ? '<span class="px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">⚡ SHA-256 缓存命中</span>' : ''}
+            </div>
+            <span class="text-slate-500">#${item.id}</span>
+          `;
+
+                const grid = document.createElement('div');
+                grid.className = 'grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-slate-800/80';
+
+                const left = document.createElement('pre');
+                left.className = 'p-3.5 whitespace-pre-wrap text-slate-400 leading-relaxed max-h-64 overflow-y-auto';
+                left.textContent = item.original;
+
+                const right = document.createElement('pre');
+                right.className = 'p-3.5 whitespace-pre-wrap text-emerald-300 leading-relaxed max-h-64 overflow-y-auto';
+                right.textContent = item.compiled;
+
+                grid.appendChild(left);
+                grid.appendChild(right);
+                card.appendChild(header);
+                card.appendChild(grid);
+                container.appendChild(card);
+            });
+        } catch (e) {}
+    }
+
+    async function clearLogs() {
+        await fetchJSON('/api/logs', { method: 'DELETE' });
+        loadLogs();
+    }
+
+    setInterval(() => {
+        if (!document.getElementById('viewProxy').classList.contains('hidden') &&
+            document.getElementById('autoRefreshCheck').checked) {
+            loadLogs();
+        }
+    }, 3000);
 
     loadInitConfig();
 </script>
