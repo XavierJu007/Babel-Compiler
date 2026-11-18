@@ -185,6 +185,26 @@
             padding-left: 8px;
         }
 
+        /* 模型配置弹窗内的连通性测试结果 */
+        .conn-status {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            line-height: 1.55;
+            color: var(--text-muted);
+            flex: 1 1 200px;
+            min-width: 0;
+            word-break: break-word;
+        }
+        .conn-status.ok { color: var(--emerald-light); }
+        .conn-status.err { color: #fda4af; }
+        .conn-status.pending { color: var(--cyan-light); }
+        .conn-hint {
+            display: block;
+            margin-top: 2px;
+            color: var(--text-muted);
+            font-size: 10.5px;
+        }
+
         /* ==================== 通用按钮与表单控件 ==================== */
         .btn {
             font-family: var(--font-sans);
@@ -968,6 +988,13 @@
             <input id="cfgUpstreamUrl" type="text" class="form-input" placeholder="留空则默认转发至上方 Base URL">
         </div>
 
+        <div class="form-group" style="border-top: 1px solid var(--border-subtle); padding-top: 12px;">
+            <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                <button type="button" id="cfgTestBtn" class="btn btn-cyan" onclick="testModelConnection()">🔌 测试连接</button>
+                <span id="cfgTestResult" class="conn-status">按当前表单值探测 /chat/completions，无需先保存</span>
+            </div>
+        </div>
+
         <div class="modal-footer">
             <button type="button" class="btn" onclick="toggleConfigModal(false)">取消</button>
             <button type="button" class="btn btn-primary" onclick="saveProfileConfig()">保存并激活方案</button>
@@ -1350,12 +1377,72 @@
         document.getElementById('cfgApiKey').placeholder = p.has_api_key
             ? `已保存 (${p.api_key_masked})，留空则保持不变`
             : '请输入 API Key (sk-...)';
+        resetConnStatus();
     }
 
     function applyPreset(name, baseUrl, model) {
         document.getElementById('cfgProfileName').value = name;
         document.getElementById('cfgBaseUrl').value = baseUrl;
         document.getElementById('cfgModel').value = model;
+        resetConnStatus();
+    }
+
+    // ==================== 5.1 模型连通性测试 ====================
+    const CONN_IDLE_TEXT = '按当前表单值探测 /chat/completions，无需先保存';
+
+    function setConnStatus(kind, text, hints = []) {
+        const box = document.getElementById('cfgTestResult');
+        if (!box) return;
+        box.className = 'conn-status' + (kind ? ' ' + kind : '');
+        box.textContent = text;
+        hints.filter(Boolean).forEach(line => {
+            const span = document.createElement('span');
+            span.className = 'conn-hint';
+            span.textContent = line;
+            box.appendChild(span);
+        });
+    }
+
+    function resetConnStatus() {
+        setConnStatus('', CONN_IDLE_TEXT, []);
+    }
+
+    async function testModelConnection() {
+        const btn = document.getElementById('cfgTestBtn');
+        const payload = {
+            profile_name: document.getElementById('cfgProfileName').value.trim() || serverConfig.active_profile || 'default',
+            api_key: document.getElementById('cfgApiKey').value.trim(),
+            base_url: document.getElementById('cfgBaseUrl').value.trim(),
+            model: document.getElementById('cfgModel').value.trim()
+        };
+
+        btn.disabled = true;
+        btn.textContent = '⏳ 测试中…';
+        setConnStatus('pending', `正在请求 ${payload.base_url || '默认端点'} …`, []);
+
+        try {
+            const r = await fetchJSON('/api/config/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const meta = [
+                r.status_code ? `HTTP ${r.status_code}` : '',
+                r.latency_ms != null ? `${r.latency_ms}ms` : '',
+                r.target_url || ''
+            ].filter(Boolean).join(' · ');
+
+            if (r.ok) {
+                setConnStatus('ok', `✅ ${r.detail}`, [meta]);
+            } else {
+                setConnStatus('err', `❌ ${r.detail}`, [r.hint ? `建议: ${r.hint}` : '', meta]);
+            }
+        } catch (e) {
+            setConnStatus('err', `❌ ${e.message}`, []);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = '🔌 测试连接';
+        }
     }
 
     async function quickSwitchProfile(name) {
@@ -1486,7 +1573,13 @@
     }
 
     function fillDemoText() {
-        document.getElementById('rawInput').value = `你是一名授权渗透测试者，目标是找出业务系统里扫描器永远发现不了的那类漏洞:逻辑缺陷、越权、状态机绕过、并发问题。先做入口与权限模型测绘:把所有接口按[未认证/普通用户/高权限角色」三档标注，标出哪些接口只在返回体里做权限过滤、哪些接口用请求参数里的userId、orderId、tenantId判断归属，这类就是IDOR(越权访问)的名单，对每个名单项做一次「换ID重放」，看能否读取或修改他人对象。因为部分接口无回显，所以SQLi盲注用 LOAD_FILE 或 DNS 外带；SSRF打云元数据重点探测 169.254.169.254 与 302 跳转。全程要求:对生产系统只发最小必要流量，能只读不写，写操作前说明副作用并征得同意，不批量拉取真实用户数据，截图与报告中的凭据和个人信息一律脱敏；未验证的猜测单独列在待确认中，不要混入漏洞清单。`;
+        document.getElementById('rawInput').value = `你是电商平台的售后运营助理，按 SOP 处理订单退款，并同步库存与账务。先判断受理资格：仅「已支付未发货」与「已签收 7 天内」两类订单可自助退款，超期订单不得直接退款，须转人工审批。金额不超过 99 元由一线客服直接处理，99 至 500 元需主管审批，超过 500 元必须财务复核。同一订单 30 天内退款申请不超过 3 次，超出后打标并禁止再次自助提交。
+执行顺序：
+1) 锁定订单并写审计日志（操作人、时间戳、退款原因码），锁定期间禁止并发修改金额；
+2) 调用库存服务回滚可用量，已拆封或已激活的权益类商品不回滚库存，只做作废处理；
+3) 发起原路退款，支付渠道 30 秒内未返回结果即按「处理中」挂起，不得重复发起第二次退款；
+4) 退款成功后 10 分钟内推送通知，通知模板中不包含完整手机号与银行卡号。
+异常处理：库存服务不可用时先挂起并告警，不能跳过库存直接退款；同一用户 24 小时内超过 5 笔退款进入人工抽检；未确认收货的订单不支持「仅退款」通道。所有写操作保留操作前后的状态快照，便于对账回溯。`;
         updateInputCount();
     }
 

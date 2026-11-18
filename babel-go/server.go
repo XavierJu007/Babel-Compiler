@@ -231,6 +231,44 @@ func startServer(preferredAddr string, autoOpen bool) {
 		}
 	})
 
+	http.HandleFunc("/api/config/test", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != "POST" {
+			w.WriteHeader(405)
+			json.NewEncoder(w).Encode(map[string]string{"detail": "仅支持 POST"})
+			return
+		}
+
+		var req struct {
+			ProfileName string `json:"profile_name"`
+			APIKey      string `json:"api_key"`
+			BaseURL     string `json:"base_url"`
+			Model       string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{"detail": "无效请求"})
+			return
+		}
+
+		cfg := loadConfig()
+		prof := getActiveProfile(cfg, strings.TrimSpace(req.ProfileName))
+		prof.Name = firstNonEmpty(strings.TrimSpace(req.ProfileName), cfg.ActiveProfile, prof.Name, "default")
+
+		// 表单值优先于已存配置：允许在保存前先验证一份新的 Key / 地址 / 模型。
+		if key := strings.TrimSpace(req.APIKey); key != "" && !strings.Contains(key, "***") {
+			prof.APIKey = key
+		}
+		if base := strings.TrimSpace(req.BaseURL); base != "" {
+			prof.BaseURL = base
+		}
+		if model := strings.TrimSpace(req.Model); model != "" {
+			prof.Model = model
+		}
+
+		json.NewEncoder(w).Encode(probeProfile(prof))
+	})
+
 	http.HandleFunc("/api/compile", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		var req CompileReq
