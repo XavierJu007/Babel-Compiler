@@ -88,6 +88,10 @@
         </button>
 
         <div id="headerControls" class="ui-fade flex items-center gap-2.5">
+            <button onclick="toggleDialectModal(true)" class="bg-slate-900/90 hover:bg-slate-800 border border-cyan-500/30 text-cyan-300 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition">
+                <span>📖 方言词典</span>
+            </button>
+
             <div class="flex items-center bg-slate-900/90 border border-slate-700/80 rounded-lg px-2.5 py-1.5 gap-2">
                 <span class="text-slate-500">方案:</span>
                 <select id="headerProfileSelect" onchange="quickSwitchProfile(this.value)" class="bg-transparent text-emerald-300 font-semibold focus:outline-none cursor-pointer"></select>
@@ -127,15 +131,14 @@
                     <span class="text-xs font-semibold text-slate-300">INPUT // 自然语言提示词</span>
                     <span id="inputCharCount" class="text-[11px] text-slate-400">0 chars</span>
                 </div>
-                <div class="flex items-center gap-2.5 text-xs">
+                <div class="flex items-center gap-2 text-xs">
                     <label class="flex items-center gap-1.5 cursor-pointer text-slate-300 hover:text-emerald-300" title="开启后若丢失数字阈值或否定约束将直接报错拦截">
                         <input id="verifyCheck" type="checkbox" checked class="accent-emerald-500 rounded"> 硬门禁审计
                     </label>
-                    <select id="modeSelect" class="bg-slate-900 border border-slate-700 rounded-md px-2 py-1 text-slate-200 focus:outline-none focus:border-emerald-500">
-                        <option value="extreme">极限数理符号 (Extreme)</option>
-                        <option value="token">纯 ASCII 省Token (Token-Saver)</option>
-                        <option value="standard">标准树状结构 (Standard)</option>
-                    </select>
+                    <div class="flex items-center">
+                        <select id="modeSelect" class="bg-slate-900 border border-slate-700 rounded-l-md px-2 py-1 text-slate-200 focus:outline-none focus:border-emerald-500 max-w-[200px]"></select>
+                        <button onclick="hotReloadDialects(true)" title="从磁盘热重载方言词典" class="bg-slate-800 hover:bg-slate-700 border border-l-0 border-slate-700 rounded-r-md px-2 py-1 text-cyan-300 transition">↻</button>
+                    </div>
                     <button id="runBtn" onclick="runCompile(false)" class="cyber-btn text-white font-semibold px-3.5 py-1.5 rounded-md">
                         编译 ⚡
                     </button>
@@ -176,11 +179,11 @@
                     <code class="text-cyan-300 select-all bg-slate-950/90 px-2.5 py-1 rounded border border-cyan-500/30" id="proxyEndpointOpenAI">[http://127.0.0.1:8080/v1](http://127.0.0.1:8080/v1)</code>
                 </div>
                 <div>
-                    <span class="text-purple-300 font-semibold">Anthropic BaseURL (Claude Code): </span>
+                    <span class="text-purple-300 font-semibold">Anthropic BaseURL: </span>
                     <code class="text-purple-200 select-all bg-slate-950/90 px-2.5 py-1 rounded border border-purple-500/30" id="proxyEndpointAnthropic">[http://127.0.0.1:8080](http://127.0.0.1:8080)</code>
                 </div>
             </div>
-            <p class="text-slate-300">自动压缩 <code class="text-slate-200">system</code>、<code class="text-slate-200">user</code> 消息以及 <code class="text-amber-300">MCP tools[]</code> Schema 描述，内置 <code class="text-slate-200">json_object</code> 关键词保护与实测账单 Token 捕获。</p>
+            <p class="text-slate-300">默认使用 <code class="text-cyan-300">token</code> 方言压缩，支持请求头 <code class="text-amber-300">X-Babel-Dialect: code-audit</code> 动态切换词典，并自动压缩 MCP <code class="text-slate-200">tools[]</code> 与捕获实测账单 Token。</p>
         </div>
         <div class="flex items-center gap-2.5 text-xs">
             <label class="flex items-center gap-1.5 text-slate-300 cursor-pointer mr-2">
@@ -193,6 +196,67 @@
 
     <div id="logsContainer" class="space-y-3"></div>
 </main>
+
+<!-- 方言词典热插拔编辑器弹窗 -->
+<div id="dialectModal" class="hidden fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-slate-900/95 rounded-2xl max-w-3xl w-full p-6 space-y-4 border border-cyan-500/30 shadow-2xl">
+        <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+            <div>
+                <h3 class="text-base font-bold text-cyan-300">📖 方言词典热插拔管理 (Hot-Reload Dialects)</h3>
+                <p class="text-[11px] text-slate-400 mt-0.5">目录: <span id="dialectDirLabel" class="text-slate-300">~/.babel_dialects</span> (支持编辑本地 .md 后点击热重载)</p>
+            </div>
+            <div class="flex items-center gap-2">
+                <button onclick="hotReloadDialects(true)" class="text-xs bg-cyan-950 hover:bg-cyan-900 border border-cyan-500/30 px-3 py-1 rounded-lg text-cyan-200 transition">↻ 从磁盘热重载</button>
+                <button onclick="toggleDialectModal(false)" class="text-slate-400 hover:text-white text-lg px-2">✕</button>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+            <!-- 左侧：已加载方言列表 -->
+            <div class="space-y-2 border-r border-slate-800 pr-3">
+                <div class="flex items-center justify-between">
+                    <span class="text-slate-400 font-semibold">已加载词典</span>
+                    <button onclick="prepareNewDialect()" class="text-emerald-400 hover:underline">+ 新建</button>
+                </div>
+                <div id="dialectListContainer" class="space-y-1.5 max-h-80 overflow-y-auto"></div>
+            </div>
+
+            <!-- 右侧：方言规则 Markdown 编辑器 -->
+            <div class="md:col-span-2 space-y-3">
+                <div class="grid grid-cols-2 gap-2.5">
+                    <div>
+                        <label class="block text-slate-400 mb-1">方言标识 (文件名, 如 sql-gen)</label>
+                        <input id="dlName" type="text" placeholder="code-audit" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-cyan-300 focus:outline-none focus:border-cyan-500">
+                    </div>
+                    <div>
+                        <label class="block text-slate-400 mb-1">显示名称 (Label)</label>
+                        <input id="dlLabel" type="text" placeholder="代码与安全审计" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-200 focus:outline-none focus:border-cyan-500">
+                    </div>
+                </div>
+
+                <div class="flex items-center gap-4 text-[11px] text-slate-400">
+                    <span>保存位置:</span>
+                    <label class="flex items-center gap-1 cursor-pointer text-slate-200">
+                        <input type="radio" name="dlScope" value="global" checked class="accent-cyan-500"> 全局 (~/.babel_dialects)
+                    </label>
+                    <label class="flex items-center gap-1 cursor-pointer text-slate-200">
+                        <input type="radio" name="dlScope" value="workspace" class="accent-cyan-500"> 当前工作区 (./dialects)
+                    </label>
+                </div>
+
+                <div>
+                    <label class="block text-slate-400 mb-1">方言编译规则 (System Prompt)</label>
+                    <textarea id="dlPrompt" rows="9" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-3 text-xs text-slate-200 leading-relaxed focus:outline-none focus:border-cyan-500" placeholder="输入该领域的符号映射与压缩约束规则..."></textarea>
+                </div>
+
+                <div class="flex items-center justify-between pt-1">
+                    <button onclick="deleteDialect()" class="px-3 py-1.5 rounded-lg bg-rose-950/70 hover:bg-rose-900 border border-rose-500/30 text-rose-300">删除词典</button>
+                    <button onclick="saveDialect()" class="cyber-btn px-4 py-1.5 rounded-lg text-white font-semibold">保存并热加载</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
 
 <!-- 模型与持久化配置弹窗 -->
 <div id="configModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
@@ -385,7 +449,120 @@
         document.getElementById('zenIcon').textContent = isZen ? '⌘' : '◎';
     }
 
-    // ==================== 4. 配置持久化与多方案管理 ====================
+    // ==================== 4. 方言词典热插拔管理 ====================
+    let dialectList = [];
+
+    async function hotReloadDialects(showToast = false) {
+        try {
+            const data = await fetchJSON('/api/dialects');
+            dialectList = data.dialects || [];
+            document.getElementById('dialectDirLabel').textContent = `${data.global_dir} | ${data.workspace_dir}`;
+
+            const modeSel = document.getElementById('modeSelect');
+            const currentVal = modeSel.value || 'extreme';
+            modeSel.innerHTML = '';
+
+            dialectList.forEach(d => {
+                const tag = d.source === 'workspace' ? ' [WS]' : '';
+                modeSel.add(new Option(`${d.label}${tag}`, d.name, false, d.name === currentVal));
+            });
+
+            renderDialectSidebar();
+            if (showToast) {
+                const btn = document.getElementById('runBtn');
+                const orig = btn.textContent;
+                btn.textContent = `已加载 ${dialectList.length} 套方言 ✓`;
+                setTimeout(() => { if (!btn.disabled) btn.textContent = orig; }, 1400);
+            }
+        } catch (e) {
+            console.error('加载方言失败:', e);
+        }
+    }
+
+    function renderDialectSidebar() {
+        const box = document.getElementById('dialectListContainer');
+        if (!box) return;
+        box.innerHTML = '';
+        dialectList.forEach(d => {
+            const btn = document.createElement('button');
+            btn.className = 'w-full text-left px-2.5 py-2 rounded-lg bg-slate-950/80 hover:bg-slate-800 border border-slate-800 transition flex flex-col gap-0.5';
+            btn.onclick = () => selectDialectForEdit(d.name);
+            btn.innerHTML = `
+          <div class="flex items-center justify-between">
+            <span class="text-cyan-300 font-semibold">${d.name}.md</span>
+            <span class="text-[10px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-400">${d.source}</span>
+          </div>
+          <span class="text-slate-300 truncate">${d.label}</span>
+        `;
+            box.appendChild(btn);
+        });
+    }
+
+    function selectDialectForEdit(name) {
+        const d = dialectList.find(item => item.name === name);
+        if (!d) return;
+        document.getElementById('dlName').value = d.name;
+        document.getElementById('dlLabel').value = d.label;
+        document.getElementById('dlPrompt').value = d.prompt;
+        const scopeVal = d.source === 'workspace' ? 'workspace' : 'global';
+        document.querySelectorAll('input[name="dlScope"]').forEach(r => r.checked = (r.value === scopeVal));
+    }
+
+    function prepareNewDialect() {
+        document.getElementById('dlName').value = '';
+        document.getElementById('dlLabel').value = '';
+        document.getElementById('dlPrompt').value = '';
+    }
+
+    async function saveDialect() {
+        const name = document.getElementById('dlName').value.trim();
+        const label = document.getElementById('dlLabel').value.trim();
+        const prompt = document.getElementById('dlPrompt').value.trim();
+        const scope = document.querySelector('input[name="dlScope"]:checked')?.value || 'global';
+        if (!name || !prompt) return alert('请填写方言标识与编译规则');
+
+        try {
+            await fetchJSON('/api/dialects', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'save', name, label, prompt, scope })
+            });
+            await hotReloadDialects(false);
+            document.getElementById('modeSelect').value = name;
+            alert(`方言 [${name}.md] 已保存并热重载生效！`);
+        } catch (e) {
+            alert(e.message);
+        }
+    }
+
+    async function deleteDialect() {
+        const name = document.getElementById('dlName').value.trim();
+        if (!name) return;
+        if (!confirm(`确定删除自定义方言 [${name}.md] 吗？（内置默认方言删除后会恢复内置版本）`)) return;
+        try {
+            await fetchJSON('/api/dialects', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'delete', name })
+            });
+            await hotReloadDialects(false);
+            prepareNewDialect();
+        } catch (e) {
+            alert(e.message);
+        }
+    }
+
+    function toggleDialectModal(show) {
+        document.getElementById('dialectModal').classList.toggle('hidden', !show);
+        if (show) {
+            hotReloadDialects(false).then(() => {
+                const cur = document.getElementById('modeSelect').value;
+                if (cur) selectDialectForEdit(cur);
+            });
+        }
+    }
+
+    // ==================== 5. 配置持久化与多方案管理 ====================
     let serverConfig = { active_profile: 'default', profiles: {} };
     const LOCAL_BACKUP_KEY = 'babel_dsl_backup_v2';
 
@@ -523,7 +700,7 @@
         if (show) fillFormFromProfile(serverConfig.active_profile);
     }
 
-    // ==================== 5. 编译与透明代理透视 ====================
+    // ==================== 6. 编译与透明代理透视 ====================
     function switchTab(tab) {
         const isCompiler = tab === 'compiler';
         document.getElementById('viewCompiler').classList.toggle('hidden', !isCompiler);
@@ -646,12 +823,17 @@
                     ? '<span class="px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30 text-[10px]">ANTHROPIC</span>'
                     : '<span class="px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 border border-sky-500/30 text-[10px]">OPENAI</span>';
 
+                const dialectBadge = item.dialect
+                    ? `<span class="px-1.5 py-0.5 rounded bg-teal-500/15 text-teal-300 border border-teal-500/30 text-[10px]">${item.dialect}</span>`
+                    : '';
+
                 const header = document.createElement('div');
                 header.className = 'px-4 py-2.5 bg-slate-950/50 border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-2';
                 header.innerHTML = `
             <div class="flex flex-wrap items-center gap-2">
               <span class="text-slate-500">[${item.timestamp}]</span>
               ${protoBadge}
+              ${dialectBadge}
               <span class="${roleClass}">${item.role}</span>
               <span class="text-slate-300">${item.ratio}</span>
               ${item.real_billing_ratio ? `<span class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-semibold">💰 ${item.real_billing_ratio}</span>` : ''}
@@ -692,6 +874,7 @@
         }
     }, 3000);
 
+    hotReloadDialects(false);
     loadInitConfig();
 </script>
 </body>

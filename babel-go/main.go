@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -43,9 +44,18 @@ type Config struct {
 	UpstreamURL   string             `json:"upstream_url,omitempty"`
 }
 
+type Dialect struct {
+	Name       string `json:"name"`        // 文件名（不含 .md），如 extreme, token, code-audit
+	Label      string `json:"label"`       // 显示名称，解析自首行 "# Label: xxx"
+	Prompt     string `json:"prompt"`      // 实际发给编译器的 System Prompt
+	PromptHash string `json:"prompt_hash"` // 内容短哈希，用于热重载后自动隔离旧缓存
+	Source     string `json:"source"`      // global | workspace | builtin
+	FilePath   string `json:"file_path"`   // 磁盘文件路径
+}
+
 type CompileReq struct {
 	Text             string   `json:"text"`
-	Mode             string   `json:"mode"`              // extreme | standard | token
+	Mode             string   `json:"mode"`              // 方言名称，如 extreme | standard | token | code-audit
 	Verify           bool     `json:"verify"`            // 开启语义审计
 	StrictGate       bool     `json:"strict_gate"`       // 硬门禁：缺失数值/阈值/否定约束/保留词时直接报错
 	NoCache          bool     `json:"no_cache"`          // 强制跳过缓存重新编译
@@ -58,6 +68,7 @@ type CompileReq struct {
 
 type CompileResp struct {
 	Compiled string `json:"compiled"`
+	Dialect  string `json:"dialect"`
 	Audit    string `json:"audit,omitempty"`
 	CacheHit bool   `json:"cache_hit"`
 	Stats    struct {
@@ -82,6 +93,7 @@ type ProxyLog struct {
 	ID               string `json:"id"`
 	Timestamp        string `json:"timestamp"`
 	Protocol         string `json:"protocol"` // openai | anthropic
+	Dialect          string `json:"dialect"`  // 使用的方言词典名称
 	Role             string `json:"role"`
 	Original         string `json:"original"`
 	Compiled         string `json:"compiled"`
@@ -139,6 +151,9 @@ var (
 	diskCache     = make(map[string]CacheEntry)
 	compileFlight flightGroup
 
+	dialectsMutex  sync.RWMutex
+	loadedDialects = make(map[string]Dialect)
+
 	calibMutex          sync.RWMutex
 	bpeCalibrationScale = 1.0
 
@@ -148,29 +163,60 @@ var (
 	numRegex = regexp.MustCompile(`\d+(?:\.\d+)?`)
 )
 
-var prompts = map[string]string{
-	"standard": `你是一个「高密度提示词编译器」。将自然语言无损编译为结构清晰的树状符号指令（目标长度为原文的 55%~70%）。
-规范：
-1. 使用 ASCII 树形线（├ │ ╰）划分多级缩进，每个独立检查项独占一行。
-2. 剔除虚词，严禁编造多余小标题。
-3. 符号替换：因果→ | 并列+ | 枚举| | 否定¬ | 遍历∀ | 变更↔。
-4. 自动修正技术术语中的明显 OCR 错别字（如 userld→userId, bp//filter→php://filter, CRLE→CRLF）。
-5. 零空行，仅输出纯文本，不要 Markdown 代码块包裹。`,
-
-	"extreme": `你是一个「极限数理逻辑编译器（Babel-DSL）」。将自然语言无损编译为高密度的数理逻辑 AST 树（目标长度为原文的 50%~65%）。
+// 内置默认方言模板（首次启动自动释放为 .md 文件，方便热修改）
+var builtinDialectTemplates = map[string]struct {
+	Label  string
+	Prompt string
+}{
+	"extreme": {
+		Label: "极限数理符号 (Extreme)",
+		Prompt: `你是一个「极限数理逻辑编译器（Babel-DSL）」。将自然语言无损编译为高密度的数理逻辑 AST 树（目标长度为原文的 50%~65%）。
 规范：
 1. 首行格式固定为：Role:=<角色> | Target:=<目标> ∧ <核心范围>
 2. 必须使用 ├ │ ╰ 构建多级缩进树（主阶段用 ├1 / ├2 / ╰N，子项用 │ ├ / │ ╰），每个独立条件独占一行。
 3. 强制使用数理逻辑算子：定义:= | 因果→ | 与∧ | 或| | 非¬ | 遍历∀ | 命中∃ | 属于∈ | 篡改↔ | 探测? | 红线⚠。
 4. 严禁丢失任何数字、阈值、Payload 与否定约束（如“不批量”、“不过期”、“不验签”必须显式保留 ¬ 约束）。
 5. 零空行，仅输出编译后的纯文本，不要 Markdown 代码块包裹。`,
-
-	"token": `你是一个「BPE Tokenizer 极致压缩编译器」。为了避免 UTF-8 多字节符号（如 ├ ∀ ∃）触发分词器 Byte-Fallback 消耗 2~3 个 Token，所有结构与逻辑符号必须严格使用单字节 ASCII 字符！
+	},
+	"token": {
+		Label: "纯 ASCII 省Token (Token-Saver)",
+		Prompt: `你是一个「BPE Tokenizer 极致压缩编译器」。为了避免 UTF-8 多字节符号（如 ├ ∀ ∃）触发分词器 Byte-Fallback 消耗 2~3 个 Token，所有结构与逻辑符号必须严格使用单字节 ASCII 字符！
 规范：
 1. 若输入为长段落指令，首行用 Role:=<角色> | Target:=<目标> & <范围>，并用单字节缩进 |- 1. / |- / '- 分层；若输入为简短的工具/参数描述（如 MCP Tool Description），直接输出紧凑的短语或符号表达式（无需强行套用 Role:= 首行）。
 2. 逻辑算子仅使用单字节 ASCII：:= (定义) | -> (因果) | & (与) | | (或) | ! (非/禁止) | ALL (遍历) | HAS (命中) | IN (属于) | <-> (篡改) | ? (探测)。
 3. 严禁丢失任何数字、阈值、枚举值、格式要求（如 json）与否定约束。
 4. 零空行，仅输出纯文本，不要 Markdown 代码块包裹。`,
+	},
+	"standard": {
+		Label: "标准树状结构 (Standard)",
+		Prompt: `你是一个「高密度提示词编译器」。将自然语言无损编译为结构清晰的树状符号指令（目标长度为原文的 55%~70%）。
+规范：
+1. 使用 ASCII 树形线（├ │ ╰）划分多级缩进，每个独立检查项独占一行。
+2. 剔除虚词，严禁编造多余小标题。
+3. 符号替换：因果→ | 并列+ | 枚举| | 否定¬ | 遍历∀ | 变更↔。
+4. 自动修正技术术语中的明显 OCR 错别字（如 userld→userId, bp//filter→php://filter, CRLE→CRLF）。
+5. 零空行，仅输出纯文本，不要 Markdown 代码块包裹。`,
+	},
+	"code-audit": {
+		Label: "代码与安全审计 (Code/Sec Audit)",
+		Prompt: `你是一个「代码审计与漏洞狩猎 DSL 编译器」。将安全测试 SOP 或代码审查规范压缩为高密度符号树。
+规范：
+1. 首行格式：AuditRole:=<角色> | Scope:=<资产/代码范围>
+2. 使用 ├ │ ╰ 划分阶段，强制保留所有文件路径、函数名、Sink点、CVE编号、Payload、HTTP方法与状态码。
+3. 逻辑算子：:= (定义) | -> (数据流/污点传播) | & (同时满足) | | (或) | ! (未过滤/禁止) | ALL (遍历接口/文件) | ? (验证利用)。
+4. 生产红线与脱敏约束用 [!] 前缀高亮置于末尾分支。
+5. 零空行，仅输出纯文本，不要 Markdown 代码块包裹。`,
+	},
+	"en-terse": {
+		Label: "英文极简指令 (English Terse DSL)",
+		Prompt: `You are a high-density Symbolic Prompt Compiler. Compress verbose English instructions into ultra-terse ASCII symbolic DSL (45%-60% of original tokens) with zero loss of constraints, numbers, or tool schemas.
+Rules:
+1. Header (for long system prompts): Role:=<role> | Goal:=<goal> & <constraints>. For short tool descriptions, output a single compact phrase.
+2. Hierarchy: use |- and '- indentation.
+3. Operators: := (define), -> (leads to / output), & (and), | (or), ! (not / forbid), ALL (for each), HAS (if exists), ? (verify).
+4. Preserve all numbers, thresholds, identifiers, and required keywords (e.g., json).
+5. Output plain text only, no empty lines, no markdown fences.`,
+	},
 }
 
 const verifyGatePrompt = `你是一个严苛的「语义无损门禁审计器」。对比【原文】与【编译后DSL】，逐项核查以下三类关键不变量是否 100% 保留：
@@ -182,6 +228,189 @@ const verifyGatePrompt = `你是一个严苛的「语义无损门禁审计器」
 {"pass": true, "missing": []}
 或
 {"pass": false, "missing": ["缺失项1", "缺失项2"]}`
+
+// ==================== 方言词典加载与热插拔管理 ====================
+
+func globalDialectsDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "dialects"
+	}
+	return filepath.Join(home, ".babel_dialects")
+}
+
+func workspaceDialectsDir() string {
+	return "dialects"
+}
+
+func shortHash(s string) string {
+	h := sha256.Sum256([]byte(strings.TrimSpace(s)))
+	return hex.EncodeToString(h[:])[:12]
+}
+
+func sanitizeDialectName(name string) string {
+	base := filepath.Base(strings.TrimSpace(name))
+	base = strings.TrimSuffix(base, ".md")
+	var clean strings.Builder
+	for _, r := range base {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			clean.WriteRune(r)
+		}
+	}
+	return clean.String()
+}
+
+func parseDialectMarkdown(name, rawContent, source, filePath string) Dialect {
+	content := strings.ReplaceAll(rawContent, "\r\n", "\n")
+	lines := strings.Split(content, "\n")
+	label := name
+	startIdx := 0
+
+	if len(lines) > 0 {
+		first := strings.TrimSpace(lines[0])
+		if strings.HasPrefix(first, "# Label:") {
+			label = strings.TrimSpace(strings.TrimPrefix(first, "# Label:"))
+			startIdx = 1
+		} else if strings.HasPrefix(first, "# ") && len([]rune(first)) <= 40 {
+			label = strings.TrimSpace(strings.TrimPrefix(first, "# "))
+			startIdx = 1
+		}
+	}
+
+	promptBody := strings.TrimSpace(strings.Join(lines[startIdx:], "\n"))
+	if promptBody == "" {
+		promptBody = strings.TrimSpace(content)
+	}
+
+	return Dialect{
+		Name:       name,
+		Label:      label,
+		Prompt:     promptBody,
+		PromptHash: shortHash(promptBody),
+		Source:     source,
+		FilePath:   filePath,
+	}
+}
+
+func seedDefaultDialectsIfNeeded(dir string) {
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return
+		}
+		for name, tpl := range builtinDialectTemplates {
+			fileContent := fmt.Sprintf("# Label: %s\n%s\n", tpl.Label, tpl.Prompt)
+			_ = os.WriteFile(filepath.Join(dir, name+".md"), []byte(fileContent), 0644)
+		}
+	}
+}
+
+func scanDialectDir(dir, source string, target map[string]Dialect) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".md") {
+			continue
+		}
+		rawName := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+		name := sanitizeDialectName(rawName)
+		if name == "" {
+			continue
+		}
+		fullPath := filepath.Join(dir, entry.Name())
+		b, err := os.ReadFile(fullPath)
+		if err != nil {
+			continue
+		}
+		target[name] = parseDialectMarkdown(name, string(b), source, fullPath)
+	}
+}
+
+// 热重载所有磁盘方言词典（全局 ~/.babel_dialects + 项目级 ./dialects 覆盖）
+func reloadDialects() int {
+	gDir := globalDialectsDir()
+	seedDefaultDialectsIfNeeded(gDir)
+
+	nextMap := make(map[string]Dialect)
+	// 1. 兜底加载内置模板
+	for name, tpl := range builtinDialectTemplates {
+		nextMap[name] = Dialect{
+			Name:       name,
+			Label:      tpl.Label,
+			Prompt:     tpl.Prompt,
+			PromptHash: shortHash(tpl.Prompt),
+			Source:     "builtin",
+		}
+	}
+	// 2. 加载全局方言目录 ~/.babel_dialects/*.md
+	scanDialectDir(gDir, "global", nextMap)
+	// 3. 加载当前工作区目录 ./dialects/*.md（优先级最高，可覆盖全局）
+	wDir := workspaceDialectsDir()
+	if st, err := os.Stat(wDir); err == nil && st.IsDir() {
+		scanDialectDir(wDir, "workspace", nextMap)
+	}
+
+	dialectsMutex.Lock()
+	loadedDialects = nextMap
+	count := len(loadedDialects)
+	dialectsMutex.Unlock()
+	return count
+}
+
+func getDialect(name string) Dialect {
+	cleanName := sanitizeDialectName(name)
+	if cleanName == "" {
+		cleanName = "extreme"
+	}
+
+	dialectsMutex.RLock()
+	d, ok := loadedDialects[cleanName]
+	if !ok {
+		d, ok = loadedDialects["extreme"]
+	}
+	dialectsMutex.RUnlock()
+
+	if ok {
+		return d
+	}
+	tpl := builtinDialectTemplates["extreme"]
+	return Dialect{
+		Name:       "extreme",
+		Label:      tpl.Label,
+		Prompt:     tpl.Prompt,
+		PromptHash: shortHash(tpl.Prompt),
+		Source:     "builtin",
+	}
+}
+
+func listSortedDialects() []Dialect {
+	dialectsMutex.RLock()
+	list := make([]Dialect, 0, len(loadedDialects))
+	for _, d := range loadedDialects {
+		list = append(list, d)
+	}
+	dialectsMutex.RUnlock()
+
+	priority := map[string]int{"extreme": 1, "token": 2, "standard": 3, "code-audit": 4, "en-terse": 5}
+	sort.Slice(list, func(i, j int) bool {
+		pi, oki := priority[list[i].Name]
+		pj, okj := priority[list[j].Name]
+		if oki && okj {
+			return pi < pj
+		}
+		if oki {
+			return true
+		}
+		if okj {
+			return false
+		}
+		return list[i].Name < list[j].Name
+	})
+	return list
+}
+
+// ==================== 配置文件与 LRU 缓存 ====================
 
 func configPath() string {
 	localCfg := "babel.config.json"
@@ -565,7 +794,6 @@ func formatStats(orig, comp string) (int, int, int, int, string) {
 	return oChars, cChars, oTok, cTok, summary
 }
 
-// 本地确定性硬门禁：校验数字/阈值、否定约束、以及协议保留词（如 json_object 模式下的 "json"）
 func checkDeterministicInvariants(orig, comp string, requiredKeywords []string) []string {
 	var failures []string
 
@@ -645,8 +873,10 @@ func runAuditGate(p Profile, orig, comp string, requiredKeywords []string) (bool
 	return false, "[语义门禁拦截] " + cleaned
 }
 
-func makeCacheKey(mode, model, text string) string {
-	h := sha256.Sum256([]byte(mode + "|" + model + "|" + strings.TrimSpace(text)))
+// 缓存 Key 绑定方言内容哈希：热修改某份 .md 方言后自动失效该方言旧缓存
+func makeCacheKey(dialect Dialect, model, text string) string {
+	raw := fmt.Sprintf("%s#%s|%s|%s", dialect.Name, dialect.PromptHash, model, strings.TrimSpace(text))
+	h := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(h[:])
 }
 
@@ -663,15 +893,9 @@ func doCompile(req CompileReq) (CompileResp, error) {
 	if req.Model != "" {
 		p.Model = req.Model
 	}
-	if req.Mode == "" {
-		req.Mode = "extreme"
-	}
-	sys, ok := prompts[req.Mode]
-	if !ok {
-		sys = prompts["extreme"]
-	}
 
-	cacheKey := makeCacheKey(req.Mode, p.Model, req.Text)
+	dialect := getDialect(req.Mode)
+	cacheKey := makeCacheKey(dialect, p.Model, req.Text)
 
 	// 1. 查询 LRU 持久化缓存
 	if !req.NoCache {
@@ -686,11 +910,11 @@ func doCompile(req CompileReq) (CompileResp, error) {
 		if hit && cached.Compiled != "" {
 			var out CompileResp
 			out.Compiled = cached.Compiled
+			out.Dialect = dialect.Name
 			out.CacheHit = true
 			out.Audit = cached.Audit
 
 			if req.StrictGate {
-				// 即使命中缓存，仍校验动态传入的 RequiredKeywords（如 json_object）
 				if fails := checkDeterministicInvariants(req.Text, out.Compiled, req.RequiredKeywords); len(fails) > 0 {
 					return CompileResp{}, fmt.Errorf("[本地硬门禁拦截] %s", strings.Join(fails, "; "))
 				}
@@ -718,7 +942,7 @@ func doCompile(req CompileReq) (CompileResp, error) {
 	}
 
 	res, shared, err := compileFlight.Do(flightKey, func() (CompileResp, error) {
-		compiled, err := callLLM(p, sys, req.Text, 0.1)
+		compiled, err := callLLM(p, dialect.Prompt, req.Text, 0.1)
 		if err != nil {
 			return CompileResp{}, err
 		}
@@ -739,7 +963,7 @@ func doCompile(req CompileReq) (CompileResp, error) {
 			Compiled:   compiled,
 			Audit:      auditReport,
 			Model:      p.Model,
-			Mode:       req.Mode,
+			Mode:       dialect.Name,
 			CreatedAt:  now.Format(time.RFC3339),
 			LastAccess: now.Unix(),
 		}
@@ -748,6 +972,7 @@ func doCompile(req CompileReq) (CompileResp, error) {
 
 		var out CompileResp
 		out.Compiled = compiled
+		out.Dialect = dialect.Name
 		out.Audit = auditReport
 		out.CacheHit = false
 		out.Stats.OriginalChars, out.Stats.CompiledChars, out.Stats.OriginalTokens, out.Stats.CompiledTokens, out.Stats.CompressionRatio = formatStats(req.Text, compiled)
@@ -763,7 +988,7 @@ func doCompile(req CompileReq) (CompileResp, error) {
 	return res, nil
 }
 
-// ==================== P1 核心：协议保护、MCP Tools 压缩与双协议代理 ====================
+// ==================== 协议保护、MCP Tools 压缩与双协议代理 ====================
 
 func isJSONResponseFormat(payload map[string]any) bool {
 	rf, ok := payload["response_format"].(map[string]any)
@@ -774,13 +999,23 @@ func isJSONResponseFormat(payload map[string]any) bool {
 	return rfType == "json_object"
 }
 
-func translateMessageBlock(protocol, role, text string, p Profile, reqKeywords []string) (string, string, int, int) {
+func resolveProxyDialect(r *http.Request) Dialect {
+	name := strings.TrimSpace(r.Header.Get("X-Babel-Dialect"))
+	if name == "" {
+		name = strings.TrimSpace(r.Header.Get("X-Babel-Mode"))
+	}
+	if name == "" {
+		name = "token"
+	}
+	return getDialect(name)
+}
+
+func translateMessageBlock(protocol, role, text string, p Profile, dialect Dialect, reqKeywords []string) (string, string, int, int) {
 	origTok := estimateTokensBPE(text)
 	if len([]rune(strings.TrimSpace(text))) < 35 {
 		return text, "", origTok, origTok
 	}
 
-	// 仅当原文本身包含该保留词时，才强制要求压缩后保留该词
 	var activeKeywords []string
 	textLower := strings.ToLower(text)
 	for _, kw := range reqKeywords {
@@ -791,7 +1026,7 @@ func translateMessageBlock(protocol, role, text string, p Profile, reqKeywords [
 
 	res, err := doCompile(CompileReq{
 		Text:             text,
-		Mode:             "token",
+		Mode:             dialect.Name,
 		StrictGate:       true,
 		RequiredKeywords: activeKeywords,
 		APIKey:           p.APIKey,
@@ -802,7 +1037,7 @@ func translateMessageBlock(protocol, role, text string, p Profile, reqKeywords [
 		return text, "", origTok, origTok
 	}
 
-	key := makeCacheKey("token", p.Model, text)
+	key := makeCacheKey(dialect, p.Model, text)
 	logID := key[:8]
 	compTok := estimateTokensBPE(res.Compiled)
 
@@ -810,6 +1045,7 @@ func translateMessageBlock(protocol, role, text string, p Profile, reqKeywords [
 		ID:        logID,
 		Timestamp: time.Now().Format("15:04:05"),
 		Protocol:  protocol,
+		Dialect:   dialect.Name,
 		Role:      role,
 		Original:  text,
 		Compiled:  res.Compiled,
@@ -819,10 +1055,9 @@ func translateMessageBlock(protocol, role, text string, p Profile, reqKeywords [
 	return res.Compiled, logID, origTok, compTok
 }
 
-// 递归压缩 JSON Schema 节点中的 description（严格保留 properties 键名与 type/required 等结构）
-func compressSchemaNode(protocol, toolLabel string, node map[string]any, p Profile, logIDs *[]string, estOrig, estComp *int) {
+func compressSchemaNode(protocol, toolLabel string, node map[string]any, p Profile, dialect Dialect, logIDs *[]string, estOrig, estComp *int) {
 	if desc, ok := node["description"].(string); ok {
-		comp, id, oTok, cTok := translateMessageBlock(protocol, toolLabel, desc, p, nil)
+		comp, id, oTok, cTok := translateMessageBlock(protocol, toolLabel, desc, p, dialect, nil)
 		node["description"] = comp
 		*estOrig += oTok
 		*estComp += cTok
@@ -834,25 +1069,23 @@ func compressSchemaNode(protocol, toolLabel string, node map[string]any, p Profi
 	if props, ok := node["properties"].(map[string]any); ok {
 		for propName, propVal := range props {
 			if propMap, ok := propVal.(map[string]any); ok {
-				compressSchemaNode(protocol, toolLabel+"."+propName, propMap, p, logIDs, estOrig, estComp)
+				compressSchemaNode(protocol, toolLabel+"."+propName, propMap, p, dialect, logIDs, estOrig, estComp)
 			}
 		}
 	}
 
 	if items, ok := node["items"].(map[string]any); ok {
-		compressSchemaNode(protocol, toolLabel+"[]", items, p, logIDs, estOrig, estComp)
+		compressSchemaNode(protocol, toolLabel+"[]", items, p, dialect, logIDs, estOrig, estComp)
 	}
 }
 
-// 压缩 OpenAI & Anthropic MCP tools[] 定义中的 description 字段
-func compressToolsArray(protocol string, tools []any, p Profile, logIDs *[]string, estOrig, estComp *int) {
+func compressToolsArray(protocol string, tools []any, p Profile, dialect Dialect, logIDs *[]string, estOrig, estComp *int) {
 	for _, item := range tools {
 		toolMap, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}
 
-		// 1. OpenAI 格式: { "type": "function", "function": { "name": "...", "description": "...", "parameters": {...} } }
 		if fnMap, ok := toolMap["function"].(map[string]any); ok {
 			fnName, _ := fnMap["name"].(string)
 			if fnName == "" {
@@ -861,7 +1094,7 @@ func compressToolsArray(protocol string, tools []any, p Profile, logIDs *[]strin
 			label := "tool:" + fnName
 
 			if desc, ok := fnMap["description"].(string); ok {
-				comp, id, oTok, cTok := translateMessageBlock(protocol, label, desc, p, nil)
+				comp, id, oTok, cTok := translateMessageBlock(protocol, label, desc, p, dialect, nil)
 				fnMap["description"] = comp
 				*estOrig += oTok
 				*estComp += cTok
@@ -870,12 +1103,11 @@ func compressToolsArray(protocol string, tools []any, p Profile, logIDs *[]strin
 				}
 			}
 			if params, ok := fnMap["parameters"].(map[string]any); ok {
-				compressSchemaNode(protocol, label, params, p, logIDs, estOrig, estComp)
+				compressSchemaNode(protocol, label, params, p, dialect, logIDs, estOrig, estComp)
 			}
 			continue
 		}
 
-		// 2. Anthropic 原生格式: { "name": "...", "description": "...", "input_schema": {...} }
 		toolName, _ := toolMap["name"].(string)
 		if toolName == "" {
 			toolName = "unknown"
@@ -883,7 +1115,7 @@ func compressToolsArray(protocol string, tools []any, p Profile, logIDs *[]strin
 		label := "tool:" + toolName
 
 		if desc, ok := toolMap["description"].(string); ok {
-			comp, id, oTok, cTok := translateMessageBlock(protocol, label, desc, p, nil)
+			comp, id, oTok, cTok := translateMessageBlock(protocol, label, desc, p, dialect, nil)
 			toolMap["description"] = comp
 			*estOrig += oTok
 			*estComp += cTok
@@ -892,12 +1124,11 @@ func compressToolsArray(protocol string, tools []any, p Profile, logIDs *[]strin
 			}
 		}
 		if schema, ok := toolMap["input_schema"].(map[string]any); ok {
-			compressSchemaNode(protocol, label, schema, p, logIDs, estOrig, estComp)
+			compressSchemaNode(protocol, label, schema, p, dialect, logIDs, estOrig, estComp)
 		}
 	}
 }
 
-// 兜底保障：当开启 json_object 模式时，确保消息列表中至少存在一处 "json" 关键词
 func ensureJSONKeywordInOpenAIMessages(msgs []any) {
 	for _, m := range msgs {
 		msgMap, ok := m.(map[string]any)
@@ -920,7 +1151,6 @@ func ensureJSONKeywordInOpenAIMessages(msgs []any) {
 		}
 	}
 
-	// 若所有消息均丢失了 json 词，自动向 system 或首条 user 消息追加 (JSON)
 	for _, m := range msgs {
 		msgMap, ok := m.(map[string]any)
 		if !ok {
@@ -990,7 +1220,6 @@ func extractUsageFromAnthropicSSE(buf string) int {
 	return 0
 }
 
-// 1. OpenAI 兼容透明代理网关: POST /v1/chat/completions
 func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "Method Not Allowed", 405)
@@ -1010,6 +1239,7 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	cfg := loadConfig()
 	p := getActiveProfile(cfg, r.Header.Get("X-Babel-Profile"))
+	dialect := resolveProxyDialect(r)
 
 	var reqKeywords []string
 	requireJSON := isJSONResponseFormat(payload)
@@ -1044,7 +1274,7 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 			switch content := msgMap["content"].(type) {
 			case string:
-				comp, id, oTok, cTok := translateMessageBlock("openai", role, content, p, reqKeywords)
+				comp, id, oTok, cTok := translateMessageBlock("openai", role, content, p, dialect, reqKeywords)
 				msgMap["content"] = comp
 				estOrigTotal += oTok
 				estCompTotal += cTok
@@ -1056,7 +1286,7 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 					if partMap, ok := part.(map[string]any); ok {
 						if partMap["type"] == "text" {
 							if txt, ok := partMap["text"].(string); ok {
-								comp, id, oTok, cTok := translateMessageBlock("openai", role, txt, p, reqKeywords)
+								comp, id, oTok, cTok := translateMessageBlock("openai", role, txt, p, dialect, reqKeywords)
 								partMap["text"] = comp
 								estOrigTotal += oTok
 								estCompTotal += cTok
@@ -1075,10 +1305,9 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// MCP / Function Calling tools[] Schema 描述压缩
 	toolsList, hasTools := payload["tools"].([]any)
 	if hasTools && len(toolsList) > 0 {
-		compressToolsArray("openai", toolsList, p, &logIDs, &estOrigTotal, &estCompTotal)
+		compressToolsArray("openai", toolsList, p, dialect, &logIDs, &estOrigTotal, &estCompTotal)
 	}
 
 	isStream, _ := payload["stream"].(bool)
@@ -1169,7 +1398,6 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// 2. 原生 Anthropic 协议透明代理网关: POST /v1/messages (适配 Claude Code & Anthropic SDK)
 func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "Method Not Allowed", 405)
@@ -1189,6 +1417,7 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	cfg := loadConfig()
 	p := getActiveProfile(cfg, r.Header.Get("X-Babel-Profile"))
+	dialect := resolveProxyDialect(r)
 
 	var (
 		logIDs       []string
@@ -1196,10 +1425,9 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 		estCompTotal int
 	)
 
-	// 处理顶层 system（支持字符串或内容块数组，保留 cache_control）
 	switch sysVal := payload["system"].(type) {
 	case string:
-		comp, id, oTok, cTok := translateMessageBlock("anthropic", "system", sysVal, p, nil)
+		comp, id, oTok, cTok := translateMessageBlock("anthropic", "system", sysVal, p, dialect, nil)
 		payload["system"] = comp
 		estOrigTotal += oTok
 		estCompTotal += cTok
@@ -1211,7 +1439,7 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 			if blockMap, ok := block.(map[string]any); ok {
 				if blockMap["type"] == "text" {
 					if txt, ok := blockMap["text"].(string); ok {
-						comp, id, oTok, cTok := translateMessageBlock("anthropic", "system", txt, p, nil)
+						comp, id, oTok, cTok := translateMessageBlock("anthropic", "system", txt, p, dialect, nil)
 						blockMap["text"] = comp
 						estOrigTotal += oTok
 						estCompTotal += cTok
@@ -1224,7 +1452,6 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 处理 messages[] 中的 user 消息（支持纯字符串或 Anthropic 内容块数组）
 	if msgs, ok := payload["messages"].([]any); ok {
 		for _, m := range msgs {
 			msgMap, ok := m.(map[string]any)
@@ -1246,7 +1473,7 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 			switch content := msgMap["content"].(type) {
 			case string:
-				comp, id, oTok, cTok := translateMessageBlock("anthropic", "user", content, p, nil)
+				comp, id, oTok, cTok := translateMessageBlock("anthropic", "user", content, p, dialect, nil)
 				msgMap["content"] = comp
 				estOrigTotal += oTok
 				estCompTotal += cTok
@@ -1258,7 +1485,7 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 					if partMap, ok := part.(map[string]any); ok {
 						if partMap["type"] == "text" {
 							if txt, ok := partMap["text"].(string); ok {
-								comp, id, oTok, cTok := translateMessageBlock("anthropic", "user", txt, p, nil)
+								comp, id, oTok, cTok := translateMessageBlock("anthropic", "user", txt, p, dialect, nil)
 								partMap["text"] = comp
 								estOrigTotal += oTok
 								estCompTotal += cTok
@@ -1273,10 +1500,9 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 压缩 Anthropic 原生 tools[] Schema 描述
 	toolsList, hasTools := payload["tools"].([]any)
 	if hasTools && len(toolsList) > 0 {
-		compressToolsArray("anthropic", toolsList, p, &logIDs, &estOrigTotal, &estCompTotal)
+		compressToolsArray("anthropic", toolsList, p, dialect, &logIDs, &estOrigTotal, &estCompTotal)
 	}
 
 	isStream, _ := payload["stream"].(bool)
@@ -1353,7 +1579,6 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Anthropic 流式响应在最开始的 message_start 事件里携带 input_tokens，保留前 8KB 捕获
 	flusher, canFlush := w.(http.Flusher)
 	buf := make([]byte, 4096)
 	var headCapture string
@@ -1410,6 +1635,84 @@ func startServer(preferredAddr string, autoOpen bool) {
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(w, indexHTML)
+	})
+
+	// 方言词典热插拔管理 API
+	http.HandleFunc("/api/dialects", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == "GET" {
+			// 每次请求自动从磁盘重新扫描，实现即改即生效的热重载
+			reloadDialects()
+			json.NewEncoder(w).Encode(map[string]any{
+				"global_dir":    globalDialectsDir(),
+				"workspace_dir": workspaceDialectsDir(),
+				"dialects":      listSortedDialects(),
+			})
+			return
+		}
+
+		if r.Method == "POST" {
+			var req struct {
+				Action string `json:"action"` // save | delete | reload
+				Name   string `json:"name"`
+				Label  string `json:"label"`
+				Prompt string `json:"prompt"`
+				Scope  string `json:"scope"` // global | workspace
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				w.WriteHeader(400)
+				json.NewEncoder(w).Encode(map[string]string{"detail": "无效请求"})
+				return
+			}
+
+			if req.Action == "reload" {
+				cnt := reloadDialects()
+				json.NewEncoder(w).Encode(map[string]any{"status": "reloaded", "count": cnt})
+				return
+			}
+
+			name := sanitizeDialectName(req.Name)
+			if name == "" {
+				w.WriteHeader(400)
+				json.NewEncoder(w).Encode(map[string]string{"detail": "方言名称仅支持字母、数字、下划线与连字符"})
+				return
+			}
+
+			targetDir := globalDialectsDir()
+			if req.Scope == "workspace" {
+				targetDir = workspaceDialectsDir()
+			}
+			_ = os.MkdirAll(targetDir, 0755)
+			filePath := filepath.Join(targetDir, name+".md")
+
+			if req.Action == "delete" {
+				_ = os.Remove(filepath.Join(workspaceDialectsDir(), name+".md"))
+				_ = os.Remove(filepath.Join(globalDialectsDir(), name+".md"))
+				reloadDialects()
+				json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+				return
+			}
+
+			label := strings.TrimSpace(req.Label)
+			if label == "" {
+				label = name
+			}
+			prompt := strings.TrimSpace(req.Prompt)
+			if prompt == "" {
+				w.WriteHeader(400)
+				json.NewEncoder(w).Encode(map[string]string{"detail": "方言提示词规则不能为空"})
+				return
+			}
+
+			mdContent := fmt.Sprintf("# Label: %s\n%s\n", label, prompt)
+			if err := os.WriteFile(filePath, []byte(mdContent), 0644); err != nil {
+				w.WriteHeader(500)
+				json.NewEncoder(w).Encode(map[string]string{"detail": "写入方言文件失败: " + err.Error()})
+				return
+			}
+			reloadDialects()
+			json.NewEncoder(w).Encode(map[string]string{"status": "saved", "file_path": filePath})
+		}
 	})
 
 	http.HandleFunc("/api/config", func(w http.ResponseWriter, r *http.Request) {
@@ -1551,7 +1854,6 @@ func startServer(preferredAddr string, autoOpen bool) {
 		json.NewEncoder(w).Encode(proxyLogs)
 	})
 
-	// 双协议透明代理端点
 	http.HandleFunc("/v1/chat/completions", openAIProxyHandler)
 	http.HandleFunc("/v1/messages", anthropicProxyHandler)
 
@@ -1564,6 +1866,7 @@ func startServer(preferredAddr string, autoOpen bool) {
 	webURL := "http://" + actualAddr
 	fmt.Printf("[+] Babel-DSL 服务已就绪:\n")
 	fmt.Printf("    - 配置文件:       %s\n", configPath())
+	fmt.Printf("    - 方言词典目录:   %s (支持 ./dialects 覆盖)\n", globalDialectsDir())
 	fmt.Printf("    - LRU 缓存池:     %s (上限 %d 条)\n", cacheFilePath(), maxCacheEntries)
 	fmt.Printf("    - Web 控制台:     %s\n", webURL)
 	fmt.Printf("    - OpenAI 代理:    %s/v1/chat/completions\n", webURL)
@@ -1581,10 +1884,12 @@ func startServer(preferredAddr string, autoOpen bool) {
 
 func main() {
 	initDiskCache()
+	reloadDialects()
 
 	serveAddr := flag.String("serve", "", "指定 Web/API/代理服务地址 (留空则自动探测可用端口)")
 	profileName := flag.String("profile", "", "指定使用的已保存配置方案名称")
-	mode := flag.String("m", "extreme", "压缩模式: extreme | standard | token (纯ASCII省Token)")
+	mode := flag.String("m", "extreme", "指定方言名称 (如 extreme | token | standard | code-audit | 自定义.md名称)")
+	listDialects := flag.Bool("list-dialects", false, "列出所有已加载的方言词典并退出")
 	verify := flag.Bool("v", false, "开启往返语义审计")
 	strictGate := flag.Bool("gate", false, "开启硬门禁：缺失数值、阈值或否定约束时直接报错失败")
 	noCache := flag.Bool("no-cache", false, "跳过本地确定性缓存强制重新编译")
@@ -1595,6 +1900,13 @@ func main() {
 	model := flag.String("model", "", "指定编译器模型名称")
 	saveCfg := flag.Bool("save-config", false, "保存当前参数为配置方案")
 	flag.Parse()
+
+	if *listDialects {
+		for _, d := range listSortedDialects() {
+			fmt.Printf("%-14s | %-28s | [%s] %s\n", d.Name, d.Label, d.Source, d.FilePath)
+		}
+		return
+	}
 
 	if *saveCfg {
 		cfg := loadConfig()
@@ -1675,7 +1987,7 @@ func main() {
 		if res.CacheHit {
 			cacheTag = "HIT"
 		}
-		fmt.Fprintf(os.Stderr, "\n--- 计量: %s [Cache: %s] ---\n", res.Stats.CompressionRatio, cacheTag)
+		fmt.Fprintf(os.Stderr, "\n--- 计量 [%s]: %s [Cache: %s] ---\n", res.Dialect, res.Stats.CompressionRatio, cacheTag)
 		if res.Audit != "" {
 			fmt.Fprintf(os.Stderr, "--- 门禁: %s ---\n", res.Audit)
 		}
