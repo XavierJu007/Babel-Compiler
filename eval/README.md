@@ -89,7 +89,7 @@ python eval/run.py --live compile \
 ```
 
 调用 `POST /api/compile`，对原文生成候选，发送 `verify=false`、`strict_gate=false`、`no_cache=true`。
-领域取自案例，输出预设默认 `standard`，可用 `--mode` 修改。拟定候选、反例和预期关系不会发送给编译器。
+领域取自案例，使用产品固定的 `mixed` 表达规则；旧 `--mode` 参数仅保留用于兼容既有命令，不用于选择不同输出风格。拟定候选、反例和预期关系不会发送给编译器。
 `--token-encoding` 可选 `estimate`、`cl100k_base`、`o200k_base`；不填写时继承所选产品方案。
 选定编码的精确文本计数仍不包含消息封装或工具 schema，也不等于其他模型的 tokenizer 结果。
 

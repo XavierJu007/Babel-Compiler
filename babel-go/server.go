@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -57,95 +56,13 @@ func newServerMux() *http.ServeMux {
 
 	mux.HandleFunc("/api/dialects", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if r.Method == "GET" {
-			reloadDialects()
-			json.NewEncoder(w).Encode(map[string]any{
-				"global_dir":    globalDialectsDir(),
-				"workspace_dir": workspaceDialectsDir(),
-				"dialects":      listSortedDialects(),
-			})
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			json.NewEncoder(w).Encode(map[string]string{"detail": "当前固定使用 mixed 混合表达，不再编辑输出预设；旧预设文件保留但不加载，请使用领域词典维护专业表达"})
 			return
 		}
-
-		if r.Method == "POST" {
-			var req struct {
-				Action string `json:"action"` // save | delete | reload | reset_defaults
-				Name   string `json:"name"`
-				Label  string `json:"label"`
-				Prompt string `json:"prompt"`
-				Scope  string `json:"scope"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				w.WriteHeader(400)
-				json.NewEncoder(w).Encode(map[string]string{"detail": "无效请求"})
-				return
-			}
-
-			switch req.Action {
-			case "reload":
-				cnt := reloadDialects()
-				json.NewEncoder(w).Encode(map[string]any{"status": "reloaded", "count": cnt})
-				return
-			case "reset_defaults":
-				writeBuiltinDialects(globalDialectsDir(), true)
-				cnt := reloadDialects()
-				json.NewEncoder(w).Encode(map[string]any{"status": "reset", "count": cnt})
-				return
-			}
-
-			name := sanitizeDialectName(req.Name)
-			if name == "" {
-				w.WriteHeader(400)
-				json.NewEncoder(w).Encode(map[string]string{"detail": "方言名称仅支持字母、数字、下划线与连字符"})
-				return
-			}
-
-			targetDir := globalDialectsDir()
-			if req.Scope == "workspace" {
-				targetDir = workspaceDialectsDir()
-			} else if req.Scope != "" && req.Scope != "global" {
-				w.WriteHeader(http.StatusBadRequest)
-				json.NewEncoder(w).Encode(map[string]string{"detail": "输出预设保存位置仅支持 global 或 workspace"})
-				return
-			}
-			filePath := filepath.Join(targetDir, name+".md")
-
-			if req.Action == "delete" {
-				if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
-					w.WriteHeader(http.StatusInternalServerError)
-					json.NewEncoder(w).Encode(map[string]string{"detail": "删除预设覆盖失败: " + err.Error()})
-					return
-				}
-				reloadDialects()
-				json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
-				return
-			}
-
-			label := strings.TrimSpace(req.Label)
-			if label == "" {
-				label = name
-			}
-			prompt := strings.TrimSpace(req.Prompt)
-			if prompt == "" {
-				w.WriteHeader(400)
-				json.NewEncoder(w).Encode(map[string]string{"detail": "方言提示词规则不能为空"})
-				return
-			}
-
-			mdContent := fmt.Sprintf("# Label: %s\n%s\n", label, prompt)
-			if err := os.MkdirAll(targetDir, 0755); err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				json.NewEncoder(w).Encode(map[string]string{"detail": "创建预设目录失败: " + err.Error()})
-				return
-			}
-			if err := os.WriteFile(filePath, []byte(mdContent), 0644); err != nil {
-				w.WriteHeader(500)
-				json.NewEncoder(w).Encode(map[string]string{"detail": "写入方言文件失败: " + err.Error()})
-				return
-			}
-			reloadDialects()
-			json.NewEncoder(w).Encode(map[string]string{"status": "saved", "file_path": filePath})
-		}
+		json.NewEncoder(w).Encode(map[string]any{"dialects": listSortedDialects()})
 	})
 	mux.HandleFunc("/api/domains", domainAPIHandler)
 	mux.HandleFunc("/api/validate", candidateValidationHandler)
@@ -425,7 +342,7 @@ func startServer(preferredAddr string, autoOpen bool) {
 	webURL := "http://" + actualAddr
 	fmt.Printf("[+] Babel-DSL 服务已就绪:\n")
 	fmt.Printf("    - 配置文件:       %s\n", configPath())
-	fmt.Printf("    - 输出预设目录:   %s (支持 ./dialects 覆盖)\n", globalDialectsDir())
+	fmt.Printf("    - 表达策略:       mixed（固定混合语言 / 公共表达）\n")
 	fmt.Printf("    - 领域表达目录:   %s (支持 ./domains 覆盖)\n", globalDomainsDir())
 	fmt.Printf("    - LRU 缓存池:     %s (上限 %d 条)\n", cacheFilePath(), maxCacheEntries)
 	fmt.Printf("    - Web 控制台:     %s\n", webURL)

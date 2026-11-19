@@ -60,7 +60,6 @@ curl http://127.0.0.1:8080/api/compile \
   -H 'Content-Type: application/json' \
   --data '{
     "text":"请求成功后，系统必须保存审计记录；请求失败时，系统禁止修改记录。",
-    "mode":"standard",
     "profile":"compiler",
     "validation_mode":"blind",
     "reader_profile":"reader",

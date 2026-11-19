@@ -37,7 +37,7 @@ type Dialect struct {
 
 type CompileReq struct {
 	Text             string   `json:"text"`
-	Mode             string   `json:"mode"`
+	Mode             string   `json:"mode,omitempty"` // Deprecated: legacy builtin aliases resolve to mixed.
 	Domains          []string `json:"domains,omitempty"`
 	Verify           bool     `json:"verify"`
 	StrictGate       bool     `json:"strict_gate"`
@@ -268,9 +268,6 @@ var (
 	cacheMutex    sync.RWMutex
 	diskCache     = make(map[string]CacheEntry)
 	compileFlight flightGroup
-
-	dialectsMutex  sync.RWMutex
-	loadedDialects = make(map[string]Dialect)
 
 	compilerCB = newCircuitBreaker(3, 60*time.Second)
 

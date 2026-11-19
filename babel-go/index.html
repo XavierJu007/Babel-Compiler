@@ -441,23 +441,6 @@
         .checkbox-label:hover { color: var(--text-primary); }
         .checkbox-label input { accent-color: var(--emerald); cursor: pointer; }
 
-        .dialect-group {
-            display: inline-flex;
-            align-items: center;
-        }
-        .dialect-group .select-dark {
-            border-top-right-radius: 0;
-            border-bottom-right-radius: 0;
-            max-width: 195px;
-        }
-        .dialect-group .btn {
-            border-left: none;
-            border-top-left-radius: 0;
-            border-bottom-left-radius: 0;
-            padding: 6px 9px;
-            color: var(--cyan-light);
-        }
-
         .code-area {
             flex: 1;
             width: 100%;
@@ -706,21 +689,21 @@
 
         .preset-row { display: flex; flex-wrap: wrap; gap: 8px; }
 
-        .dialect-layout {
+        .domain-layout {
             display: grid;
             grid-template-columns: 220px 1fr;
             gap: 16px;
         }
-        @media (max-width: 720px) { .dialect-layout { grid-template-columns: 1fr; } }
+        @media (max-width: 720px) { .domain-layout { grid-template-columns: 1fr; } }
 
-        .dialect-sidebar {
+        .domain-sidebar {
             border-right: 1px solid var(--border-subtle);
             padding-right: 12px;
             display: flex;
             flex-direction: column;
             gap: 8px;
         }
-        .dialect-item {
+        .domain-item {
             width: 100%;
             min-width: 0;
             overflow-wrap: anywhere;
@@ -735,8 +718,8 @@
             gap: 3px;
             transition: all 0.15s ease;
         }
-        .dialect-item:hover { border-color: rgba(56, 189, 248, 0.45); background: rgba(15, 23, 42, 0.95); }
-        .dialect-item.active { border-color: var(--cyan-light); background: rgba(8, 47, 73, 0.5); }
+        .domain-item:hover { border-color: rgba(56, 189, 248, 0.45); background: rgba(15, 23, 42, 0.95); }
+        .domain-item.active { border-color: var(--cyan-light); background: rgba(8, 47, 73, 0.5); }
         .domain-select-bar { padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; }
         .domain-choices { display: flex; align-items: center; gap: 10px 16px; flex-wrap: wrap; }
         .domain-note { color: var(--text-secondary); font-size: 11px; line-height: 1.6; }
@@ -787,7 +770,7 @@
         </div>
 
         <nav id="mainNav" class="nav-tabs ui-fade">
-            <button id="tabBtnCompiler" class="nav-tab active" onclick="switchTab('compiler')">⌘ 符号编译器</button>
+            <button id="tabBtnCompiler" class="nav-tab active" onclick="switchTab('compiler')">⌘ 提示词编译</button>
             <button id="tabBtnProxy" class="nav-tab" onclick="switchTab('proxy')">
                 <span>⇄ 透明代理透视</span>
                 <span id="logCountBadge" class="badge-count hidden">0</span>
@@ -843,7 +826,7 @@
             <div id="domainChoices" class="domain-choices"><span class="domain-note">正在加载领域…</span></div>
             <button type="button" class="link-btn" onclick="toggleDomainModal(true)">编辑领域词条</button>
         </div>
-        <div id="domainSelectionHint" class="domain-note">公共逻辑始终参与；只选用与原文相关的词条，保留实体和关系，不增加业务要求。</div>
+        <div id="domainSelectionHint" class="domain-note">固定使用混合语言与公共表达；公共逻辑始终参与，只取与原文相关的领域词条。</div>
         <div class="form-grid-3" style="border-top: 1px solid var(--border-subtle); padding-top: 10px;">
             <div class="form-group">
                 <label for="tokenEncodingSelect" class="form-label">本次目标 Token 编码</label>
@@ -886,10 +869,6 @@
                     <label class="checkbox-label" title="由后端执行本地检查及所选校验；未通过或校验异常时不返回候选。通过不代表完整语义证明。">
                         <input id="verifyCheck" type="checkbox" checked onchange="updateCompileOptionsHint()"> 严格校验
                     </label>
-                    <div class="dialect-group">
-                        <select id="modeSelect" class="select-dark" aria-label="输出预设" onchange="updateDomainSelectionHint()"></select>
-                        <button type="button" class="btn" onclick="toggleDialectModal(true)" title="高级：编辑输出风格预设">⚙</button>
-                    </div>
                     <button id="runBtn" type="button" class="btn btn-primary" onclick="runCompile(false)">编译 ⚡</button>
                 </div>
             </div>
@@ -900,16 +879,16 @@
         <section class="glass-card pane">
             <div class="pane-header">
                 <div class="pane-title-group">
-                    <span class="pane-label emerald">OUTPUT // 巴别语高密度 DSL</span>
+                    <span class="pane-label emerald">OUTPUT // 紧凑语义表达</span>
                     <span id="statsBadge" class="stat-pill hidden"></span>
                     <span id="cacheBadge" class="cache-pill hidden">CACHE HIT</span>
                 </div>
                 <div class="pane-actions">
                     <button id="forceBtn" type="button" class="btn" onclick="runCompile(true)" title="跳过本地缓存强制重新编译">↻ 重编译</button>
-                    <button id="copyBtn" type="button" class="btn" onclick="copyResult()" disabled>复制 DSL</button>
+                    <button id="copyBtn" type="button" class="btn" onclick="copyResult()" disabled>复制结果</button>
                 </div>
             </div>
-            <textarea id="dslOutput" readonly class="code-area output" placeholder="编译后的高密度数理符号文本将在此生成..."></textarea>
+            <textarea id="dslOutput" readonly class="code-area output" placeholder="编译后的混合语言与公共表达将在此生成..."></textarea>
             <div id="invariantCapsules" class="capsules-bar hidden" aria-live="polite"></div>
             <div id="auditBox" class="audit-bar hidden" role="status" aria-live="polite"></div>
         </section>
@@ -933,7 +912,7 @@
                 <button id="resetCircuitBtn" type="button" class="btn btn-danger hidden" onclick="resetCircuitBreaker()">立即恢复编译</button>
             </div>
             <p style="font-size: 12px; color: var(--text-secondary);">
-                默认使用 <code style="color: var(--cyan-light)">token</code> 输出预设，<code style="color: var(--amber)">X-Babel-Dialect</code> 切换输出风格，<code style="color: var(--amber)">X-Babel-Domains</code> 选择领域（逗号分隔）。编译器连续故障 3 次自动熔断 60s，期间转发原文。Token 减少为文本估算；上游 usage 是整次请求用量。
+                固定使用混合语言与公共表达，校验通过且文本更短时才替换。<code style="color: var(--amber)">X-Babel-Domains</code> 可选择自己的领域词典（逗号分隔）。编译失败或未达到替换条件时转发原文；上游 usage 是整次请求用量。
             </p>
         </div>
 
@@ -953,63 +932,6 @@
     <div id="logsContainer" class="log-list"></div>
 </main>
 
-<!-- 高级输出预设编辑；领域词条独立管理 -->
-<div id="dialectModal" class="modal-backdrop hidden">
-    <div class="modal-box wide">
-        <div class="modal-header">
-            <div>
-                <div class="modal-title cyan">输出预设 · 高级编辑</div>
-                <div class="modal-sub">设置语言与排版偏好；公共语义规则始终生效。领域术语与公共符号请在“领域表达库”编辑。</div>
-                <div class="modal-sub">目录: <span id="dialectDirLabel">~/.babel_dialects</span></div>
-            </div>
-            <div class="pane-actions">
-                <button type="button" class="btn" onclick="resetBuiltinDialects()">重置内置预设</button>
-                <button type="button" class="btn btn-cyan" onclick="hotReloadDialects(true)">↻ 从磁盘热重载</button>
-                <button type="button" class="btn" onclick="toggleDialectModal(false)">✕</button>
-            </div>
-        </div>
-
-        <div class="dialect-layout">
-            <div class="dialect-sidebar">
-                <div style="display: flex; justify-content: space-between; align-items: center; font-size: 12px;">
-                    <span style="color: var(--text-secondary); font-weight: 600;">已加载预设</span>
-                    <button type="button" class="link-btn" onclick="prepareNewDialect()">+ 新建</button>
-                </div>
-                <div id="dialectListContainer" style="display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto;"></div>
-            </div>
-
-            <div style="display: flex; flex-direction: column; gap: 12px;">
-                <div class="form-grid-2">
-                    <div class="form-group">
-                        <label class="form-label">预设标识 (文件名)</label>
-                        <input id="dlName" type="text" class="form-input" placeholder="例如: code-audit">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">显示名称 (Label)</label>
-                        <input id="dlLabel" type="text" class="form-input" placeholder="例如: 代码与安全审计">
-                    </div>
-                </div>
-
-                <div style="display: flex; align-items: center; gap: 16px; font-size: 12px; color: var(--text-secondary);">
-                    <span>保存位置:</span>
-                    <label class="checkbox-label"><input type="radio" name="dlScope" value="global" checked> 全局 (~/.babel_dialects)</label>
-                    <label class="checkbox-label"><input type="radio" name="dlScope" value="workspace"> 当前工作区 (./dialects)</label>
-                </div>
-
-                <div class="form-group">
-                    <label class="form-label">输出风格提示（高级）</label>
-                    <textarea id="dlPrompt" rows="8" class="form-input" style="line-height: 1.6; resize: vertical;" placeholder="例如：使用简洁中文规则列表，保留关系类型与作用域，适量使用公开符号。"></textarea>
-                </div>
-
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <button type="button" class="btn btn-danger" onclick="deleteDialect()">删除预设覆盖</button>
-                    <button type="button" class="btn btn-primary" onclick="saveDialect()">保存并热加载</button>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-
 <!-- 领域表达库：逐词条编辑公开语义、适用条件与保留边界 -->
 <div id="domainModal" class="modal-backdrop hidden">
     <div class="modal-box domains-wide" role="dialog" aria-modal="true" aria-labelledby="domainModalTitle">
@@ -1025,8 +947,8 @@
         </div>
         <div id="domainWarning" class="audit-bar is-error domain-status hidden" role="status"></div>
         <div id="domainStatus" class="audit-bar domain-status hidden" role="status" aria-live="polite"></div>
-        <div class="dialect-layout">
-            <div class="dialect-sidebar">
+        <div class="domain-layout">
+            <div class="domain-sidebar">
                 <div class="domain-section-head">
                     <span class="form-label">领域库</span>
                     <button type="button" class="link-btn" onclick="prepareNewDomain()">+ 新建领域</button>
@@ -1411,141 +1333,7 @@
         document.getElementById('zenIcon').textContent = isZen ? '⌘' : '◎';
     }
 
-    // ==================== 4. 输出预设与领域表达库 ====================
-    let dialectList = [];
-
-    async function hotReloadDialects(showToast = false) {
-        try {
-            const data = await fetchJSON('/api/dialects');
-            dialectList = data.dialects || [];
-            document.getElementById('dialectDirLabel').textContent = '~/.babel_dialects | ./dialects';
-
-            const modeSel = document.getElementById('modeSelect');
-            const currentVal = modeSel.value || 'extreme';
-            modeSel.innerHTML = '';
-
-            dialectList.forEach(d => {
-                const tag = d.source === 'workspace' ? ' [WS]' : '';
-                modeSel.add(new Option(`${d.label}${tag}`, d.name, false, d.name === currentVal));
-            });
-
-            renderDialectSidebar();
-            updateDomainSelectionHint();
-            if (showToast) {
-                const btn = document.getElementById('runBtn');
-                const orig = btn.textContent;
-                btn.textContent = `已加载 ${dialectList.length} 套预设`;
-                setTimeout(() => { if (!btn.disabled) btn.textContent = orig; }, 1400);
-            }
-        } catch (e) {
-            console.error('加载输出预设失败:', e);
-        }
-    }
-
-    async function resetBuiltinDialects() {
-        if (!confirm('将全局目录中的内置输出预设覆盖为当前版本；自定义的同名修改会被替换。继续？')) return;
-        try {
-            await fetchJSON('/api/dialects', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'reset_defaults' })
-            });
-            await hotReloadDialects(false);
-            const cur = document.getElementById('modeSelect').value;
-            if (cur) selectDialectForEdit(cur);
-            alert('内置输出预设已更新。');
-        } catch (e) {
-            alert(e.message);
-        }
-    }
-
-    function renderDialectSidebar() {
-        const box = document.getElementById('dialectListContainer');
-        if (!box) return;
-        box.innerHTML = '';
-        dialectList.forEach(d => {
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'dialect-item';
-            btn.onclick = () => selectDialectForEdit(d.name);
-            const name = document.createElement('span');
-            name.style.color = 'var(--cyan-light)';
-            name.textContent = `${d.name}.md · ${d.source}`;
-            const label = document.createElement('span');
-            label.className = 'domain-note';
-            label.textContent = d.label;
-            btn.appendChild(name);
-            btn.appendChild(label);
-            box.appendChild(btn);
-        });
-    }
-
-    function selectDialectForEdit(name) {
-        const d = dialectList.find(item => item.name === name);
-        if (!d) return;
-        document.getElementById('dlName').value = d.name;
-        document.getElementById('dlLabel').value = d.label;
-        document.getElementById('dlPrompt').value = d.prompt;
-        const scopeVal = d.source === 'workspace' ? 'workspace' : 'global';
-        document.querySelectorAll('input[name="dlScope"]').forEach(r => r.checked = (r.value === scopeVal));
-    }
-
-    function prepareNewDialect() {
-        document.getElementById('dlName').value = '';
-        document.getElementById('dlLabel').value = '';
-        document.getElementById('dlPrompt').value = '';
-    }
-
-    async function saveDialect() {
-        const name = document.getElementById('dlName').value.trim();
-        const label = document.getElementById('dlLabel').value.trim();
-        const prompt = document.getElementById('dlPrompt').value.trim();
-        const scope = document.querySelector('input[name="dlScope"]:checked')?.value || 'global';
-        if (!name || !prompt) return alert('请填写预设标识与输出风格提示');
-
-        try {
-            await fetchJSON('/api/dialects', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'save', name, label, prompt, scope })
-            });
-            await hotReloadDialects(false);
-            document.getElementById('modeSelect').value = name;
-            updateDomainSelectionHint();
-            alert(`输出预设 [${name}.md] 已保存并加载。`);
-        } catch (e) {
-            alert(e.message);
-        }
-    }
-
-    async function deleteDialect() {
-        const name = document.getElementById('dlName').value.trim();
-        const scope = document.querySelector('input[name="dlScope"]:checked')?.value || 'global';
-        if (!name) return;
-        if (!confirm(`确定删除${scope === 'workspace' ? '工作区' : '全局'}的输出预设覆盖 [${name}.md] 吗？同名内置预设仍会保留。`)) return;
-        try {
-            await fetchJSON('/api/dialects', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'delete', name, scope })
-            });
-            await hotReloadDialects(false);
-            prepareNewDialect();
-        } catch (e) {
-            alert(e.message);
-        }
-    }
-
-    function toggleDialectModal(show) {
-        document.getElementById('dialectModal').classList.toggle('hidden', !show);
-        if (show) {
-            hotReloadDialects(false).then(() => {
-                const cur = document.getElementById('modeSelect').value;
-                if (cur) selectDialectForEdit(cur);
-            });
-        }
-    }
-
+    // ==================== 4. 用户领域表达库 ====================
     let domainPacks = [];
     let publicSymbols = [];
     let selectedDomains = new Set();
@@ -1578,10 +1366,7 @@
             hint.textContent = `所选领域当前不可用：${unavailable.join('、')}。请恢复领域文件或取消对应选择；编译不会静默忽略它们。`;
             return;
         }
-        const implicitSecurity = document.getElementById('modeSelect').value === 'code-audit' && selectedDomains.size === 0;
-        hint.textContent = implicitSecurity ?
-            '公共逻辑始终参与。当前未显式选领域，code-audit 预设默认启用“应用安全”；勾选领域后按所选范围编译。' :
-            '公共逻辑始终参与；只选用与原文相关的词条，保留实体和关系，不增加业务要求。';
+        hint.textContent = '固定使用混合语言与公共表达；公共逻辑始终参与，只取与原文相关的领域词条。';
     }
 
     function renderDomainChoices() {
@@ -1638,7 +1423,7 @@
         for (const pack of domainPacks) {
             const button = document.createElement('button');
             button.type = 'button';
-            button.className = 'dialect-item' + (domainEditingName === pack.name ? ' active' : '');
+            button.className = 'domain-item' + (domainEditingName === pack.name ? ' active' : '');
             button.onclick = () => selectDomainPackForEdit(pack.name);
             const label = document.createElement('span');
             label.style.color = 'var(--cyan-light)';
@@ -2547,7 +2332,6 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     text,
-                    mode: document.getElementById('modeSelect').value,
                     domains: [...selectedDomains],
                     token_encoding: options.token_encoding,
                     validation_mode: options.validation_mode,
@@ -2767,7 +2551,6 @@
         }
     }, 3000);
 
-    hotReloadDialects(false);
     loadDomainPacks().catch(error => {
         document.getElementById('domainChoices').textContent = '领域加载失败';
         document.getElementById('domainSelectionHint').textContent = `无法加载领域库：${error.message}。可打开领域表达库重试。`;

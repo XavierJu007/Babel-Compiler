@@ -1,7 +1,6 @@
 # 领域表达库使用指南
 
-领域表达库提供公开术语、符号及使用边界；输出预设决定表达形式。两者可以独立组合。专业词典由使用者编写和维护，Babel 负责加载与编译，内置专业条目作为编辑示例。
-例如，同一份 API 说明可以选择 `api-contract` 领域，再用 `standard` 输出规则列表，或用 `token` 输出简洁文本。
+领域表达库提供公开术语、符号及使用边界。专业词典由使用者编写和维护，内置专业条目作为编辑示例。Babel 使用固定的混合语言与公共表达规则编译，所有入口一致，无需选择或编辑输出预设。
 
 本页描述当前接口和配置方式。词条示例是表达参考，尚不代表真实 tokenizer 节省或跨模型语义验证结果。
 
@@ -16,33 +15,24 @@
 
 共四个领域、12 个词条，内置内容见 [domains_builtin.json](../../babel-go/domains_builtin.json)。
 
-- `common` 自动加入，不需要手动填写。
-- 未指定领域时，通常只使用 `common`。
-- `code-audit` 预设在未指定领域时，额外使用 `application-security`。
-- 一旦显式指定领域，就以该列表为准，再加上 `common`。例如 `code-audit + api-contract` 不再自动附带安全领域；需要两者时应同时填写。
-- 预设包括 `extreme`、`token`、`standard`、`code-audit`、`en-terse`，以及允许混合语言与公共表达的 `mixed`。领域名称不再用来替代输出预设。
+- `common` 自动加入，不需要手动填写；未选择领域时只使用它。
+- 多个领域可同时选择，工具会额外加入 `common`。
 
-公共语义规则始终参与编译，包括不新造私有码本、保留条件与模态、保护技术字面量。编辑领域或预设不会移除这层规则。
+公共语义规则始终参与编译，包括不新造私有码本、保留条件与模态、保护技术字面量。编辑领域不会移除这层规则。旧接口的特殊兼容行为见第 7 节。
 
 ## 2. CLI
 
-以下示例假设已构建 `./bin/babel` 并配置编译模型。领域列表和预设列表不需要调用模型。
+以下示例假设已构建 `./bin/babel` 并配置编译模型。查看领域列表不调用模型。
 
 ```bash
 # 查看领域及当前来源
 ./bin/babel -list-domains
 
-# 查看输出预设
-./bin/babel -list-dialects
-
 # 同时使用应用安全与 API 契约；所有选项放在输入参数之前
-./bin/babel -m standard -domains application-security,api-contract -gate -f spec.md
+./bin/babel -domains application-security,api-contract -gate -f spec.md
 
-# 使用并发领域和简洁文本预设
-./bin/babel -m token -domains concurrency -f concurrency.md
-
-# code-audit 未指定领域，默认加入 application-security
-./bin/babel -m code-audit -f audit.md
+# 使用并发领域
+./bin/babel -domains concurrency -f concurrency.md
 ```
 
 `-gate` 要求本次检查通过，否则返回错误；它不表示已经完成独立盲读或跨模型验收。
@@ -55,26 +45,23 @@
 ```bash
 curl http://127.0.0.1:8080/api/compile \
   -H 'Content-Type: application/json' \
-  --data '{"text":"登录成功后仍须校验用户对订单的删除权限。","mode":"standard","domains":["application-security","api-contract"],"strict_gate":true}'
+  --data '{"text":"登录成功后仍须校验用户对订单的删除权限。","domains":["application-security","api-contract"],"strict_gate":true}'
 ```
 
-透明代理在原有模型请求中增加两个请求头；请求体仍使用对应上游协议的格式：
+透明代理可通过一个请求头选择领域，请求体仍使用对应上游协议的格式：
 
 ```text
-X-Babel-Dialect: standard
 X-Babel-Domains: application-security,api-contract
 ```
 
-`X-Babel-Dialect` 选择预设，`X-Babel-Domains` 选择领域。后者是逗号分隔的名称列表，适用于 OpenAI 与 Anthropic 代理入口。
-未知预设或未知领域返回明确错误；代理不应把拼错的选择静默替换成默认值。
-未传领域列表时，默认规则与 CLI 相同。代理未传预设时使用 `token`。
+名称以逗号分隔，适用于 OpenAI 与 Anthropic 代理入口。未知领域返回明确错误；未选择时只使用 `common`。
 
-透明代理可设置 `X-Babel-Dialect: mixed`，允许发给消费模型的文本中英混用并采用公共符号；无需修改客户端显示的原始输入，也不需要给消费模型附加词典。原任务的回答语言和格式要求仍须保留；代理直接透传模型响应，不额外回译。若需要固定回答语言，请在原有任务或系统提示中明确约定。
+所有入口使用固定的 `mixed` 表达规则，允许原文语言、英语和公共表达按完整含义混用，不需要给消费模型附加词典。原任务的回答语言和格式要求仍须保留；代理直接透传模型响应，不额外回译。若需要固定回答语言，请在原任务或系统提示中明确约定。
 
 ## 4. 创建或编辑领域
 
 Web 界面中的“领域表达库”可以管理词条、符号、适用条件、不可混淆项和输入/输出示例，选择全局或当前工作区后保存。
-编译区域单独选择领域和输出预设；保存领域不会自动改变每一次请求的选择。
+在编译区域选择需要使用的领域；保存领域不会自动改变每一次请求的选择。
 
 从零开始可点“新建领域”；想参考已有内容，先选中示例或自己的词典，再点“复制为新词典”。复制会保留当前编辑内容，创建新标识、版本为 1 的未保存草稿，不改动原词典；修改名称、词条和保存位置后保存，再在编译区域选择它。复制稿不能使用已有词典的标识覆盖原内容；需要编辑原词典时直接选中原项。
 
@@ -184,16 +171,21 @@ curl http://127.0.0.1:8080/api/domains \
 符号须保持公共含义。例如 `∈` 表示集合成员，`∅` 仅表示空集合；禁止把 `∅` 同时定义为 null、字段缺失和未知。
 “未执行”与“禁止执行”、“必要条件”与“充分条件”、“原因”与“顺序”必须区分。词典不能用 `A17` 代表另一段文字，也不能要求消费模型查图例。
 
-## 7. 错误、迁移与检查范围
+## 7. 错误与旧接口兼容
 
 坏 JSON、字段无效、名称不匹配或超出限制会显示错误或加载警告。
 如果某个选中领域存在坏覆盖文件，编译会拒绝使用它，不静默回到内置定义；未选择的坏领域不会阻止其他合法领域编译。
 管理 API 的 `warning` 可能与合法领域列表同时返回，请据警告修复文件，再重载。无效操作和不支持的请求方法也返回明确错误。
 
-旧版自动释放的五份默认预设会按已知内容哈希识别：未编辑副本不再挡住新版内置规则，用户编辑过的副本仍保留。
-新导出的默认预设带内容哈希标记，未编辑时跟随内置版本，编辑后成为用户覆盖；重载不再自动向磁盘释放默认文件。
-领域 JSON 与输出预设 Markdown 分别管理；修改领域内容会改变组合编译身份，避免继续使用旧组合的候选缓存。
+当前只维护固定的 `mixed` 表达规则。以下行为仅用于兼容旧调用，正常使用无需填写表达模式：
 
-实现位置：[领域结构、校验与选择](../../babel-go/domains.go)、[预设与公共规则组合](../../babel-go/dialects.go)、[领域管理 API](../../babel-go/domain_api.go)。
-设计背景与后续验证方向见 [语义图表达与领域词典设计](../design/semantic-compression.md)。
+- 旧 CLI `-m`、API `mode` 和 `X-Babel-Dialect` 的空值、`mixed` 以及五个旧内置名（`extreme`、`token`、`standard`、`code-audit`、`en-terse`）统一使用 `mixed`。
+- 代理也兼容旧头 `X-Babel-Mode`，仅在 `X-Babel-Dialect` 未设置或为空时使用，名称处理规则相同。
+- 旧请求使用 `code-audit` 且未指定领域时，保留自动加入 `application-security` 的兼容行为；新调用应直接指定需要的领域。
+- 未知名称和旧自定义预设名返回明确错误，不加载自定义提示词。
+- `./dialects/*.md` 与 `~/.babel_dialects/*.md` 停止读取，包括与内置名称相同的覆盖文件；程序不修改或删除这些旧文件。
+- `GET /api/dialects` 只返回固定方案；所有非 GET 请求返回 HTTP 405。CLI `-m`、`-list-dialects` 已弃用，仅保留兼容入口。
 
+领域 JSON 继续按本页的保存与覆盖规则生效。修改领域内容会改变组合编译身份，避免继续使用旧组合的候选缓存。
+
+实现位置：[领域结构、校验与选择](../../babel-go/domains.go)、[固定规则与领域组合](../../babel-go/dialects.go)、[领域管理 API](../../babel-go/domain_api.go)。设计边界见[轻量语义压缩与用户词典设计](../design/semantic-compression.md)。

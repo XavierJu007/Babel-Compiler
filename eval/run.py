@@ -600,7 +600,7 @@ def build_parser():
     parser.add_argument("--reader-profile",
                         help="blind reader profile: omitted inherits; empty clears the saved override")
     parser.add_argument("--validation-mode", choices=("compare", "blind"), default="compare")
-    parser.add_argument("--mode", default="standard", help="output preset for live compilation")
+    parser.add_argument("--mode", default="mixed", help="legacy preset name; all built-ins use the fixed mixed policy")
     parser.add_argument("--token-encoding", choices=("estimate", "cl100k_base", "o200k_base"))
     parser.add_argument("--case-id", action="append", default=[], help="case ID to include; repeatable")
     parser.add_argument("--limit", type=int, default=2, help="live case limit; default 2, in file order")

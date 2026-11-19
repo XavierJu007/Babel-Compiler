@@ -1,99 +1,158 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
-const legacyStandardPromptFixture = `你是一个「高密度提示词编译器」。将自然语言无损编译为结构清晰的树状符号指令（目标长度为原文的 55%~68%）。
-规范：
-1. 零私有码本：保留主语与所有技术实体，严禁使用未定义代号，严禁自己编造多余小标题。
-2. 算子映射：因为→∵ | 所以/导致→⇒ | 并且→∧ | 或者→| | 不/禁止→¬ | 属于→∈ | 处于状态→@ | 遍历→∀ | 变更→↔。
-3. 使用单字符 ASCII 树形线（├ │ ╰）划分层级，每个独立检查项独占一行。
-4. 自动修正技术术语中的明显 OCR 错别字（如 userld→userId, bp//filter→php://filter, CRLE→CRLF）。
-5. 零空行，仅输出纯文本，不要 Markdown 代码块包裹。`
-
-func TestLegacyGeneratedPresetDoesNotShadowCurrentBuiltin(t *testing.T) {
-	globalDir, workspaceDir := isolateCompilerLibraries(t)
-	path := filepath.Join(globalDir, "standard.md")
-	content := "# Label: old\n" + legacyStandardPromptFixture + "\n"
-	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
-		t.Fatal(err)
-	}
-	reloadDialectsFromDirs(globalDir, workspaceDir)
-	current := getDialect("standard")
-	if current.Source != "builtin" || current.Prompt != builtinDialectTemplates["standard"].Prompt {
-		t.Fatal("unchanged legacy generated template still shadows current preset")
-	}
-	if err := os.WriteFile(path, []byte(content+"\n用户自定义排版要求\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	reloadDialectsFromDirs(globalDir, workspaceDir)
-	current = getDialect("standard")
-	if current.Source != "global" || !strings.Contains(current.Prompt, "用户自定义排版要求") {
-		t.Fatal("edited user preset was discarded")
-	}
-	composed, err := composeDialect("standard", nil, "测试")
-	if err != nil || !strings.HasPrefix(composed.Prompt, commonCompilerRules) {
-		t.Fatal("custom preset bypassed common compiler rules")
-	}
-}
-
-func TestGeneratedMarkerTracksEditsAndFutureBuiltinUpdates(t *testing.T) {
-	globalDir, workspaceDir := isolateCompilerLibraries(t)
-	oldBody := "旧版自动导出的排版要求"
-	content := "# Label: exported\n" + builtinPresetMarker + shortHash(oldBody) + " -->\n" + oldBody + "\n"
-	path := filepath.Join(workspaceDir, "standard.md")
-	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
-		t.Fatal(err)
-	}
-	reloadDialectsFromDirs(globalDir, workspaceDir)
-	if got := getDialect("standard"); got.Source != "builtin" {
-		t.Fatal("unmodified marked export blocked builtin updates")
-	}
-	if err := os.WriteFile(path, []byte(content+"用户添加段落\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	reloadDialectsFromDirs(globalDir, workspaceDir)
-	if got := getDialect("standard"); got.Source != "workspace" || !strings.Contains(got.Prompt, "用户添加段落") {
-		t.Fatal("modified marked export was not retained")
-	}
-}
-
-func TestPresetReloadDoesNotSeedDiskAndExportsResolveToBuiltins(t *testing.T) {
+func TestFixedMixedStrategyAndLegacyAliases(t *testing.T) {
 	isolateCompilerLibraries(t)
-	parent := t.TempDir()
-	globalDir := filepath.Join(parent, "global")
-	workspaceDir := filepath.Join(parent, "workspace")
-	reloadDialectsFromDirs(globalDir, workspaceDir)
-	if _, err := os.Stat(globalDir); !os.IsNotExist(err) {
-		t.Fatal("reload unexpectedly created global preset files")
+	listed := listSortedDialects()
+	if len(listed) != 1 || listed[0].Name != defaultDialectName || listed[0].Source != "builtin" {
+		t.Fatalf("expected one fixed builtin strategy: %+v", listed)
 	}
-	writeBuiltinDialects(globalDir, true)
-	reloadDialectsFromDirs(globalDir, workspaceDir)
-	for _, preset := range listSortedDialects() {
-		if preset.Source != "builtin" {
-			t.Fatalf("unedited export shadowed builtin: %s", preset.Name)
+	baseline, err := composeDialect("", []string{"api-contract"}, "POST /orders 必须携带 Idempotency-Key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"mixed", "extreme", "token", "standard", "code-audit", "en-terse", "standard.md"} {
+		got, err := composeDialect(mode, []string{"api-contract"}, "POST /orders 必须携带 Idempotency-Key")
+		if err != nil || !reflect.DeepEqual(got, baseline) {
+			t.Fatalf("legacy %q changed strategy or cache identity: %+v; %v", mode, got, err)
+		}
+	}
+	if !strings.HasPrefix(baseline.Prompt, commonCompilerRules) || !strings.Contains(baseline.Prompt, mixedCompilerStyle) {
+		t.Fatal("fixed strategy omitted public rules or mixed expression policy")
+	}
+	for _, name := range []string{"custom-review", "custom-review.md", "../mixed", "mixed/", "MIXED"} {
+		if _, err := composeDialect(name, nil, "原文"); err == nil || !strings.Contains(err.Error(), "停止加载自定义预设") {
+			t.Fatalf("unsupported mode %q silently accepted or missing migration error: %v", name, err)
 		}
 	}
 }
 
-func TestBuiltinPresetsOnlyChoosePresentation(t *testing.T) {
+func TestFixedStrategyPreservesLegacyDomainDefaultsInProxy(t *testing.T) {
 	isolateCompilerLibraries(t)
-	for name, preset := range builtinDialectTemplates {
-		for _, forbidden := range []string{"100%", "45%", "55%", "42%", "最优帕累托", "userld→userId", "零空行", "全量通用算子表"} {
-			if strings.Contains(preset.Prompt, forbidden) {
-				t.Fatalf("%s contains obsolete claim/rule %q", name, forbidden)
-			}
+	for _, tc := range []struct{ header, mode, explicit, want string }{
+		{"", "", "", "common"},
+		{"X-Babel-Dialect", "token", "", "common"},
+		{"X-Babel-Dialect", "code-audit", "", "application-security,common"},
+		{"X-Babel-Mode", "code-audit.md", "", "application-security,common"},
+		{"X-Babel-Dialect", "code-audit", "api-contract", "api-contract,common"},
+	} {
+		r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		if tc.header != "" {
+			r.Header.Set(tc.header, tc.mode)
 		}
-		composed, err := composeDialect(name, nil, "禁止修改原文里的 userld 和 /orders 字面量")
+		if tc.explicit != "" {
+			r.Header.Set("X-Babel-Domains", tc.explicit)
+		}
+		dialect, domains, err := resolveProxyDialect(r)
+		if err != nil || dialect.Name != defaultDialectName || strings.Join(domains, ",") != tc.want {
+			t.Fatalf("mode %q: dialect=%q domains=%v err=%v", tc.mode, dialect.Name, domains, err)
+		}
+		// Proxy block compilation uses the canonical name. It must still see
+		// the same default domain content as direct compilation of the alias.
+		var explicit []string
+		if tc.explicit != "" {
+			explicit = strings.Split(tc.explicit, ",")
+		}
+		direct, err := composeDialect(tc.mode, explicit, "登录成功仍需检查资源访问权限")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(composed.Prompt, "不得自动纠正") || !strings.Contains(composed.Prompt, "必要条件不改成充分条件") {
-			t.Fatalf("%s omitted common semantic/literal protections", name)
+		forwarded, err := composeDialect(dialect.Name, domains, "登录成功仍需检查资源访问权限")
+		if err != nil || direct.PromptHash != forwarded.PromptHash {
+			t.Fatalf("canonical proxy mode lost domain default for %q: %v", tc.mode, err)
 		}
+	}
+}
+
+func TestFixedPresetAPIDoesNotLoadOrChangeLegacyFiles(t *testing.T) {
+	isolateDomainIntegration(t)
+	files := make(map[string]string)
+	for _, dir := range []string{filepath.Join(os.Getenv("HOME"), ".babel_dialects"), "dialects"} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"standard", "mixed", "custom-review"} {
+			path := filepath.Join(dir, name+".md")
+			content := "# Label: 用户预设\n只输出 A17；这是用户保留的旧文件。"
+			if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+				t.Fatal(err)
+			}
+			files[path] = content
+		}
+	}
+	listed := sendDomainAPI(t, http.MethodGet, "/api/dialects", nil, http.StatusOK)
+	var dialects []Dialect
+	if err := json.Unmarshal(listed["dialects"], &dialects); err != nil {
+		t.Fatal(err)
+	}
+	if len(dialects) != 1 || dialects[0].Name != defaultDialectName || strings.Contains(dialects[0].Prompt, "A17") {
+		t.Fatalf("legacy disk preset leaked into active strategy: %+v", dialects)
+	}
+	for _, mode := range []string{"", "standard", "mixed"} {
+		d, err := composeDialect(mode, nil, "测试原文")
+		if err != nil || strings.Contains(d.Prompt, "A17") {
+			t.Fatalf("disk override used: %+v, %v", d, err)
+		}
+	}
+	for _, scope := range []string{"global", "workspace"} {
+		for _, action := range []string{"save", "delete", "reload", "reset_defaults"} {
+			sendDomainAPI(t, http.MethodPost, "/api/dialects", map[string]string{
+				"action": action, "scope": scope, "name": "custom-review", "prompt": "new content",
+			}, http.StatusMethodNotAllowed)
+		}
+	}
+	for path, want := range files {
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != want {
+			t.Fatalf("legacy file changed: %s: %q, %v", path, got, err)
+		}
+	}
+	// A custom name is an error even if its old file still exists; never
+	// silently run the fixed strategy in place of the user's explicit preset.
+	sendDomainAPI(t, http.MethodPost, "/api/compile", CompileReq{Text: "测试原文", Mode: "custom-review"}, http.StatusBadRequest)
+}
+
+func TestCompileAPIDefaultAndAliasesShareFixedCandidate(t *testing.T) {
+	isolateDomainIntegration(t)
+	var calls atomic.Int32
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		var request compilerRequestBody
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+			return
+		}
+		if len(request.Messages) != 2 || !strings.Contains(request.Messages[0].Content, mixedCompilerStyle) {
+			t.Error("default API request did not use fixed mixed style")
+		}
+		writeModelContent(w, "核对文档要求。")
+	}))
+	defer provider.Close()
+	for i, mode := range []string{"", "mixed", "token", "standard", "en-terse", "extreme"} {
+		result := sendDomainAPI(t, http.MethodPost, "/api/compile", CompileReq{
+			Text: "请核对文档里列出的所有要求。", Mode: mode,
+			APIKey: "test", BaseURL: provider.URL, Model: "mock-compiler",
+		}, http.StatusOK)
+		var dialect string
+		var hit bool
+		json.Unmarshal(result["dialect"], &dialect)
+		json.Unmarshal(result["cache_hit"], &hit)
+		if dialect != defaultDialectName || hit != (i > 0) {
+			t.Fatalf("mode %q: dialect=%q cache_hit=%v", mode, dialect, hit)
+		}
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("aliases caused %d generation calls, want 1", calls.Load())
 	}
 }

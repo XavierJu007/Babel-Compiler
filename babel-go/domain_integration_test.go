@@ -130,7 +130,7 @@ func TestProxyDomainHeaderIsValidatedForBothProtocols(t *testing.T) {
 		r.Header.Set("X-Babel-Dialect", mode)
 		r.Header.Set("X-Babel-Domains", "application-security, api-contract")
 		selected, domains, err := resolveProxyDialect(r)
-		if err != nil || selected.Name != mode || strings.Join(domains, ",") != "api-contract,application-security,common" {
+		if err != nil || selected.Name != defaultDialectName || strings.Join(domains, ",") != "api-contract,application-security,common" {
 			t.Fatalf("selection: %q %v %v", selected.Name, domains, err)
 		}
 	}
@@ -146,25 +146,6 @@ func TestProxyDomainHeaderIsValidatedForBothProtocols(t *testing.T) {
 				t.Fatalf("%s invalid %s status=%d", route, bad.header, w.Code)
 			}
 		}
-	}
-}
-
-func TestPresetDeleteRespectsSelectedScope(t *testing.T) {
-	isolateDomainIntegration(t)
-	for _, dir := range []string{globalDialectsDir(), workspaceDialectsDir()} {
-		if err := os.MkdirAll(dir, 0700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, "custom-review.md"), []byte("# Label: 审查\n保留原文实体，按短列表输出。"), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	sendDomainAPI(t, http.MethodPost, "/api/dialects", map[string]string{"action": "delete", "scope": "global", "name": "custom-review"}, http.StatusOK)
-	if _, err := os.Stat(filepath.Join(workspaceDialectsDir(), "custom-review.md")); err != nil {
-		t.Fatalf("unselected workspace file removed: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(globalDialectsDir(), "custom-review.md")); !os.IsNotExist(err) {
-		t.Fatal("selected global file retained")
 	}
 }
 

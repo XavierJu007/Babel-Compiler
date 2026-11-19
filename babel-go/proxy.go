@@ -96,25 +96,28 @@ func resolveProxyDialect(r *http.Request) (Dialect, []string, error) {
 	if name == "" {
 		name = strings.TrimSpace(r.Header.Get("X-Babel-Mode"))
 	}
-	if name == "" {
-		name = "token"
+	mode, err := normalizeDialectMode(name)
+	if err != nil {
+		return Dialect{}, nil, err
 	}
 	var domains []string
 	if selected := strings.TrimSpace(r.Header.Get("X-Babel-Domains")); selected != "" {
 		domains = strings.Split(selected, ",")
 	}
 	// Validate configuration before forwarding, even when every message is short.
-	dialect, err := composeDialect(name, domains, "")
-	if err != nil {
-		return Dialect{}, nil, err
-	}
-	packs, err := resolveDomainPacks(dialect.Name, domains)
+	// Resolve legacy code-audit's default before canonicalizing to mixed. Later
+	// block compilation receives explicit domain names, so the default survives.
+	packs, err := resolveDomainPacks(mode, domains)
 	if err != nil {
 		return Dialect{}, nil, err
 	}
 	domains = nil
 	for _, pack := range packs {
 		domains = append(domains, pack.Name)
+	}
+	dialect, err := composeDialect(defaultDialectName, domains, "")
+	if err != nil {
+		return Dialect{}, nil, err
 	}
 	return dialect, domains, nil
 }

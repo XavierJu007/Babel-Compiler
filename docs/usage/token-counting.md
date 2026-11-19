@@ -24,7 +24,7 @@ CLI 选项放在输入参数之前：
 
 ```bash
 # 目标消费编码已经确认是 o200k_base
-./bin/babel -m standard -token-encoding o200k_base -f spec.md
+./bin/babel -token-encoding o200k_base -f spec.md
 
 # 本次只做估算，即使 Profile 设了精确编码
 ./bin/babel -token-encoding estimate -f spec.md
@@ -35,7 +35,7 @@ HTTP 编译请求：
 ```bash
 curl http://127.0.0.1:8080/api/compile \
   -H 'Content-Type: application/json' \
-  --data '{"text":"请求必须经过授权检查。","mode":"standard","token_encoding":"cl100k_base"}'
+  --data '{"text":"请求必须经过授权检查。","token_encoding":"cl100k_base"}'
 ```
 
 透明代理使用独立请求头，适用于 OpenAI 与 Anthropic 代理入口：
@@ -107,16 +107,13 @@ python babel-go/testdata/generate_token_count_vectors.py
 
 再生成脚本只加载公开词表并执行本地分词，不使用 API key，不调用模型。参考测试验证选定文本与指定版本一致；它不是对所有模型计费规则或任意未来 tokenizer 版本的保证。
 
-## 6. 英文、混合表达与缩写
+## 6. 固定混合表达与缩写
 
-默认预设保留原文语言。选择 `en-terse` 可在一次编译中将叙述改写为简洁英文，不增加单独的翻译请求；原文要求的回答语言、格式、语气，以及数值、技术字面量和专名仍须保留。例如输入要求“请用中文回答”，英文候选仍需明确要求用中文回答，不能因编译正文是英文就改变任务。
+Web、CLI、API 和代理统一使用固定的 `mixed` 规则，允许以完整短语或关系为单位混用原文语言、英语、公开术语、缩写和符号。无需选择预设，也不增加单独的翻译请求。工具只生成一个候选，不自动搜索或逐词尝试不同语言。
 
-```bash
-# 仅在已确认消费模型使用该编码时选择 o200k_base
-./bin/babel -m en-terse -token-encoding o200k_base -f prompt.md
-```
+实体名称、条件、否定范围、技术字面量，以及原任务要求的回答语言、格式和语气仍须保留。例如输入要求“请用中文回答”，混合表达也必须保留这项要求；内部指令混语不表示最终回答应当混语。
 
-`mixed` 允许以完整短语或关系为单位混用原文语言、英语、公共术语、缩写和符号，不要求全文语言统一。CLI 使用 `-m mixed`，代理使用 `X-Babel-Dialect: mixed`，Web 从输出预设中选择“混合语言 / 公共表达”。它同样只生成一次，不自动搜索或逐词尝试不同语言；实体名称、条件、否定范围、技术字面量，以及原任务的回答语言和格式仍须保留。内部指令混语不表示要求最终回答混语。
+这是项目选定并持续优化的表达方案，不是研究已经证明的全局最优语言组合。是否缩短仍需看实际候选在目标编码下的计数。
 
 公开且语境清楚的缩写可以使用，不必为它们另发图例；不能新造代号，也不能把原文的具体条件换成模糊缩写。`btw` 等常用表达不等于通用压缩算子；`ASAP` 不能替代明确的“30 秒内”，`auth` 也可能混淆认证和授权。是否使用由原文含义和上下文决定。
 
@@ -143,4 +140,4 @@ python babel-go/testdata/generate_token_count_vectors.py
 
 这里混合表达比简洁中文再少 4 token；不能据此推断混合语言在其他文本或编码上也更省。
 
-使用时直接选择适合自己的预设、检查输出和计数即可，不需要自动搜索多种语言。关于分词原理可参考 [tiktoken 官方说明](https://github.com/openai/tiktoken)；关于先转英文的任务与语言差异，可参考 [Beyond English，NAACL Findings 2025](https://aclanthology.org/2025.findings-naacl.73/)。
+使用时直接编译、检查输出和计数即可，不需要选择语言策略或自动搜索多种语言。关于分词原理可参考 [tiktoken 官方说明](https://github.com/openai/tiktoken)；关于先转英文的任务与语言差异，可参考 [Beyond English，NAACL Findings 2025](https://aclanthology.org/2025.findings-naacl.73/)。

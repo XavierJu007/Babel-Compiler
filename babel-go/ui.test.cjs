@@ -56,18 +56,10 @@ function setup(responses = []) {
     };
     const requests = [];
     const storage = new Map();
-    const dialectScopes = ['global', 'workspace'].map(value => {
-        const input = new Element('input');
-        input.value = value;
-        input.checked = value === 'global';
-        return input;
-    });
     const context = vm.createContext({
         document: {
             getElementById: get, createElement: tagName => new Element(tagName),
-            querySelectorAll: selector => selector === 'input[name="dlScope"]' ? dialectScopes : [],
-            querySelector: selector => selector === 'input[name="dlScope"]:checked'
-                ? dialectScopes.find(input => input.checked) || null : null
+            querySelectorAll: () => [], querySelector: () => null
         },
         Option: function(text, value, defaultSelected, selected) {
             const option = new Element('option');
@@ -96,7 +88,6 @@ function setup(responses = []) {
     });
     vm.runInContext(app, context);
     get('rawInput').value = '禁止删除订单；金额 > 50 元时审批。';
-    get('modeSelect').value = 'standard';
     for (const id of ['statsBadge', 'cacheBadge', 'auditBox', 'invariantCapsules', 'logsError']) {
         get(id).className = 'hidden';
     }
@@ -454,7 +445,6 @@ test('domain copy preserves current edits as a separate unsaved dictionary', asy
     const choice = get('domainChoices').children[1].children[0];
     choice.checked = true;
     choice.onchange();
-    get('modeSelect').value = 'token';
     context.selectDomainPackForEdit('api-contract');
     assert.equal(get('copyDomainBtn').disabled, false);
     get('dmLabel').value = '我的接口词典';
@@ -479,7 +469,6 @@ test('domain copy preserves current edits as a separate unsaved dictionary', asy
     assert.equal(get('dmScope').value, 'workspace');
     assert.equal(get('deleteDomainBtn').disabled, true);
     assert.equal(choice.checked, true);
-    assert.equal(get('modeSelect').value, 'token');
     assert.equal(requests.length, 1); // Copying sends no save request.
     assert.match(get('domainStatus').textContent, /新草稿/);
     context.updateDomainEntryField('canonical', '只修改副本');
@@ -553,24 +542,7 @@ test('builtin professional domains are marked as examples without relabelling us
     assert.doesNotMatch(get('domainSourceInfo').textContent, /示例/);
 });
 
-test('dialect deletion sends the selected scope and names it in the confirmation', async () => {
-    for (const scope of ['workspace', 'global']) {
-        const preset = { name: 'my-preset', label: '自己的预设', prompt: '简洁规则列表', source: scope };
-        const { context, get, requests } = setup([
-            { data: { dialects: [preset] } }, { data: { status: 'deleted' } }, { data: { dialects: [] } }
-        ]);
-        await context.hotReloadDialects();
-        context.selectDialectForEdit('my-preset');
-        let confirmation;
-        context.confirm = message => { confirmation = message; return true; };
-        await context.deleteDialect();
-        assert.deepEqual(JSON.parse(requests[1].options.body), { action: 'delete', name: 'my-preset', scope });
-        assert.match(confirmation, scope === 'workspace' ? /工作区/ : /全局/);
-        assert.equal(get('dlName').value, '');
-    }
-});
-
-test('domain selection is independent of the output preset and common is implicit', async () => {
+test('compilation uses the fixed backend policy and preserves explicit domain selection', async () => {
     const { context, get, requests } = setup([
         { data: domainPayload([domainPack('common'), domainPack('api-contract')]) }, { data: result() }
     ]);
@@ -581,10 +553,9 @@ test('domain selection is independent of the output preset and common is implici
     const input = labels[1].children[0];
     input.checked = true;
     input.onchange();
-    get('modeSelect').value = 'en-terse';
     await context.runCompile();
     const body = JSON.parse(requests[1].options.body);
-    assert.equal(body.mode, 'en-terse');
+    assert.equal(Object.hasOwn(body, 'mode'), false);
     assert.deepEqual(body.domains, ['api-contract']);
 });
 

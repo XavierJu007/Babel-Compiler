@@ -69,30 +69,6 @@ func TestDomainNewerReloadCannotBeOverwrittenByOlderScan(t *testing.T) {
 	}
 }
 
-func TestPresetNewerReloadCannotBeOverwrittenByOlderScan(t *testing.T) {
-	isolateCompilerLibraries(t)
-	oldDir, newDir, emptyDir := t.TempDir(), t.TempDir(), t.TempDir()
-	if err := os.WriteFile(filepath.Join(oldDir, "standard.md"), []byte("# Label: old\n旧的用户排版规则"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(newDir, "standard.md"), []byte("# Label: newer\n新的用户排版规则"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 64; i++ {
-		if err := os.WriteFile(filepath.Join(oldDir, fmt.Sprintf("z-padding-%03d.md", i)), []byte(strings.Repeat("x", 32768)), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	completed := make(chan struct{})
-	go func() { defer close(completed); reloadDialectsFromDirs(oldDir, emptyDir) }()
-	awaitReloadLock(t, &dialectsReloadMutex, completed)
-	reloadDialectsFromDirs(newDir, emptyDir)
-	<-completed
-	if got := getDialect("standard").Prompt; got != "新的用户排版规则" {
-		t.Fatalf("old preset scan replaced newer version: %q", got)
-	}
-}
-
 func TestDomainSaveDeleteRefreshDespiteUnrelatedInvalidFile(t *testing.T) {
 	isolateCompilerLibraries(t)
 	previousDir, err := os.Getwd()

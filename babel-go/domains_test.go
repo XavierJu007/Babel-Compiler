@@ -16,22 +16,15 @@ func isolateCompilerLibraries(t *testing.T) (string, string) {
 	domainsMutex.Lock()
 	oldDomains, oldErrors := loadedDomains, domainFileErrors
 	domainsMutex.Unlock()
-	dialectsMutex.Lock()
-	oldDialects := loadedDialects
-	dialectsMutex.Unlock()
 	t.Cleanup(func() {
 		domainsMutex.Lock()
 		loadedDomains, domainFileErrors = oldDomains, oldErrors
 		domainsMutex.Unlock()
-		dialectsMutex.Lock()
-		loadedDialects = oldDialects
-		dialectsMutex.Unlock()
 	})
 	globalDir, workspaceDir := t.TempDir(), t.TempDir()
 	if _, err := reloadDomainsFromDirs(globalDir, workspaceDir); err != nil {
 		t.Fatal(err)
 	}
-	reloadDialectsFromDirs(globalDir, workspaceDir)
 	return globalDir, workspaceDir
 }
 

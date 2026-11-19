@@ -10,14 +10,13 @@ import (
 
 func main() {
 	initDiskCache()
-	reloadDialects()
 	_, domainLoadErr := reloadDomains()
 
 	serveAddr := flag.String("serve", "", "指定 Web/API/代理服务地址 (留空则自动探测可用端口)")
 	profileName := flag.String("profile", "", "指定使用的已保存配置方案名称")
-	mode := flag.String("m", "extreme", "指定输出预设 (extreme | token | standard | code-audit | en-terse | mixed | 自定义.md名称)")
+	mode := flag.String("m", defaultDialectName, "已弃用，仅兼容旧内置名称；当前固定使用混合表达，无需指定")
 	domains := flag.String("domains", "", "组合领域名称，以逗号分隔 (如 application-security,api-contract)")
-	listDialects := flag.Bool("list-dialects", false, "列出所有已加载的输出预设并退出")
+	listDialects := flag.Bool("list-dialects", false, "已弃用，显示唯一固定表达策略并退出")
 	listDomains := flag.Bool("list-domains", false, "列出所有已加载的领域表达库并退出")
 	verify := flag.Bool("v", false, "开启原文与候选的语义对照审计")
 	strictGate := flag.Bool("gate", false, "严格检查：无法通过本次审计时返回错误")
