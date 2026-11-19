@@ -1090,9 +1090,9 @@
         </div>
 
         <div class="form-group">
-            <label class="form-label">编译器请求 URL（按填写地址发送 POST）</label>
+            <label class="form-label">编译器请求 URL（完整端点，或 /v1 基址）</label>
             <input id="cfgBaseUrl" type="text" class="form-input" placeholder="https://api.openai.com/v1/chat/completions">
-            <span class="domain-note">仅去除首尾空白，保留路径、末尾斜杠与查询参数；不会自动补路径。</span>
+            <span class="domain-note">完整端点按填写值原样发送，保留路径、末尾斜杠与查询参数；只填主机或以 /v1 结尾时自动补 /chat/completions。</span>
         </div>
 
         <div class="form-grid-2">
@@ -1139,7 +1139,7 @@
         <div class="form-group" style="border-top: 1px solid var(--border-subtle); padding-top: 12px;">
             <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
                 <button type="button" id="cfgTestBtn" class="btn btn-cyan" onclick="testModelConnection()">🔌 测试连接</button>
-                <span id="cfgTestResult" class="conn-status">按当前表单的请求 URL 原样发送 POST，无需先保存</span>
+                <span id="cfgTestResult" class="conn-status">按当前表单地址发送 POST，/v1 基址自动补 /chat/completions，无需先保存</span>
             </div>
         </div>
 
@@ -2008,7 +2008,7 @@
     }
 
     // ==================== 5.1 模型连通性测试 ====================
-    const CONN_IDLE_TEXT = '按当前表单的请求 URL 原样发送 POST，无需先保存';
+    const CONN_IDLE_TEXT = '按当前表单地址发送 POST，/v1 基址自动补 /chat/completions，无需先保存';
 
     function setConnStatus(kind, text, hints = []) {
         const box = document.getElementById('cfgTestResult');

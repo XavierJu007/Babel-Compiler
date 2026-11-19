@@ -468,7 +468,7 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 	if upstreamBase == "" {
 		upstreamBase = strings.TrimSpace(p.UpstreamURL)
 	}
-	// The compiler fallback is already a complete endpoint, not a base path.
+	// compilerRequestURL 已补全基址，这里得到的是可直接 POST 的完整端点。
 	targetURL := compilerRequestURL(p.BaseURL)
 	if upstreamBase != "" {
 		targetURL = buildOpenAICompletionsURL(upstreamBase)

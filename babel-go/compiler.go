@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -177,13 +178,41 @@ func extractStandaloneNumbers(s string) []string {
 
 const defaultCompilerRequestURL = "https://api.openai.com/v1/chat/completions"
 
-// The configured compiler address is the request endpoint, not a base path.
-// Preserve path, query and trailing slash; never guess another model route.
+// compilerRequestURL 决定编译、对照、试连实际 POST 的地址。
+//
+// 填完整端点时严格按填写值发送：路径、末尾斜杠、查询参数一律保留，不会被改写成
+// 别的路由。只有明显写成「服务商基址」的输入才补全 /chat/completions，因为这类
+// 地址直接 POST 必然 404（服务端只在端点路径上挂 handler）：
+//   - 只有主机没有路径      https://api.deepseek.com        -> /v1/chat/completions
+//   - 路径以 /v1 结尾       https://x.com/v1、/openai/v1    -> /v1/chat/completions
+//
+// 历史配置与界面预置里存的正是 `.../v1` 形态，所以这两种写法必须兼容；
+// 其余自定义路径（如 /gateway/complete）保持原样，不做猜测。
 func compilerRequestURL(address string) string {
-	if address = strings.TrimSpace(address); address != "" {
-		return address
+	raw := strings.TrimSpace(address)
+	if raw == "" {
+		return defaultCompilerRequestURL
 	}
-	return defaultCompilerRequestURL
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return raw // 交给 http.NewRequest 报具体错误，不在这里改写用户输入
+	}
+	path := strings.TrimRight(u.Path, "/")
+	switch {
+	case path == "":
+		u.Path = "/v1/chat/completions"
+	case isAPIBasePath(path):
+		u.Path = path + "/chat/completions"
+	default:
+		return raw
+	}
+	u.RawPath = ""
+	return u.String()
+}
+
+// isAPIBasePath 识别以 /v1 结尾的基址路径（大小写不敏感，兼容 /openai/v1 之类前缀）。
+func isAPIBasePath(path string) bool {
+	return strings.EqualFold(path[strings.LastIndex(path, "/")+1:], "v1")
 }
 
 func effectiveCompilerProfile(p Profile) Profile {

@@ -30,13 +30,22 @@ func TestCandidateCacheIdentityIncludesProviderPromptAndExactSource(t *testing.T
 		}
 	}
 	for _, address := range []string{
-		"https://compiler.example/v1/chat/completions", "https://compiler.example/v1/",
-		"https://compiler.example/v1?route=a", "https://compiler.example/custom",
+		"https://compiler.example/gateway/complete", "https://compiler.example/gateway/complete/",
+		"https://compiler.example/gateway/complete?route=a", "https://other.example/v1",
 	} {
 		differentEndpoint := profile
 		differentEndpoint.BaseURL = address
 		if makeCacheKey(dialect, differentEndpoint, text) == baseline {
 			t.Errorf("distinct request endpoint shares a candidate: %s", address)
+		}
+	}
+	for _, address := range []string{
+		"https://compiler.example/v1/chat/completions", "https://compiler.example/v1/",
+	} {
+		sameEndpoint := profile
+		sameEndpoint.BaseURL = address
+		if makeCacheKey(dialect, sameEndpoint, text) != baseline {
+			t.Errorf("base URL and its completed endpoint must share a candidate: %s", address)
 		}
 	}
 	sameEndpoint := profile

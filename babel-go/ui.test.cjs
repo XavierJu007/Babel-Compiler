@@ -488,7 +488,7 @@ test('model request URLs retain custom paths, trailing slashes and queries when 
         ]);
         await context.loadInitConfig();
         assert.equal(get('cfgBaseUrl').value, url);
-        assert.match(get('cfgTestResult').textContent, /请求 URL 原样发送 POST/);
+        assert.match(get('cfgTestResult').textContent, /\/v1 基址自动补 \/chat\/completions/);
         get('cfgBaseUrl').value = `  ${url}  `;
         await context.testModelConnection();
         assert.equal(JSON.parse(requests[1].options.body).base_url, url);

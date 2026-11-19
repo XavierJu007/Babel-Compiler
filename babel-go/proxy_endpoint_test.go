@@ -11,7 +11,7 @@ import (
 func TestOpenAIProxyReusesExactCompilerEndpoint(t *testing.T) {
 	isolateDomainIntegration(t)
 	isolateProxyState(t)
-	const route = "/gateway/v1/?route=chat%2Fcustom&tag=a&tag=b"
+	const route = "/gateway/custom/?route=chat%2Fcustom&tag=a&tag=b"
 	var calls atomic.Int32
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
@@ -33,6 +33,35 @@ func TestOpenAIProxyReusesExactCompilerEndpoint(t *testing.T) {
 	newServerMux().ServeHTTP(response, request)
 	if response.Code != http.StatusOK || response.Body.String() != `{"ok":true}` || calls.Load() != 1 {
 		t.Fatalf("exact proxy fallback failed: status=%d calls=%d", response.Code, calls.Load())
+	}
+}
+
+func TestOpenAIProxyCompletesV1CompilerBase(t *testing.T) {
+	isolateDomainIntegration(t)
+	isolateProxyState(t)
+	var calls atomic.Int32
+	var gotURI string
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		gotURI = r.RequestURI
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer provider.Close()
+	// `/v1` 是基址：直接 POST 必 404，代理必须补全 /chat/completions。
+	if err := writeConfigFile(Config{ActiveProfile: "test", Profiles: map[string]Profile{
+		"test": {BaseURL: provider.URL + "/v1", Model: "fixture"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"consumer","messages":[]}`))
+	response := httptest.NewRecorder()
+	newServerMux().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || calls.Load() != 1 {
+		t.Fatalf("proxy fallback failed: status=%d calls=%d body=%s", response.Code, calls.Load(), response.Body.String())
+	}
+	if gotURI != "/v1/chat/completions" {
+		t.Errorf("proxy sent %q; want /v1/chat/completions", gotURI)
 	}
 }
 

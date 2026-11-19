@@ -172,7 +172,7 @@ func probeProfile(p Profile) ProbeResult {
 	req, err := http.NewRequest("POST", res.TargetURL, bytes.NewReader(body))
 	if err != nil {
 		res.Detail = "目标 URL 无效: " + err.Error()
-		res.Hint = "填写服务商实际接收 POST 的 http(s) 请求 URL；程序不自动追加路径"
+		res.Hint = "填写服务商实际接收 POST 的 http(s) 请求 URL；只填到 /v1 时自动补 /chat/completions"
 		return res
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -208,7 +208,7 @@ func probeProfile(p Profile) ProbeResult {
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil || len(parsed.Choices) == 0 {
 		res.Detail = "端点可达，但响应不是 OpenAI 兼容格式: " + truncateRunes(string(raw), 200)
-		res.Hint = "确认填写的请求 URL 接收 OpenAI 兼容请求，并返回 choices/message 格式；程序不自动追加路径"
+		res.Hint = "确认填写的请求 URL 接收 OpenAI 兼容请求，并返回 choices/message 格式；只填到 /v1 时自动补 /chat/completions"
 		return res
 	}
 
@@ -223,7 +223,7 @@ func probeStatusHint(code int) string {
 	case code == 401 || code == 403:
 		return "API Key 缺失、无效，或无权访问该模型"
 	case code == 404:
-		return "请求 URL 或模型名不存在：核对服务商实际接收 POST 的地址，程序不自动追加路径"
+		return "请求 URL 或模型名不存在：核对服务商实际接收 POST 的地址；以 /v1 结尾的基址会自动补 /chat/completions，其它路径按原样发送"
 	case code == 400:
 		return "请求被拒绝：常见原因是模型名不被支持，或该端点不兼容 max_tokens 参数"
 	case code == 429:
