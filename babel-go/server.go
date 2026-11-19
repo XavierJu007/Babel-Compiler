@@ -34,7 +34,10 @@ func openBrowser(url string) {
 func bindAvailableListener(preferredAddr string) (net.Listener, string, error) {
 	if preferredAddr != "" {
 		ln, err := net.Listen("tcp", preferredAddr)
-		return ln, preferredAddr, err
+		if err != nil {
+			return nil, preferredAddr, err
+		}
+		return ln, ln.Addr().String(), nil
 	}
 	for port := 8080; port <= 8099; port++ {
 		addr := fmt.Sprintf("127.0.0.1:%d", port)
@@ -342,7 +345,7 @@ func newServerMux() *http.ServeMux {
 			json.NewEncoder(w).Encode(map[string]string{"detail": "无效JSON"})
 			return
 		}
-		res, err := doCompile(req)
+		res, err := doCompileContext(r.Context(), req)
 		if err != nil {
 			status := 400
 			body := map[string]any{"detail": err.Error()}

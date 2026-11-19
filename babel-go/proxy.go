@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -119,12 +120,20 @@ func resolveProxyDialect(r *http.Request) (Dialect, []string, error) {
 }
 
 func translateMessageBlock(protocol, role, text string, p Profile, dialect Dialect, reqKeywords, domains []string) (string, string, int, int) {
+	return translateMessageBlockContext(context.Background(), protocol, role, text, p, dialect, reqKeywords, domains)
+}
+
+func translateMessageBlockContext(ctx context.Context, protocol, role, text string, p Profile, dialect Dialect, reqKeywords, domains []string) (string, string, int, int) {
 	origTok := estimateTokensBPE(text)
+	if ctx.Err() != nil {
+		return text, "", origTok, origTok
+	}
 	if len([]rune(strings.TrimSpace(text))) < 35 {
 		return text, "", origTok, origTok
 	}
 
-	if !compilerCB.Allow() {
+	allowed, probeID := compilerCB.Acquire()
+	if !allowed {
 		return text, "", origTok, origTok
 	}
 
@@ -136,7 +145,7 @@ func translateMessageBlock(protocol, role, text string, p Profile, dialect Diale
 		}
 	}
 
-	res, err := doCompile(CompileReq{
+	res, err := doCompileContext(ctx, CompileReq{
 		Profile:          p.Name,
 		Text:             text,
 		Mode:             dialect.Name,
@@ -150,6 +159,10 @@ func translateMessageBlock(protocol, role, text string, p Profile, dialect Diale
 		ValidationMode:   p.ValidationMode,
 		ReaderProfile:    &p.ReaderProfile,
 	})
+	if ctx.Err() != nil {
+		compilerCB.ReleaseProbe(probeID)
+		return text, "", origTok, origTok
+	}
 	// A source-derived cache key is not a request ID: repeated requests must not
 	// overwrite one another's provider usage in the log.
 	logID := fmt.Sprintf("%d-%d", time.Now().UnixNano(), proxyLogSequence.Add(1))
@@ -202,9 +215,9 @@ func translateMessageBlock(protocol, role, text string, p Profile, dialect Diale
 	return res.Compiled, logID, origTok, compTok
 }
 
-func compressSchemaNode(protocol, toolLabel string, node map[string]any, p Profile, dialect Dialect, domains []string, logIDs *[]string, estOrig, estComp *int) {
+func compressSchemaNode(ctx context.Context, protocol, toolLabel string, node map[string]any, p Profile, dialect Dialect, domains []string, logIDs *[]string, estOrig, estComp *int) {
 	if desc, ok := node["description"].(string); ok {
-		comp, id, oTok, cTok := translateMessageBlock(protocol, toolLabel, desc, p, dialect, nil, domains)
+		comp, id, oTok, cTok := translateMessageBlockContext(ctx, protocol, toolLabel, desc, p, dialect, nil, domains)
 		node["description"] = comp
 		*estOrig += oTok
 		*estComp += cTok
@@ -216,17 +229,17 @@ func compressSchemaNode(protocol, toolLabel string, node map[string]any, p Profi
 	if props, ok := node["properties"].(map[string]any); ok {
 		for propName, propVal := range props {
 			if propMap, ok := propVal.(map[string]any); ok {
-				compressSchemaNode(protocol, toolLabel+"."+propName, propMap, p, dialect, domains, logIDs, estOrig, estComp)
+				compressSchemaNode(ctx, protocol, toolLabel+"."+propName, propMap, p, dialect, domains, logIDs, estOrig, estComp)
 			}
 		}
 	}
 
 	if items, ok := node["items"].(map[string]any); ok {
-		compressSchemaNode(protocol, toolLabel+"[]", items, p, dialect, domains, logIDs, estOrig, estComp)
+		compressSchemaNode(ctx, protocol, toolLabel+"[]", items, p, dialect, domains, logIDs, estOrig, estComp)
 	}
 }
 
-func compressToolsArray(protocol string, tools []any, p Profile, dialect Dialect, domains []string, logIDs *[]string, estOrig, estComp *int) {
+func compressToolsArray(ctx context.Context, protocol string, tools []any, p Profile, dialect Dialect, domains []string, logIDs *[]string, estOrig, estComp *int) {
 	for _, item := range tools {
 		toolMap, ok := item.(map[string]any)
 		if !ok {
@@ -241,7 +254,7 @@ func compressToolsArray(protocol string, tools []any, p Profile, dialect Dialect
 			label := "tool:" + fnName
 
 			if desc, ok := fnMap["description"].(string); ok {
-				comp, id, oTok, cTok := translateMessageBlock(protocol, label, desc, p, dialect, nil, domains)
+				comp, id, oTok, cTok := translateMessageBlockContext(ctx, protocol, label, desc, p, dialect, nil, domains)
 				fnMap["description"] = comp
 				*estOrig += oTok
 				*estComp += cTok
@@ -250,7 +263,7 @@ func compressToolsArray(protocol string, tools []any, p Profile, dialect Dialect
 				}
 			}
 			if params, ok := fnMap["parameters"].(map[string]any); ok {
-				compressSchemaNode(protocol, label, params, p, dialect, domains, logIDs, estOrig, estComp)
+				compressSchemaNode(ctx, protocol, label, params, p, dialect, domains, logIDs, estOrig, estComp)
 			}
 			continue
 		}
@@ -262,7 +275,7 @@ func compressToolsArray(protocol string, tools []any, p Profile, dialect Dialect
 		label := "tool:" + toolName
 
 		if desc, ok := toolMap["description"].(string); ok {
-			comp, id, oTok, cTok := translateMessageBlock(protocol, label, desc, p, dialect, nil, domains)
+			comp, id, oTok, cTok := translateMessageBlockContext(ctx, protocol, label, desc, p, dialect, nil, domains)
 			toolMap["description"] = comp
 			*estOrig += oTok
 			*estComp += cTok
@@ -271,7 +284,7 @@ func compressToolsArray(protocol string, tools []any, p Profile, dialect Dialect
 			}
 		}
 		if schema, ok := toolMap["input_schema"].(map[string]any); ok {
-			compressSchemaNode(protocol, label, schema, p, dialect, domains, logIDs, estOrig, estComp)
+			compressSchemaNode(ctx, protocol, label, schema, p, dialect, domains, logIDs, estOrig, estComp)
 		}
 	}
 }
@@ -389,7 +402,7 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 			switch content := msgMap["content"].(type) {
 			case string:
-				comp, id, oTok, cTok := translateMessageBlock("openai", role, content, p, dialect, reqKeywords, domains)
+				comp, id, oTok, cTok := translateMessageBlockContext(r.Context(), "openai", role, content, p, dialect, reqKeywords, domains)
 				msgMap["content"] = comp
 				estOrigTotal += oTok
 				estCompTotal += cTok
@@ -401,7 +414,7 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 					if partMap, ok := part.(map[string]any); ok {
 						if partMap["type"] == "text" {
 							if txt, ok := partMap["text"].(string); ok {
-								comp, id, oTok, cTok := translateMessageBlock("openai", role, txt, p, dialect, reqKeywords, domains)
+								comp, id, oTok, cTok := translateMessageBlockContext(r.Context(), "openai", role, txt, p, dialect, reqKeywords, domains)
 								partMap["text"] = comp
 								estOrigTotal += oTok
 								estCompTotal += cTok
@@ -419,7 +432,7 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	toolsList, hasTools := payload["tools"].([]any)
 	if hasTools && len(toolsList) > 0 {
-		compressToolsArray("openai", toolsList, p, dialect, domains, &logIDs, &estOrigTotal, &estCompTotal)
+		compressToolsArray(r.Context(), "openai", toolsList, p, dialect, domains, &logIDs, &estOrigTotal, &estCompTotal)
 	}
 
 	isStream, _ := payload["stream"].(bool)
@@ -547,7 +560,7 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	switch sysVal := payload["system"].(type) {
 	case string:
-		comp, id, oTok, cTok := translateMessageBlock("anthropic", "system", sysVal, p, dialect, nil, domains)
+		comp, id, oTok, cTok := translateMessageBlockContext(r.Context(), "anthropic", "system", sysVal, p, dialect, nil, domains)
 		payload["system"] = comp
 		estOrigTotal += oTok
 		estCompTotal += cTok
@@ -559,7 +572,7 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 			if blockMap, ok := block.(map[string]any); ok {
 				if blockMap["type"] == "text" {
 					if txt, ok := blockMap["text"].(string); ok {
-						comp, id, oTok, cTok := translateMessageBlock("anthropic", "system", txt, p, dialect, nil, domains)
+						comp, id, oTok, cTok := translateMessageBlockContext(r.Context(), "anthropic", "system", txt, p, dialect, nil, domains)
 						blockMap["text"] = comp
 						estOrigTotal += oTok
 						estCompTotal += cTok
@@ -590,7 +603,7 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 			switch content := msgMap["content"].(type) {
 			case string:
-				comp, id, oTok, cTok := translateMessageBlock("anthropic", "user", content, p, dialect, nil, domains)
+				comp, id, oTok, cTok := translateMessageBlockContext(r.Context(), "anthropic", "user", content, p, dialect, nil, domains)
 				msgMap["content"] = comp
 				estOrigTotal += oTok
 				estCompTotal += cTok
@@ -602,7 +615,7 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 					if partMap, ok := part.(map[string]any); ok {
 						if partMap["type"] == "text" {
 							if txt, ok := partMap["text"].(string); ok {
-								comp, id, oTok, cTok := translateMessageBlock("anthropic", "user", txt, p, dialect, nil, domains)
+								comp, id, oTok, cTok := translateMessageBlockContext(r.Context(), "anthropic", "user", txt, p, dialect, nil, domains)
 								partMap["text"] = comp
 								estOrigTotal += oTok
 								estCompTotal += cTok
@@ -619,7 +632,7 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	toolsList, hasTools := payload["tools"].([]any)
 	if hasTools && len(toolsList) > 0 {
-		compressToolsArray("anthropic", toolsList, p, dialect, domains, &logIDs, &estOrigTotal, &estCompTotal)
+		compressToolsArray(r.Context(), "anthropic", toolsList, p, dialect, domains, &logIDs, &estOrigTotal, &estCompTotal)
 	}
 
 	isStream, _ := payload["stream"].(bool)

@@ -56,9 +56,9 @@ func candidateValidationHandler(w http.ResponseWriter, r *http.Request) {
 			writeError(http.StatusBadRequest, err)
 			return
 		}
-		result = runBlindValidation(reader, p, req.Text, req.Candidate, req.RequiredKeywords)
+		result = runBlindValidationContext(r.Context(), reader, p, req.Text, req.Candidate, req.RequiredKeywords)
 	} else {
-		result = runValidation(p, req.Text, req.Candidate, req.RequiredKeywords)
+		result = runValidationContext(r.Context(), p, req.Text, req.Candidate, req.RequiredKeywords)
 	}
 	if result.Status == "error" {
 		w.WriteHeader(http.StatusBadGateway)

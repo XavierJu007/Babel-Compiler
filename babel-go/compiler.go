@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -31,8 +32,9 @@ const verifyGatePrompt = `你是编译候选的语义对照审阅器。用户消
 // Boundaries are inspected without consuming separators, so adjacent values such
 // as "1,2,3" are all checked. These are lexical guards, not relation proofs.
 var standaloneNumRegex = regexp.MustCompile(`[+-]?\d+(?:\.\d+)*(?:[eE][+-]?\d+)?%?`)
-var numberUnitRegex = regexp.MustCompile(`(?i)^\s*(milliseconds?|seconds?|minutes?|hours?|days?|bytes?|ms|min|sec|kb|mb|gb|tb|s|h|d|b|毫秒|分钟|小时|字节|秒|天|次|元)`)
-var numberOperatorRegex = regexp.MustCompile(`(?i)(>=|<=|!=|==|>|<|=|≥|≤|≠|不低于|不少于|至少|不超过|至多|超过|大于|小于|等于|at least|at most|greater than|less than)\s*$`)
+var numberUnitRegex = regexp.MustCompile(`(?i)^\s*(milliseconds?|seconds?|minutes?|hours?|days?|bytes?|ms|min|sec|kb|mb|gb|tb|s|h|d|b|毫秒|分钟|小时|字节|秒|天|次|(?:千|万|亿)?元)`)
+var numberOperatorRegex = regexp.MustCompile(`(?i)([<>=!≤≥≠+\-]+|大于(?:或)?等于|小于(?:或)?等于|不低于|不少于|至少|不超过|至多|超过|大于|小于|等于|\b(?:at\s+least|at\s+most|greater\s+than(?:\s+or\s+equal\s+to)?|less\s+than(?:\s+or\s+equal\s+to)?))\s*$`)
+var numberTrailingOperatorRegex = regexp.MustCompile(`^\s*([<>=!≤≥≠+\-]+)`)
 
 type numberOccurrence struct {
 	Value    string
@@ -45,10 +47,10 @@ func isASCIIIdentifier(b byte) bool {
 }
 
 func normalizeNumberOperator(op string) string {
-	switch strings.ToLower(op) {
-	case "≥", "不低于", "不少于", "至少", "at least":
+	switch strings.ToLower(strings.Join(strings.Fields(op), " ")) {
+	case "≥", "不低于", "不少于", "至少", "大于等于", "大于或等于", "at least", "greater than or equal to":
 		return ">="
-	case "≤", "不超过", "至多", "at most":
+	case "≤", "不超过", "至多", "小于等于", "小于或等于", "at most", "less than or equal to":
 		return "<="
 	case "≠":
 		return "!="
@@ -58,9 +60,58 @@ func normalizeNumberOperator(op string) string {
 		return "<"
 	case "等于", "==":
 		return "="
-	default:
+	case ">=", "<=", "!=", ">", "<", "=":
 		return op
+	default:
+		return "" // An arrow or an unsupported operator is not a comparison.
 	}
+}
+
+func reverseNumberOperator(op string) string {
+	switch op {
+	case ">":
+		return "<"
+	case ">=":
+		return "<="
+	case "<":
+		return ">"
+	case "<=":
+		return ">="
+	default:
+		return op // Equality and inequality are symmetric.
+	}
+}
+
+func adjacentNumberOperator(before, after string) string {
+	left, right := "", ""
+	scopePrefix := before
+	if m := numberOperatorRegex.FindStringSubmatch(before); len(m) > 1 {
+		left = normalizeNumberOperator(m[1])
+		scopePrefix = strings.TrimSuffix(strings.TrimSpace(before), m[1])
+	}
+	if m := numberTrailingOperatorRegex.FindStringSubmatch(after); len(m) > 1 {
+		// Store the relation with the number on the right: 5 <= x becomes x >= 5.
+		right = reverseNumberOperator(normalizeNumberOperator(m[1]))
+	}
+	// Negation can change a comparison's meaning or scope. This lexer does not
+	// prove what "not less than" / "cannot exceed" means; leave such clauses to
+	// model comparison instead of treating an inner operator as the whole claim.
+	if boundary := strings.LastIndexAny(scopePrefix, ",，;；。.!！?？\n\r"); boundary >= 0 {
+		scopePrefix = scopePrefix[boundary+1:]
+	}
+	for _, marker := range constraintMarkerRegex.FindAllString(scopePrefix, -1) {
+		switch constraintKind(marker) {
+		case "prohibition", "factual_negation", "negative_recommendation", "exemption", "ambiguous":
+			return ""
+		}
+	}
+	if left != "" && right != "" && left != right {
+		return "" // Two different relations cannot be represented by one operator.
+	}
+	if left != "" {
+		return left
+	}
+	return right
 }
 
 func normalizeNumberUnit(unit string) string {
@@ -93,21 +144,19 @@ func numberOccurrences(s string) []numberOccurrence {
 		if start > 0 && isASCIIIdentifier(s[start-1]) {
 			continue
 		}
-		unit := ""
+		unit, unitEnd := "", end
 		if m := numberUnitRegex.FindStringSubmatch(s[end:]); len(m) > 1 {
 			unit = m[1]
-			unitEnd := end + len(m[0])
+			unitEnd = end + len(m[0])
 			if unitEnd < len(s) && isASCIIIdentifier(s[unitEnd]) {
 				unit = ""
+				unitEnd = end
 			}
 		}
 		if end < len(s) && isASCIIIdentifier(s[end]) && unit == "" {
 			continue
 		}
-		op := ""
-		if m := numberOperatorRegex.FindStringSubmatch(s[:start]); len(m) > 1 {
-			op = normalizeNumberOperator(m[1])
-		}
+		op := adjacentNumberOperator(s[:start], s[unitEnd:])
 		result = append(result, numberOccurrence{Value: s[start:end], Operator: op, Unit: normalizeNumberUnit(unit)})
 	}
 	return result
@@ -155,6 +204,13 @@ func buildAnthropicMessagesURL(baseURL string) string {
 }
 
 func callLLM(p Profile, sysPrompt, userPrompt string, temp float64) (string, error) {
+	return callLLMContext(context.Background(), p, sysPrompt, userPrompt, temp)
+}
+
+func callLLMContext(ctx context.Context, p Profile, sysPrompt, userPrompt string, temp float64) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if p.APIKey == "" {
 		return "", fmt.Errorf("当前配置方案 [%s] 未设置 API Key", p.Name)
 	}
@@ -172,7 +228,7 @@ func callLLM(p Profile, sysPrompt, userPrompt string, temp float64) (string, err
 	jsonBytes, _ := json.Marshal(reqBody)
 	targetURL := buildOpenAICompletionsURL(baseURL)
 
-	req, err := http.NewRequest("POST", targetURL, bytes.NewBuffer(jsonBytes))
+	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewBuffer(jsonBytes))
 	if err != nil {
 		return "", err
 	}
@@ -186,7 +242,10 @@ func callLLM(p Profile, sysPrompt, userPrompt string, temp float64) (string, err
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("读取模型响应失败: %w", err)
+	}
 	if resp.StatusCode != 200 {
 		return "", fmt.Errorf("上游 API 错误 (%d)\n请求地址: %s\n响应: %s", resp.StatusCode, targetURL, string(bodyBytes))
 	}
@@ -204,6 +263,9 @@ func callLLM(p Profile, sysPrompt, userPrompt string, temp float64) (string, err
 	}
 	if reason := result.Choices[0].FinishReason; reason != "" && reason != "stop" {
 		return "", fmt.Errorf("模型响应未完整结束: finish_reason=%s", reason)
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
 	return result.Choices[0].Message.Content, nil
 }
@@ -298,7 +360,9 @@ type constraintClause struct{ Kind, Body, Marker string }
 func constraintKind(marker string) string {
 	m := strings.ToLower(strings.Join(strings.Fields(marker), " "))
 	switch m {
-	case "must not", "shall not", "cannot", "never", "may not", "不允许", "不可以", "禁止", "不得", "严禁", "绝不", "不能", "不可":
+	case "cannot", "may not":
+		return "ambiguous" // Capability/possibility and prohibition need context.
+	case "must not", "shall not", "never", "不允许", "不可以", "禁止", "不得", "严禁", "绝不", "不能", "不可":
 		return "prohibition"
 	case "must", "shall", "必须", "务必", "应当", "须", "不得不", "不能不":
 		return "obligation"
@@ -358,24 +422,37 @@ func checkDeterministicInvariants(orig, comp string, requiredKeywords []string) 
 			continue
 		}
 		seenNumbers[number] = true
-		found := false
+		valueFound, compatible := false, false
 		for _, candidate := range candidateNumbers {
-			if candidate.Value == number.Value && (number.Unit == "" || candidate.Unit == number.Unit) &&
-				(number.Operator == "" || candidate.Operator == number.Operator) {
-				found = true
+			if candidate.Value != number.Value {
+				continue
+			}
+			valueFound = true
+			// An unrecognized unit scope or comparison is unknown, not a proven
+			// omission. Only reject conflicts between two locally known values;
+			// full relation/scope preservation still requires model comparison.
+			unitConflict := number.Unit != "" && candidate.Unit != "" && number.Unit != candidate.Unit
+			operatorConflict := number.Operator != "" && candidate.Operator != "" && number.Operator != candidate.Operator
+			if !unitConflict && !operatorConflict {
+				compatible = true
 				break
 			}
 		}
-		if !found {
-			failures = append(failures, fmt.Sprintf("未保留数值/比较符/单位: %s%s%s", number.Operator, number.Value, number.Unit))
+		if !valueFound {
+			failures = append(failures, fmt.Sprintf("未保留数值字面量: %s", number.Value))
+		} else if !compatible {
+			failures = append(failures, fmt.Sprintf("同值数值的已知比较符/单位冲突: %s%s%s", number.Operator, number.Value, number.Unit))
 		}
 	}
 
 	candidateClauses := constraintClauses(comp)
 	for _, original := range constraintClauses(orig) {
+		if original.Kind == "ambiguous" {
+			continue
+		}
 		compatible, conflict := false, false
 		for _, candidate := range candidateClauses {
-			if candidate.Body != original.Body {
+			if candidate.Body != original.Body || candidate.Kind == "ambiguous" {
 				continue
 			}
 			if candidate.Kind == original.Kind {
@@ -481,11 +558,18 @@ func parseAuditResult(raw string) (bool, []string, error) {
 }
 
 func runValidation(p Profile, orig, comp string, requiredKeywords []string) ValidationResult {
+	return runValidationContext(context.Background(), p, orig, comp, requiredKeywords)
+}
+
+func runValidationContext(ctx context.Context, p Profile, orig, comp string, requiredKeywords []string) ValidationResult {
+	if err := ctx.Err(); err != nil {
+		return newValidation("error", "llm_compare", err.Error())
+	}
 	if failures := checkDeterministicInvariants(orig, comp, requiredKeywords); len(failures) > 0 {
 		return newValidation("failed", "local_checks", failures...)
 	}
 	data, _ := json.Marshal(map[string]string{"original": orig, "candidate": comp})
-	raw, err := callLLM(p, verifyGatePrompt, string(data), 0.0)
+	raw, err := callLLMContext(ctx, p, verifyGatePrompt, string(data), 0.0)
 	if err != nil {
 		return newValidation("error", "llm_compare", err.Error())
 	}
@@ -551,17 +635,20 @@ func fillCompileStats(out *CompileResp, original, encoding string) error {
 	return nil
 }
 
-func validateCompileResponse(req CompileReq, p, reader Profile, out CompileResp) (CompileResp, error) {
+func validateCompileResponse(ctx context.Context, req CompileReq, p, reader Profile, out CompileResp) (CompileResp, error) {
 	out.Audit = ""
 	out.Validation = newValidation("not_run", "none")
+	if err := ctx.Err(); err != nil {
+		return out, err
+	}
 	if err := fillCompileStats(&out, req.Text, p.TokenEncoding); err != nil {
 		return out, err
 	}
 	if req.Verify || req.StrictGate {
 		if p.ValidationMode == "blind" {
-			out.Validation = runBlindValidation(reader, p, req.Text, out.Compiled, req.RequiredKeywords)
+			out.Validation = runBlindValidationContext(ctx, reader, p, req.Text, out.Compiled, req.RequiredKeywords)
 		} else {
-			out.Validation = runValidation(p, req.Text, out.Compiled, req.RequiredKeywords)
+			out.Validation = runValidationContext(ctx, p, req.Text, out.Compiled, req.RequiredKeywords)
 		}
 	} else if len(req.RequiredKeywords) > 0 {
 		if issues := checkDeterministicInvariants(req.Text, out.Compiled, req.RequiredKeywords); len(issues) > 0 {
@@ -569,6 +656,9 @@ func validateCompileResponse(req CompileReq, p, reader Profile, out CompileResp)
 		} else {
 			out.Validation.Method = "local_checks"
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return out, err
 	}
 	out.Audit = validationSummary(out.Validation)
 	if req.StrictGate && out.Validation.Status != "passed" {
@@ -578,6 +668,13 @@ func validateCompileResponse(req CompileReq, p, reader Profile, out CompileResp)
 }
 
 func doCompile(req CompileReq) (CompileResp, error) {
+	return doCompileContext(context.Background(), req)
+}
+
+func doCompileContext(ctx context.Context, req CompileReq) (CompileResp, error) {
+	if err := ctx.Err(); err != nil {
+		return CompileResp{}, err
+	}
 	if strings.TrimSpace(req.Text) == "" {
 		return CompileResp{}, fmt.Errorf("编译文本不能为空")
 	}
@@ -619,10 +716,16 @@ func doCompile(req CompileReq) (CompileResp, error) {
 	}
 	if !req.NoCache {
 		if out, hit := readCandidate(); hit {
-			return validateCompileResponse(req, p, reader, out)
+			return validateCompileResponse(ctx, req, p, reader, out)
 		}
 	}
 
+	// Shared generation may still serve another caller. Individual cancellation
+	// stops waiting and validation, while no-cache generation follows its caller.
+	generationContext := context.Background()
+	if req.NoCache {
+		generationContext = ctx
+	}
 	generate := func() (CompileResp, error) {
 		if !req.NoCache {
 			// Recheck after entering singleflight; another request can have filled
@@ -631,7 +734,7 @@ func doCompile(req CompileReq) (CompileResp, error) {
 				return out, nil
 			}
 		}
-		compiled, err := callLLM(p, dialect.Prompt, req.Text, 0.1)
+		compiled, err := callLLMContext(generationContext, p, dialect.Prompt, req.Text, 0.1)
 		if err != nil {
 			return CompileResp{}, err
 		}
@@ -657,7 +760,7 @@ func doCompile(req CompileReq) (CompileResp, error) {
 		out, err = generate() // neither cache access nor in-flight result sharing
 	} else {
 		var shared bool
-		out, shared, err = compileFlight.Do(cacheKey, generate)
+		out, shared, err = compileFlight.Do(ctx, cacheKey, generate)
 		out.CacheHit = out.CacheHit || shared
 	}
 	if err != nil {
@@ -665,5 +768,5 @@ func doCompile(req CompileReq) (CompileResp, error) {
 	}
 	// Only generation is shared. Every request satisfies its own current gate,
 	// including cache hits and followers of a non-verifying request.
-	return validateCompileResponse(req, p, reader, out)
+	return validateCompileResponse(ctx, req, p, reader, out)
 }

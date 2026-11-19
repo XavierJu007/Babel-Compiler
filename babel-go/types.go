@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"sync"
 	"time"
 )
@@ -126,6 +127,7 @@ type CircuitBreaker struct {
 	cooldown     time.Duration
 	openedAt     time.Time
 	halfOpenBusy bool
+	probeID      uint64
 }
 
 func newCircuitBreaker(threshold int, cooldown time.Duration) *CircuitBreaker {
@@ -133,19 +135,25 @@ func newCircuitBreaker(threshold int, cooldown time.Duration) *CircuitBreaker {
 }
 
 func (cb *CircuitBreaker) Allow() bool {
+	allowed, _ := cb.Acquire()
+	return allowed
+}
+
+func (cb *CircuitBreaker) Acquire() (bool, uint64) {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 	if cb.failures < cb.threshold {
-		return true
+		return true, 0
 	}
 	if time.Since(cb.openedAt) < cb.cooldown {
-		return false
+		return false, 0
 	}
 	if !cb.halfOpenBusy {
 		cb.halfOpenBusy = true
-		return true
+		cb.probeID++
+		return true, cb.probeID
 	}
-	return false
+	return false, 0
 }
 
 func (cb *CircuitBreaker) RecordSuccess() {
@@ -163,6 +171,16 @@ func (cb *CircuitBreaker) RecordFailure() {
 	cb.failures++
 	if cb.failures >= cb.threshold {
 		cb.openedAt = time.Now()
+	}
+}
+
+// A caller cancellation says nothing about service health. Release a possible
+// half-open probe without counting a failure or clearing previous failures.
+func (cb *CircuitBreaker) ReleaseProbe(probeID uint64) {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	if probeID != 0 && cb.halfOpenBusy && probeID == cb.probeID {
+		cb.halfOpenBusy = false
 	}
 }
 
@@ -199,7 +217,7 @@ func (cb *CircuitBreaker) Status() map[string]any {
 // ==================== Singleflight 防缓存击穿 ====================
 
 type flightCall struct {
-	wg      sync.WaitGroup
+	done    chan struct{}
 	res     CompileResp
 	err     error
 	waiters int // protected by flightGroup.mu
@@ -210,30 +228,35 @@ type flightGroup struct {
 	calls map[string]*flightCall
 }
 
-func (g *flightGroup) Do(key string, fn func() (CompileResp, error)) (CompileResp, bool, error) {
+func (g *flightGroup) Do(ctx context.Context, key string, fn func() (CompileResp, error)) (CompileResp, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return CompileResp{}, false, err
+	}
 	g.mu.Lock()
 	if g.calls == nil {
 		g.calls = make(map[string]*flightCall)
 	}
-	if c, ok := g.calls[key]; ok {
+	c, shared := g.calls[key]
+	if shared {
 		c.waiters++
-		g.mu.Unlock()
-		c.wg.Wait()
-		return c.res, true, c.err
+	} else {
+		c = &flightCall{done: make(chan struct{})}
+		g.calls[key] = c
+		go func() {
+			c.res, c.err = fn()
+			g.mu.Lock()
+			delete(g.calls, key)
+			g.mu.Unlock()
+			close(c.done)
+		}()
 	}
-	c := &flightCall{}
-	c.wg.Add(1)
-	g.calls[key] = c
 	g.mu.Unlock()
-
-	c.res, c.err = fn()
-
-	g.mu.Lock()
-	delete(g.calls, key)
-	g.mu.Unlock()
-	c.wg.Done()
-
-	return c.res, false, c.err
+	select {
+	case <-ctx.Done():
+		return CompileResp{}, shared, ctx.Err()
+	case <-c.done:
+		return c.res, shared, c.err
+	}
 }
 
 const (

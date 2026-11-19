@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -71,6 +72,10 @@ const blindComparatorPrompt = `你是独立阅读结果的语义对照审阅器�
 或 {"pass":false,"missing":["具体缺失或冲突"]}`
 
 func runBlindValidation(reader, comparator Profile, orig, candidate string, required []string) ValidationResult {
+	return runBlindValidationContext(context.Background(), reader, comparator, orig, candidate, required)
+}
+
+func runBlindValidationContext(ctx context.Context, reader, comparator Profile, orig, candidate string, required []string) ValidationResult {
 	result := newValidation("not_run", "blind_read")
 	result.PolicyVersion = blindValidationPolicyVersion
 	result.Stages = []ValidationStage{
@@ -84,6 +89,9 @@ func runBlindValidation(reader, comparator Profile, orig, candidate string, requ
 		result.Stages[stage].Status = status
 		result.Stages[stage].Issues = append([]string{}, issues...)
 		return result
+	}
+	if err := ctx.Err(); err != nil {
+		return finish(0, "error", err.Error())
 	}
 	if strings.TrimSpace(orig) == "" || strings.TrimSpace(candidate) == "" {
 		return finish(0, "failed", "原文和候选不能为空")
@@ -99,7 +107,7 @@ func runBlindValidation(reader, comparator Profile, orig, candidate string, requ
 		Candidate string `json:"candidate"`
 	}{candidate})
 	started := time.Now()
-	raw, err := callLLM(reader, blindReaderPrompt, string(readerInput), 0.0)
+	raw, err := callLLMContext(ctx, reader, blindReaderPrompt, string(readerInput), 0.0)
 	result.Stages[1].DurationMS = time.Since(started).Milliseconds()
 	if err != nil {
 		return finish(1, "error", "独立阅读服务异常: "+err.Error())
@@ -121,7 +129,7 @@ func runBlindValidation(reader, comparator Profile, orig, candidate string, requ
 		Reading  BlindReading `json:"reading"`
 	}{orig, reading})
 	started = time.Now()
-	raw, err = callLLM(comparator, blindComparatorPrompt, string(comparatorInput), 0.0)
+	raw, err = callLLMContext(ctx, comparator, blindComparatorPrompt, string(comparatorInput), 0.0)
 	result.Stages[2].DurationMS = time.Since(started).Milliseconds()
 	if err != nil {
 		return finish(2, "error", "独立阅读对照服务异常: "+err.Error())
@@ -327,7 +335,10 @@ func checkBlindReadingGrounding(reading BlindReading, candidate string) []string
 			if clause.Body != action || !unambiguousBlindMarker(clause.Marker) {
 				continue
 			}
-			if clause.Kind == kind {
+			// A lexical "not" supports negation, not a specific modal category.
+			// The comparator must still distinguish incapability, uncertainty,
+			// factual negation and prohibition from the complete context.
+			if clause.Kind == kind || clause.Kind == "factual_negation" && relation.Negated {
 				compatible = true
 			} else {
 				conflict = true
