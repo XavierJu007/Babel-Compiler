@@ -464,14 +464,15 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	modifiedBody, _ := json.Marshal(payload)
 
-	upstreamBase := r.Header.Get("X-Upstream-BaseURL")
+	upstreamBase := strings.TrimSpace(r.Header.Get("X-Upstream-BaseURL"))
 	if upstreamBase == "" {
-		upstreamBase = p.UpstreamURL
+		upstreamBase = strings.TrimSpace(p.UpstreamURL)
 	}
-	if upstreamBase == "" {
-		upstreamBase = p.BaseURL
+	// The compiler fallback is already a complete endpoint, not a base path.
+	targetURL := compilerRequestURL(p.BaseURL)
+	if upstreamBase != "" {
+		targetURL = buildOpenAICompletionsURL(upstreamBase)
 	}
-	targetURL := buildOpenAICompletionsURL(upstreamBase)
 
 	proxyReq, err := http.NewRequestWithContext(r.Context(), "POST", targetURL, bytes.NewBuffer(modifiedBody))
 	if err != nil {
@@ -573,6 +574,15 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	upstreamBase := strings.TrimSpace(r.Header.Get("X-Upstream-BaseURL"))
+	if upstreamBase == "" {
+		upstreamBase = strings.TrimSpace(p.UpstreamURL)
+	}
+	if upstreamBase == "" {
+		http.Error(w, "Anthropic 代理需要 upstream_url 或 X-Upstream-BaseURL；无法从编译请求 URL 推导 Messages 地址", http.StatusBadRequest)
+		return
+	}
+	targetURL := buildAnthropicMessagesURL(upstreamBase)
 
 	var (
 		logIDs       []string
@@ -659,15 +669,6 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	isStream, _ := payload["stream"].(bool)
 	modifiedBody, _ := json.Marshal(payload)
-
-	upstreamBase := r.Header.Get("X-Upstream-BaseURL")
-	if upstreamBase == "" {
-		upstreamBase = p.UpstreamURL
-	}
-	if upstreamBase == "" {
-		upstreamBase = p.BaseURL
-	}
-	targetURL := buildAnthropicMessagesURL(upstreamBase)
 
 	proxyReq, err := http.NewRequestWithContext(r.Context(), "POST", targetURL, bytes.NewBuffer(modifiedBody))
 	if err != nil {

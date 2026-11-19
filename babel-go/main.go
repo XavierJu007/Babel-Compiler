@@ -24,7 +24,7 @@ func main() {
 	quiet := flag.Bool("q", false, "静默模式，仅输出纯文本")
 	file := flag.String("f", "", "从文件读取输入")
 	apiKey := flag.String("api-key", "", "指定 API Key")
-	baseURL := flag.String("base-url", "", "指定编译器 Base URL")
+	baseURL := flag.String("base-url", "", "指定编译/校验请求 URL，按原样发送 POST，不自动追加路径")
 	model := flag.String("model", "", "指定编译器模型名称")
 	tokenEncoding := flag.String("token-encoding", "", "消费文本计数编码：estimate | cl100k_base | o200k_base（留空继承方案）")
 	validationMode := flag.String("validation-mode", "", "验证模式：compare 原文对照 | blind 独立阅读后对照（配合 -v/-gate）")

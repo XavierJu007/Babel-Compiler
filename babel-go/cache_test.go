@@ -29,10 +29,20 @@ func TestCandidateCacheIdentityIncludesProviderPromptAndExactSource(t *testing.T
 			t.Errorf("%s omitted from cache identity", name)
 		}
 	}
+	for _, address := range []string{
+		"https://compiler.example/v1/chat/completions", "https://compiler.example/v1/",
+		"https://compiler.example/v1?route=a", "https://compiler.example/custom",
+	} {
+		differentEndpoint := profile
+		differentEndpoint.BaseURL = address
+		if makeCacheKey(dialect, differentEndpoint, text) == baseline {
+			t.Errorf("distinct request endpoint shares a candidate: %s", address)
+		}
+	}
 	sameEndpoint := profile
-	sameEndpoint.BaseURL = "https://compiler.example/v1/chat/completions"
+	sameEndpoint.BaseURL = "  " + profile.BaseURL + " \n"
 	if makeCacheKey(dialect, sameEndpoint, text) != baseline {
-		t.Fatal("equivalent request endpoints differ")
+		t.Fatal("outer URL whitespace changed the actual endpoint identity")
 	}
 	rotatedKey := profile
 	rotatedKey.APIKey = "do-not-store-secret"

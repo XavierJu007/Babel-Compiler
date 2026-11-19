@@ -9,7 +9,7 @@ import (
 type Profile struct {
 	Name           string `json:"name"`
 	APIKey         string `json:"api_key"`
-	BaseURL        string `json:"base_url"`
+	BaseURL        string `json:"base_url"` // Exact compiler/validation POST URL; legacy field name retained.
 	Model          string `json:"model"`
 	UpstreamURL    string `json:"upstream_url"`
 	TokenEncoding  string `json:"token_encoding,omitempty"`
@@ -45,7 +45,7 @@ type CompileReq struct {
 	RequiredKeywords []string `json:"required_keywords"`
 	Profile          string   `json:"profile,omitempty"`
 	APIKey           string   `json:"api_key,omitempty"`
-	BaseURL          string   `json:"base_url,omitempty"`
+	BaseURL          string   `json:"base_url,omitempty"` // Exact POST URL override; never an inferred route.
 	Model            string   `json:"model,omitempty"`
 	TokenEncoding    string   `json:"token_encoding,omitempty"`
 	ValidationMode   string   `json:"validation_mode,omitempty"`

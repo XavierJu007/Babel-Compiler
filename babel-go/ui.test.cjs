@@ -475,6 +475,55 @@ test('connection tests use the same default profile name as saving a blank-name 
     assert.match(get('cfgTestResult').textContent, /missing key/);
 });
 
+test('model request URLs retain custom paths, trailing slashes and queries when loaded, tested and saved', async () => {
+    for (const url of [
+        'http://127.0.0.1:9000/v1',
+        'https://gateway.example/custom/compile/',
+        'https://gateway.example/custom/compile/?api-version=2025-01-01&route=%2Fv1%2F'
+    ]) {
+        const config = configFixture({ base_url: url });
+        const { context, get, requests, storage } = setup([
+            { data: config }, { data: { ok: true, detail: 'connected', target_url: url } },
+            { data: { success: true } }, { data: config }
+        ]);
+        await context.loadInitConfig();
+        assert.equal(get('cfgBaseUrl').value, url);
+        assert.match(get('cfgTestResult').textContent, /请求 URL 原样发送 POST/);
+        get('cfgBaseUrl').value = `  ${url}  `;
+        await context.testModelConnection();
+        assert.equal(JSON.parse(requests[1].options.body).base_url, url);
+        await context.saveProfileConfig();
+        assert.equal(JSON.parse(requests[2].options.body).base_url, url);
+        assert.equal(JSON.parse(storage.get('babel_dsl_backup_v2')).base_url, url);
+        assert.equal(get('cfgBaseUrl').value, url);
+    }
+});
+
+test('provider buttons explicitly fill complete request endpoints without a general URL suffix rule', () => {
+    const endpoints = new Map([
+        ['deepseek', 'https://api.deepseek.com/chat/completions'],
+        ['openai', 'https://api.openai.com/v1/chat/completions'],
+        ['openrouter', 'https://openrouter.ai/api/v1/chat/completions'],
+        ['ollama', 'http://127.0.0.1:11434/v1/chat/completions']
+    ]);
+    const handlers = [...html.matchAll(/onclick="(applyPreset\([^"\n]+\))"/g)].map(match => match[1]);
+    assert.equal(handlers.length, endpoints.size);
+    const { context, get } = setup();
+    for (const handler of handlers) {
+        vm.runInContext(handler, context);
+        const name = get('cfgProfileName').value;
+        assert.equal(get('cfgBaseUrl').value, endpoints.get(name), name);
+        endpoints.delete(name);
+    }
+    assert.equal(endpoints.size, 0);
+    context.applyPreset('custom', 'https://gateway.example/my-route/?a=1', 'custom-model');
+    assert.equal(get('cfgBaseUrl').value, 'https://gateway.example/my-route/?a=1');
+    assert.doesNotMatch(html, /末尾请带|中转站通常需要带|探测 \/chat\/completions/);
+    assert.match(html, /上游服务基址（透明代理转发）/);
+    assert.match(html, /OpenAI 留空复用编译请求 URL；Anthropic 需填写/);
+    assert.doesNotMatch(html, /留空则默认转发至上方 Base URL/);
+});
+
 test('profile token encoding and independent reader choices load, save, and persist', async () => {
     const saved = configFixture({ token_encoding: 'o200k_base', validation_mode: 'blind', reader_profile: 'reader' });
     const { context, get, requests, storage } = setup([

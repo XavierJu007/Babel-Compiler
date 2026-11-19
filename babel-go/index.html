@@ -1066,12 +1066,12 @@
         </div>
 
         <div class="form-group">
-            <span class="form-label">快速填充服务商模板 (注意中转站通常需要带 /v1 后缀):</span>
+            <span class="form-label">快速填充服务商的完整请求 URL：</span>
             <div class="preset-row">
-                <button type="button" class="btn btn-cyan" onclick="applyPreset('deepseek', 'https://api.deepseek.com/v1', 'deepseek-chat')">DeepSeek</button>
-                <button type="button" class="btn btn-emerald" onclick="applyPreset('openai', 'https://api.openai.com/v1', 'gpt-4o-mini')">OpenAI (4o-mini)</button>
-                <button type="button" class="btn" onclick="applyPreset('openrouter', 'https://openrouter.ai/api/v1', 'google/gemini-2.5-flash')">OpenRouter</button>
-                <button type="button" class="btn" onclick="applyPreset('ollama', 'http://127.0.0.1:11434/v1', 'qwen2.5:7b')">Ollama 本地</button>
+                <button type="button" class="btn btn-cyan" onclick="applyPreset('deepseek', 'https://api.deepseek.com/chat/completions', 'deepseek-chat')">DeepSeek</button>
+                <button type="button" class="btn btn-emerald" onclick="applyPreset('openai', 'https://api.openai.com/v1/chat/completions', 'gpt-4o-mini')">OpenAI (4o-mini)</button>
+                <button type="button" class="btn" onclick="applyPreset('openrouter', 'https://openrouter.ai/api/v1/chat/completions', 'google/gemini-2.5-flash')">OpenRouter</button>
+                <button type="button" class="btn" onclick="applyPreset('ollama', 'http://127.0.0.1:11434/v1/chat/completions', 'qwen2.5:7b')">Ollama 本地</button>
             </div>
         </div>
 
@@ -1090,8 +1090,9 @@
         </div>
 
         <div class="form-group">
-            <label class="form-label">编译器 API Base URL (末尾请带 /v1)</label>
-            <input id="cfgBaseUrl" type="text" class="form-input" placeholder="https://api.openai.com/v1">
+            <label class="form-label">编译器请求 URL（按填写地址发送 POST）</label>
+            <input id="cfgBaseUrl" type="text" class="form-input" placeholder="https://api.openai.com/v1/chat/completions">
+            <span class="domain-note">仅去除首尾空白，保留路径、末尾斜杠与查询参数；不会自动补路径。</span>
         </div>
 
         <div class="form-grid-2">
@@ -1106,8 +1107,9 @@
         </div>
 
         <div class="form-group">
-            <label class="form-label">上游 Agent Base URL (可选，仅透明代理转发时使用)</label>
-            <input id="cfgUpstreamUrl" type="text" class="form-input" placeholder="留空则默认转发至上方 Base URL">
+            <label class="form-label">上游服务基址（透明代理转发）</label>
+            <input id="cfgUpstreamUrl" type="text" class="form-input" placeholder="OpenAI 留空复用编译请求 URL；Anthropic 需填写">
+            <span class="domain-note">显式填写基址时，按代理协议构造目标路径。Anthropic 也可通过 X-Upstream-BaseURL 指定基址。</span>
         </div>
 
         <div class="form-grid-2">
@@ -1137,7 +1139,7 @@
         <div class="form-group" style="border-top: 1px solid var(--border-subtle); padding-top: 12px;">
             <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
                 <button type="button" id="cfgTestBtn" class="btn btn-cyan" onclick="testModelConnection()">🔌 测试连接</button>
-                <span id="cfgTestResult" class="conn-status">按当前表单值探测 /chat/completions，无需先保存</span>
+                <span id="cfgTestResult" class="conn-status">按当前表单的请求 URL 原样发送 POST，无需先保存</span>
             </div>
         </div>
 
@@ -2006,7 +2008,7 @@
     }
 
     // ==================== 5.1 模型连通性测试 ====================
-    const CONN_IDLE_TEXT = '按当前表单值探测 /chat/completions，无需先保存';
+    const CONN_IDLE_TEXT = '按当前表单的请求 URL 原样发送 POST，无需先保存';
 
     function setConnStatus(kind, text, hints = []) {
         const box = document.getElementById('cfgTestResult');
@@ -2036,7 +2038,7 @@
 
         btn.disabled = true;
         btn.textContent = '⏳ 测试中…';
-        setConnStatus('pending', `正在请求 ${payload.base_url || '默认端点'} …`, []);
+        setConnStatus('pending', payload.base_url ? `正在向 ${payload.base_url} 发送 POST …` : '正在检查请求 URL …', []);
 
         try {
             const r = await fetchJSON('/api/config/test', {

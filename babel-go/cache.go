@@ -105,7 +105,7 @@ func makeCacheKey(dialect Dialect, p Profile, text string) string {
 		PromptVersion string
 		PromptSHA256  string
 		Text          string
-	}{candidateCacheVersion, buildOpenAICompletionsURL(p.BaseURL), p.Model,
+	}{candidateCacheVersion, compilerRequestURL(p.BaseURL), p.Model,
 		dialect.Name, dialect.PromptHash, hex.EncodeToString(promptHash[:]), text}
 	raw, _ := json.Marshal(identity)
 	h := sha256.Sum256(raw)

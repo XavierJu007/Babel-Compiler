@@ -175,16 +175,26 @@ func extractStandaloneNumbers(s string) []string {
 	return nums
 }
 
-func effectiveCompilerProfile(p Profile) Profile {
-	if strings.TrimSpace(p.BaseURL) == "" {
-		p.BaseURL = "https://api.openai.com/v1"
+const defaultCompilerRequestURL = "https://api.openai.com/v1/chat/completions"
+
+// The configured compiler address is the request endpoint, not a base path.
+// Preserve path, query and trailing slash; never guess another model route.
+func compilerRequestURL(address string) string {
+	if address = strings.TrimSpace(address); address != "" {
+		return address
 	}
+	return defaultCompilerRequestURL
+}
+
+func effectiveCompilerProfile(p Profile) Profile {
+	p.BaseURL = compilerRequestURL(p.BaseURL)
 	if strings.TrimSpace(p.Model) == "" {
 		p.Model = "gpt-4o-mini"
 	}
 	return p
 }
 
+// Used only for explicitly configured transparent-proxy upstream bases.
 func buildOpenAICompletionsURL(baseURL string) string {
 	clean := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if strings.HasSuffix(clean, "/chat/completions") {
@@ -227,7 +237,7 @@ func callLLMContext(ctx context.Context, p Profile, sysPrompt, userPrompt string
 		"temperature": temp,
 	}
 	jsonBytes, _ := json.Marshal(reqBody)
-	targetURL := buildOpenAICompletionsURL(baseURL)
+	targetURL := compilerRequestURL(baseURL)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewBuffer(jsonBytes))
 	if err != nil {

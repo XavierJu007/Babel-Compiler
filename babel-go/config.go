@@ -27,7 +27,7 @@ func configPath() string {
 func defaultProfile() Profile {
 	base := os.Getenv("BABEL_BASE_URL")
 	if base == "" {
-		base = "https://api.openai.com/v1"
+		base = defaultCompilerRequestURL
 	}
 	model := os.Getenv("BABEL_MODEL")
 	if model == "" {
@@ -144,22 +144,12 @@ type ProbeResult struct {
 	ProviderModel string `json:"provider_model,omitempty"`
 }
 
-// probeProfile 用一次最小 chat/completions 请求验证：地址可达、Key 有效、模型存在。
-// 刻意复用 buildOpenAICompletionsURL 与 callLLM 相同的协议形态，
-// 保证「测试通过」等于「编译器真能跑通」，而不是只 ping 到端口。
+// probeProfile 向配置的请求 URL 发送一次最小 OpenAI 兼容请求。
+// 与 callLLM 共享精确地址规则；试连成功只说明本次最小请求成功。
 func probeProfile(p Profile) ProbeResult {
-	res := ProbeResult{Model: strings.TrimSpace(p.Model)}
-
-	baseURL := strings.TrimSpace(p.BaseURL)
-	if baseURL == "" {
-		baseURL = "https://api.openai.com/v1"
-	}
-	model := res.Model
-	if model == "" {
-		model = "gpt-4o-mini"
-	}
-	res.Model = model
-	res.TargetURL = buildOpenAICompletionsURL(baseURL)
+	p = effectiveCompilerProfile(p)
+	model := strings.TrimSpace(p.Model)
+	res := ProbeResult{Model: model, TargetURL: compilerRequestURL(p.BaseURL)}
 
 	if strings.TrimSpace(p.APIKey) == "" {
 		res.Detail = fmt.Sprintf("配置方案 [%s] 未设置 API Key", p.Name)
@@ -182,7 +172,7 @@ func probeProfile(p Profile) ProbeResult {
 	req, err := http.NewRequest("POST", res.TargetURL, bytes.NewReader(body))
 	if err != nil {
 		res.Detail = "目标 URL 无效: " + err.Error()
-		res.Hint = "Base URL 需形如 https://api.openai.com/v1"
+		res.Hint = "填写服务商实际接收 POST 的 http(s) 请求 URL；程序不自动追加路径"
 		return res
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -218,7 +208,7 @@ func probeProfile(p Profile) ProbeResult {
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil || len(parsed.Choices) == 0 {
 		res.Detail = "端点可达，但响应不是 OpenAI 兼容格式: " + truncateRunes(string(raw), 200)
-		res.Hint = "确认 Base URL 指向 OpenAI 兼容的 /v1 端点（中转站通常需带 /v1）"
+		res.Hint = "确认填写的请求 URL 接收 OpenAI 兼容请求，并返回 choices/message 格式；程序不自动追加路径"
 		return res
 	}
 
@@ -233,7 +223,7 @@ func probeStatusHint(code int) string {
 	case code == 401 || code == 403:
 		return "API Key 缺失、无效，或无权访问该模型"
 	case code == 404:
-		return "Base URL 或模型名不存在：多数中转站需带 /v1 后缀，模型名须与该平台一致"
+		return "请求 URL 或模型名不存在：核对服务商实际接收 POST 的地址，程序不自动追加路径"
 	case code == 400:
 		return "请求被拒绝：常见原因是模型名不被支持，或该端点不兼容 max_tokens 参数"
 	case code == 429:
@@ -248,17 +238,17 @@ func probeNetworkHint(err error) string {
 	msg := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline exceeded"):
-		return "连接超时：检查网络、代理设置，或确认 Base URL 主机可达"
+		return "连接超时：检查网络、代理设置，或确认请求 URL 的主机可达"
 	case strings.Contains(msg, "no such host"):
-		return "域名解析失败：检查 Base URL 是否拼写错误"
+		return "域名解析失败：检查请求 URL 是否拼写错误"
 	case strings.Contains(msg, "connection refused"):
 		return "端口拒绝连接：本地 Ollama 等服务需先启动"
 	case strings.Contains(msg, "certificate") || strings.Contains(msg, "tls"):
 		return "TLS 证书校验失败：确认协议与证书是否有效"
 	case strings.Contains(msg, "unsupported protocol scheme"):
-		return "Base URL 需以 http:// 或 https:// 开头"
+		return "请求 URL 需以 http:// 或 https:// 开头"
 	}
-	return "检查 Base URL、网络连通性与代理设置"
+	return "检查请求 URL、网络连通性与代理设置"
 }
 
 func extractUpstreamError(raw []byte) string {
