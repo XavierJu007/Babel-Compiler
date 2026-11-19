@@ -2197,9 +2197,14 @@
         });
     }
 
+    let copyResultSequence = 0;
+
     function resetCompileResult() {
+        copyResultSequence++;
         document.getElementById('dslOutput').value = '';
-        document.getElementById('copyBtn').disabled = true;
+        const copyBtn = document.getElementById('copyBtn');
+        copyBtn.disabled = true;
+        copyBtn.textContent = '复制结果';
         for (const id of ['statsBadge', 'cacheBadge', 'invariantCapsules', 'auditBox']) {
             const el = document.getElementById(id);
             el.classList.add('hidden');
@@ -2207,6 +2212,12 @@
         }
         delete document.getElementById('invariantCapsules').dataset.validationStatus;
         document.getElementById('auditBox').className = 'audit-bar hidden';
+    }
+
+    function markCompileInputChanged() {
+        resetCompileResult();
+        renderValidation({ status: 'not_run', method: 'none', policy_version: 'semantic-gate-v2',
+            issues: ['原文已更改，请重新编译。'] });
     }
 
     function formatTokenMeasurement(stats) {
@@ -2263,6 +2274,10 @@
     function updateInputCount() {
         const len = document.getElementById('rawInput').value.length;
         document.getElementById('inputCharCount').textContent = `${len} chars`;
+        if (document.getElementById('runBtn').disabled || document.getElementById('dslOutput').value ||
+            document.getElementById('invariantCapsules').dataset.validationStatus !== undefined) {
+            markCompileInputChanged();
+        }
     }
 
     // 测试样本：刻意写成长篇业务 SOP，用于体现压缩比（数值阈值与否定约束密集）
@@ -2342,6 +2357,10 @@
                 })
             });
 
+            if (document.getElementById('rawInput').value !== text) {
+                markCompileInputChanged();
+                return;
+            }
             if (typeof data?.compiled !== 'string' || !data.compiled.trim()) {
                 throw new Error('后端未返回有效的编译文本。');
             }
@@ -2369,6 +2388,10 @@
             cacheBadge.classList.toggle('hidden', !data.cache_hit);
 
         } catch (err) {
+            if (document.getElementById('rawInput').value !== text) {
+                markCompileInputChanged();
+                return;
+            }
             resetCompileResult();
             const reported = normalizeValidation(err.validation);
             const validation = ['failed', 'error'].includes(reported.status) ? reported : {
@@ -2385,13 +2408,29 @@
         }
     }
 
-    function copyResult() {
+    async function copyResult() {
         const out = document.getElementById('dslOutput');
-        if (!out.value) return;
-        navigator.clipboard.writeText(out.value);
         const btn = document.getElementById('copyBtn');
-        btn.textContent = '已复制 ✓';
-        setTimeout(() => btn.textContent = '复制 DSL', 1500);
+        if (!out.value || btn.disabled) return;
+        const sequence = ++copyResultSequence;
+        btn.disabled = true;
+        btn.textContent = '复制中...';
+        try {
+            if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+            await navigator.clipboard.writeText(out.value);
+            if (sequence !== copyResultSequence) return;
+            btn.textContent = '已复制 ✓';
+            setTimeout(() => {
+                if (sequence === copyResultSequence) btn.textContent = '复制结果';
+            }, 1500);
+        } catch (err) {
+            if (sequence !== copyResultSequence) return;
+            btn.textContent = '复制失败，请手动复制';
+            out.focus();
+            out.select();
+        } finally {
+            if (sequence === copyResultSequence) btn.disabled = !out.value;
+        }
     }
 
     function renderCircuitStatus(circuit) {

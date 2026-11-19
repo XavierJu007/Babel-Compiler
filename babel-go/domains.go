@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"unicode"
 	"unicode/utf8"
 )
 
@@ -427,24 +426,20 @@ func resolveDomainPacks(mode string, names []string) ([]DomainPack, error) {
 	return packs, nil
 }
 
-// ASCII words need boundaries ("or" must not match "order"); Chinese phrases
-// and already symbolic strings are matched directly without fuzzy inference.
+// ASCII word edges need boundaries, including phrases and terms with punctuation
+// ("read-only" must not match "thread-only"). Chinese and symbol edges still
+// match directly, so ordinary mixed-language text does not require added spaces.
 func domainTermMatches(text, term string) bool {
 	term = strings.ToLower(strings.TrimSpace(term))
 	if term == "" {
 		return false
 	}
-	isWord := true
-	for _, r := range term {
-		if r > unicode.MaxASCII || !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_') {
-			isWord = false
-			break
-		}
-	}
-	if !isWord {
+	wordByte := func(b byte) bool { return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_' }
+	needsStartBoundary := wordByte(term[0])
+	needsEndBoundary := wordByte(term[len(term)-1])
+	if !needsStartBoundary && !needsEndBoundary {
 		return strings.Contains(text, term)
 	}
-	wordByte := func(b byte) bool { return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_' }
 	for start := 0; start < len(text); {
 		index := strings.Index(text[start:], term)
 		if index < 0 {
@@ -452,7 +447,8 @@ func domainTermMatches(text, term string) bool {
 		}
 		index += start
 		end := index + len(term)
-		if (index == 0 || !wordByte(text[index-1])) && (end == len(text) || !wordByte(text[end])) {
+		if (!needsStartBoundary || index == 0 || !wordByte(text[index-1])) &&
+			(!needsEndBoundary || end == len(text) || !wordByte(text[end])) {
 			return true
 		}
 		start = index + 1

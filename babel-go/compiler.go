@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -413,8 +414,201 @@ func constraintClauses(s string) []constraintClause {
 	return clauses
 }
 
-func checkDeterministicInvariants(orig, comp string, requiredKeywords []string) []string {
+// Only explicit delimiters and recognizable technical tokens are hard guards.
+// Ordinary words, unmarked commands and ambiguous paths still need model review.
+var quotedLiteralRegex = regexp.MustCompile(`"(?:\\[^\r\n]|[^"\\\r\n])*"|'(?:\\[^\r\n]|[^'\\\r\n])*'|“[^”\r\n]*”|‘[^’\r\n]*’`)
+var codeDelimiterRegex = regexp.MustCompile("`+|~{3,}")
+var technicalTokenRegex = regexp.MustCompile("(?:[A-Za-z][A-Za-z0-9+.-]*://|[A-Za-z]:[\\\\/]|\\.\\.?/|~/|/)[A-Za-z0-9._~!$&*+,;=:@%/?#\\\\-]+|[A-Za-z0-9_.-]+(?:[\\\\/][A-Za-z0-9_.-]+)*[\\\\/][A-Za-z0-9_.-]+\\.[A-Za-z0-9_-]+|[A-Za-z_][A-Za-z0-9_]*")
+
+type codeLiteral struct {
+	start, end int
+	body       string
+}
+
+func codeLiterals(s string) []codeLiteral {
+	marks := codeDelimiterRegex.FindAllStringIndex(s, -1)
+	var result []codeLiteral
+	for i := 0; i < len(marks); i++ {
+		start, end := marks[i][0], marks[i][1]
+		marker := s[start:end]
+		backslashes := 0
+		for at := start - 1; at >= 0 && s[at] == '\\'; at-- {
+			backslashes++
+		}
+		if marker[0] == '`' && backslashes%2 != 0 {
+			continue // Markdown escaping applies to openers, not code contents.
+		}
+		lineStart := strings.LastIndexByte(s[:start], '\n') + 1
+		indent := s[lineStart:start]
+		isFence := len(marker) >= 3 && len(indent) <= 3 && strings.Trim(indent, " ") == ""
+		newline := strings.IndexByte(s[end:], '\n')
+		lineEnd := len(s)
+		if newline >= 0 {
+			lineEnd = end + newline
+		}
+		if marker[0] == '`' && strings.Contains(s[end:lineEnd], "`") {
+			isFence = false // A same-line closing run denotes inline code.
+		}
+		if marker[0] == '~' && !isFence {
+			continue
+		}
+		bodyStart := end
+		if isFence {
+			if newline < 0 {
+				continue
+			}
+			bodyStart = end + newline + 1
+		}
+		for j := i + 1; j < len(marks); j++ {
+			closeStart, closeEnd := marks[j][0], marks[j][1]
+			closing := s[closeStart:closeEnd]
+			if closeStart < bodyStart || closing[0] != marker[0] {
+				continue
+			}
+			bodyEnd := closeStart
+			if isFence {
+				closeLine := strings.LastIndexByte(s[:closeStart], '\n') + 1
+				prefix := s[closeLine:closeStart]
+				lineEnd := strings.IndexByte(s[closeEnd:], '\n')
+				if lineEnd < 0 {
+					lineEnd = len(s) - closeEnd
+				}
+				if len(closing) < len(marker) || len(prefix) > 3 || strings.Trim(prefix, " ") != "" || strings.TrimSpace(s[closeEnd:closeEnd+lineEnd]) != "" {
+					continue
+				}
+				bodyEnd = closeLine
+				// The newline before the closing fence belongs to its framing.
+				if bodyEnd > bodyStart && s[bodyEnd-1] == '\n' {
+					bodyEnd--
+					if bodyEnd > bodyStart && s[bodyEnd-1] == '\r' {
+						bodyEnd--
+					}
+				}
+			} else if closing != marker {
+				continue
+			}
+			result = append(result, codeLiteral{start, closeEnd, s[bodyStart:bodyEnd]})
+			i = j
+			break
+		}
+	}
+	return result
+}
+
+func technicalTokens(s string) map[string]bool {
+	tokens := make(map[string]bool)
+	for _, loc := range technicalTokenRegex.FindAllStringIndex(s, -1) {
+		start, end := loc[0], loc[1]
+		if start > 0 && isASCIIIdentifier(s[start-1]) {
+			continue // Do not turn the slash in natural "and/or" into a path.
+		}
+		token := s[start:end]
+		isPath := strings.ContainsAny(token, "/\\")
+		if isPath {
+			if end < len(s) {
+				r, _ := utf8.DecodeRuneInString(s[end:])
+				if r > unicode.MaxASCII && unicode.IsLetter(r) {
+					continue // The end of a mixed-script path is lexically ambiguous.
+				}
+			}
+			// Bare prose may place punctuation immediately after a path. Quoted
+			// strings and code separately preserve any literal trailing punctuation.
+			token = strings.TrimRight(token, ".,;")
+			if strings.HasPrefix(token, "/") && strings.Count(token, "/") == 1 && !strings.Contains(token, ".") {
+				continue // Bare /name can also be division; leave it to model review.
+			}
+		} else {
+			identifier := strings.Contains(strings.Trim(token, "_"), "_")
+			for i := 1; i < len(token); i++ {
+				identifier = identifier || token[i-1] >= 'a' && token[i-1] <= 'z' && token[i] >= 'A' && token[i] <= 'Z'
+			}
+			if !identifier {
+				continue
+			}
+		}
+		if token != "" {
+			tokens[token] = true
+		}
+	}
+	return tokens
+}
+
+func containsLiteral(s, literal string) bool {
+	for offset := 0; literal != "" && offset <= len(s)-len(literal); {
+		found := strings.Index(s[offset:], literal)
+		if found < 0 {
+			return false
+		}
+		start, end := offset+found, offset+found+len(literal)
+		if (start == 0 || !isASCIIIdentifier(literal[0]) || !isASCIIIdentifier(s[start-1])) &&
+			(end == len(s) || !isASCIIIdentifier(literal[len(literal)-1]) || !isASCIIIdentifier(s[end])) {
+			return true
+		}
+		offset = start + 1
+	}
+	return false
+}
+
+func checkLiteralInvariants(orig, comp string) []string {
 	var failures []string
+	missing := make(map[string]bool)
+	reportMissing := func(literal string) {
+		if missing[literal] {
+			return
+		}
+		missing[literal] = true
+		display := []rune(literal)
+		if len(display) > 120 {
+			display = append(display[:120], '…')
+		}
+		failures = append(failures, fmt.Sprintf("未保留技术字面量: %q", string(display)))
+	}
+	for offset := 0; offset < len(orig); {
+		loc := quotedLiteralRegex.FindStringIndex(orig[offset:])
+		if loc == nil {
+			break
+		}
+		start, end := offset+loc[0], offset+loc[1]
+		literal := orig[start:end]
+		offset = end
+		if literal[0] == '\'' && (start > 0 && isASCIIIdentifier(orig[start-1]) || end < len(orig) && isASCIIIdentifier(orig[end])) {
+			offset = start + 1 // Rescan: an apostrophe may precede a real quote.
+			continue           // English contractions and possessives are not quoted strings.
+		}
+		if !strings.Contains(comp, literal) {
+			reportMissing(literal)
+		}
+	}
+	candidateCode := make(map[string]bool)
+	outsideCode := []byte(comp)
+	for _, code := range codeLiterals(comp) {
+		candidateCode[code.body] = true
+		for i := code.start; i < code.end; i++ {
+			outsideCode[i] = ' '
+		}
+	}
+	plainCandidate := string(outsideCode)
+	for _, code := range codeLiterals(orig) {
+		if strings.TrimSpace(code.body) != "" && !candidateCode[code.body] && !containsLiteral(plainCandidate, code.body) {
+			reportMissing(code.body)
+		}
+	}
+	candidateTokens := technicalTokens(comp)
+	var originalTokens []string
+	for token := range technicalTokens(orig) {
+		originalTokens = append(originalTokens, token)
+	}
+	sort.Strings(originalTokens)
+	for _, token := range originalTokens {
+		if !candidateTokens[token] {
+			reportMissing(token)
+		}
+	}
+	return failures
+}
+
+func checkDeterministicInvariants(orig, comp string, requiredKeywords []string) []string {
+	failures := checkLiteralInvariants(orig, comp)
 	candidateNumbers := numberOccurrences(comp)
 	seenNumbers := make(map[numberOccurrence]bool)
 	for _, number := range numberOccurrences(orig) {

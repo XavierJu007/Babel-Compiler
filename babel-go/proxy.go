@@ -91,6 +91,25 @@ func isJSONResponseFormat(payload map[string]any) bool {
 	return rfType == "json_object"
 }
 
+// Keep every JSON number's original spelling. Passing unrelated fields such as
+// tool enum values or integer IDs through float64 can silently change them.
+func decodeProxyPayload(raw []byte) (map[string]any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var payload map[string]any
+	if err := decoder.Decode(&payload); err != nil {
+		return nil, err
+	}
+	if payload == nil {
+		return nil, fmt.Errorf("request must be a JSON object")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return nil, fmt.Errorf("request must contain exactly one JSON object")
+	}
+	return payload, nil
+}
+
 func resolveProxyDialect(r *http.Request) (Dialect, []string, error) {
 	name := strings.TrimSpace(r.Header.Get("X-Babel-Dialect"))
 	if name == "" {
@@ -357,8 +376,8 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var payload map[string]any
-	if err := json.Unmarshal(rawBody, &payload); err != nil {
+	payload, err := decodeProxyPayload(rawBody)
+	if err != nil {
 		http.Error(w, "无效的 JSON 请求体", 400)
 		return
 	}
@@ -537,8 +556,8 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var payload map[string]any
-	if err := json.Unmarshal(rawBody, &payload); err != nil {
+	payload, err := decodeProxyPayload(rawBody)
+	if err != nil {
 		http.Error(w, "无效的 JSON 请求体", 400)
 		return
 	}

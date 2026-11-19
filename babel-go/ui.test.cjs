@@ -45,7 +45,8 @@ class Element {
     replaceChildren(...children) { this._text = ''; this.children = children; }
     setAttribute(name, value) { this[name] = value; }
     querySelectorAll() { return []; }
-    focus() {}
+    focus() { this.focused = true; }
+    select() { this.selected = true; }
 }
 
 function setup(responses = []) {
@@ -167,6 +168,112 @@ test('HTTP 502 and non-JSON errors cannot retain successful validation', async (
     await context.runCompile();
     assert.equal(get('invariantCapsules').dataset.validationStatus, 'error');
     assert.match(get('auditBox').textContent, /HTTP 502/);
+});
+
+test('editing the source clears the previous candidate, counts, validation and copy state', async () => {
+    const { context, get } = setup([{ data: result() }]);
+    get('verifyCheck').checked = true;
+    await context.runCompile();
+    assert.equal(get('invariantCapsules').dataset.validationStatus, 'passed');
+    get('rawInput').value = '允许删除订单，不需要审批。';
+    context.updateInputCount();
+    assert.equal(get('dslOutput').value, '');
+    assert.equal(get('statsBadge').classList.contains('hidden'), true);
+    assert.equal(get('cacheBadge').classList.contains('hidden'), true);
+    assert.equal(get('copyBtn').disabled, true);
+    assert.equal(get('invariantCapsules').dataset.validationStatus, 'not_run');
+    assert.match(get('auditBox').textContent, /原文已更改，请重新编译/);
+});
+
+test('responses and errors for an edited source cannot become the current result', async () => {
+    for (const response of [
+        { data: result() },
+        { status: 422, data: { detail: '旧原文校验失败', validation: validation('failed', 'local_checks', ['旧原文缺失字段']) } },
+        { status: 502, data: { detail: '旧请求超时', validation: validation('error', 'llm_compare', ['旧请求异常']) } }
+    ]) {
+        let resolve;
+        const delayed = new Promise(done => { resolve = done; });
+        const { context, get, requests } = setup([() => delayed]);
+        get('verifyCheck').checked = true;
+        const submitted = get('rawInput').value;
+        const pending = context.runCompile();
+        get('rawInput').value = '允许删除订单，不需要审批。';
+        context.updateInputCount();
+        resolve(response);
+        await pending;
+        assert.equal(JSON.parse(requests[0].options.body).text, submitted);
+        assert.equal(get('dslOutput').value, '');
+        assert.equal(get('copyBtn').disabled, true);
+        assert.equal(get('statsBadge').classList.contains('hidden'), true);
+        assert.equal(get('invariantCapsules').dataset.validationStatus, 'not_run');
+        assert.match(get('auditBox').textContent, /原文已更改，请重新编译/);
+        assert.doesNotMatch(get('auditBox').textContent, /旧原文|旧请求/);
+        assert.equal(get('runBtn').disabled, false);
+        assert.equal(get('forceBtn').disabled, false);
+    }
+});
+
+test('copy reports success only after the exact result reaches the clipboard', async () => {
+    const { context, get } = setup();
+    const text = '  保留空格\n\n和换行\n';
+    get('dslOutput').value = text;
+    let resolve, copied, resetLabel;
+    context.navigator.clipboard.writeText = value => {
+        copied = value;
+        return new Promise(done => { resolve = done; });
+    };
+    context.setTimeout = callback => { resetLabel = callback; };
+    const pending = context.copyResult();
+    assert.equal(copied, text);
+    assert.equal(get('copyBtn').textContent, '复制中...');
+    assert.equal(get('copyBtn').disabled, true);
+    resolve();
+    await pending;
+    assert.equal(get('copyBtn').textContent, '已复制 ✓');
+    assert.equal(get('copyBtn').disabled, false);
+    resetLabel();
+    assert.equal(get('copyBtn').textContent, '复制结果');
+});
+
+test('clipboard denial or absence preserves and selects the result for manual copying', async () => {
+    for (const clipboard of [undefined, { writeText: async () => { throw new Error('NotAllowedError'); } }]) {
+        const { context, get } = setup();
+        const text = '  可手动复制的结果\n';
+        get('dslOutput').value = text;
+        context.navigator.clipboard = clipboard;
+        await context.copyResult();
+        assert.equal(get('dslOutput').value, text);
+        assert.equal(get('dslOutput').focused, true);
+        assert.equal(get('dslOutput').selected, true);
+        assert.equal(get('copyBtn').textContent, '复制失败，请手动复制');
+        assert.equal(get('copyBtn').disabled, false);
+        context.navigator.clipboard = { writeText: async value => { assert.equal(value, text); } };
+        await context.copyResult();
+        assert.equal(get('copyBtn').textContent, '已复制 ✓');
+    }
+});
+
+test('a late clipboard result or timer cannot relabel a newer compile result', async () => {
+    const { context, get } = setup([{ data: result() }, { data: result({ compiled: '新候选' }) }]);
+    await context.runCompile();
+    let resolve;
+    context.navigator.clipboard.writeText = () => new Promise(done => { resolve = done; });
+    const pending = context.copyResult();
+    await context.runCompile();
+    resolve();
+    await pending;
+    assert.equal(get('dslOutput').value, '新候选');
+    assert.equal(get('copyBtn').disabled, false);
+    assert.equal(get('copyBtn').textContent, '复制结果');
+
+    let resetLabel;
+    context.navigator.clipboard.writeText = async () => {};
+    context.setTimeout = callback => { resetLabel = callback; };
+    await context.copyResult();
+    context.resetCompileResult();
+    get('copyBtn').textContent = '新操作';
+    resetLabel();
+    assert.equal(get('copyBtn').textContent, '新操作');
 });
 
 test('strict mode rejects incomplete, malformed, and contradictory validation', async () => {
