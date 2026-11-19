@@ -99,6 +99,8 @@ curl http://127.0.0.1:8080/api/compile \
 
 [领域表达库](docs/usage/domain-library.md) · [Token 计数](docs/usage/token-counting.md) · [验证模式](docs/usage/validation.md) · [设计与路线图](docs/design/semantic-compression.md)
 
+[评测入口](eval/README.md)：30 个待人工复核的中英文案例，默认离线检查；可记录指定模型的编译与验证结果。
+
 ## License
 
 [MIT](LICENSE)
