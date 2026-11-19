@@ -59,7 +59,7 @@ func newServerMux() *http.ServeMux {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
 			w.WriteHeader(http.StatusMethodNotAllowed)
-			json.NewEncoder(w).Encode(map[string]string{"detail": "当前固定使用 mixed 混合表达，不再编辑输出预设；旧预设文件保留但不加载，请使用领域词典维护专业表达"})
+			json.NewEncoder(w).Encode(map[string]string{"detail": "当前固定使用 mixed 高密度巴别语，不再编辑输出预设；旧预设文件保留但不加载，请使用领域词典维护专业表达"})
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]any{"dialects": listSortedDialects()})
@@ -352,7 +352,7 @@ func startServer(preferredAddr string, autoOpen bool) {
 	webURL := "http://" + actualAddr
 	fmt.Printf("[+] Babel-DSL 服务已就绪:\n")
 	fmt.Printf("    - 配置文件:       %s\n", configPath())
-	fmt.Printf("    - 表达策略:       mixed（固定混合语言 / 公共表达）\n")
+	fmt.Printf("    - 表达策略:       mixed（高密度巴别语 / 关系·条件·约束）\n")
 	fmt.Printf("    - 领域表达目录:   %s (支持 ./domains 覆盖)\n", globalDomainsDir())
 	fmt.Printf("    - LRU 缓存池:     %s (上限 %d 条)\n", cacheFilePath(), maxCacheEntries)
 	fmt.Printf("    - Web 控制台:     %s\n", webURL)

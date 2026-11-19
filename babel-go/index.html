@@ -826,7 +826,7 @@
             <div id="domainChoices" class="domain-choices"><span class="domain-note">正在加载领域…</span></div>
             <button type="button" class="link-btn" onclick="toggleDomainModal(true)">编辑领域词条</button>
         </div>
-        <div id="domainSelectionHint" class="domain-note">固定使用混合语言与公共表达；公共逻辑始终参与，只取与原文相关的领域词条。</div>
+        <div id="domainSelectionHint" class="domain-note">固定编译为高密度巴别语：关系·条件·约束；公共表达始终参与，专业词条按原文选取。</div>
         <div class="form-grid-3" style="border-top: 1px solid var(--border-subtle); padding-top: 10px;">
             <div class="form-group">
                 <label for="tokenEncodingSelect" class="form-label">本次目标 Token 编码</label>
@@ -879,7 +879,7 @@
         <section class="glass-card pane">
             <div class="pane-header">
                 <div class="pane-title-group">
-                    <span class="pane-label emerald">OUTPUT // 紧凑语义表达</span>
+                    <span class="pane-label emerald">OUTPUT // 高密度巴别语</span>
                     <span id="statsBadge" class="stat-pill hidden"></span>
                     <span id="cacheBadge" class="cache-pill hidden">CACHE HIT</span>
                 </div>
@@ -888,7 +888,7 @@
                     <button id="copyBtn" type="button" class="btn" onclick="copyResult()" disabled>复制结果</button>
                 </div>
             </div>
-            <textarea id="dslOutput" readonly class="code-area output" placeholder="编译后的混合语言与公共表达将在此生成..."></textarea>
+            <textarea id="dslOutput" readonly class="code-area output" placeholder="用公开术语、符号和紧凑层级表达关系、条件与约束；无需额外图例..."></textarea>
             <div id="invariantCapsules" class="capsules-bar hidden" aria-live="polite"></div>
             <div id="auditBox" class="audit-bar hidden" role="status" aria-live="polite"></div>
         </section>
@@ -912,7 +912,7 @@
                 <button id="resetCircuitBtn" type="button" class="btn btn-danger hidden" onclick="resetCircuitBreaker()">立即恢复编译</button>
             </div>
             <p style="font-size: 12px; color: var(--text-secondary);">
-                固定使用混合语言与公共表达，校验通过且文本更短时才替换。<code style="color: var(--amber)">X-Babel-Domains</code> 可选择自己的领域词典（逗号分隔）。编译失败或未达到替换条件时转发原文；上游 usage 是整次请求用量。
+                固定编译为高密度巴别语，校验通过且文本更短时才替换。<code style="color: var(--amber)">X-Babel-Domains</code> 可选择自己的领域词典（逗号分隔）。编译失败或未达到替换条件时转发原文；上游 usage 是整次请求用量。
             </p>
         </div>
 
@@ -1368,7 +1368,7 @@
             hint.textContent = `所选领域当前不可用：${unavailable.join('、')}。请恢复领域文件或取消对应选择；编译不会静默忽略它们。`;
             return;
         }
-        hint.textContent = '固定使用混合语言与公共表达；公共逻辑始终参与，只取与原文相关的领域词条。';
+        hint.textContent = '固定编译为高密度巴别语：关系·条件·约束；公共表达始终参与，专业词条按原文选取。';
     }
 
     function renderDomainChoices() {

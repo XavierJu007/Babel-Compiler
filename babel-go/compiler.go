@@ -25,6 +25,7 @@ const verifyGatePrompt = `你是编译候选的语义对照审阅器。用户消
 3. 分别检查每条禁止、义务、许可和事实否定。禁止不得变成尚未，允许不得变成必须；单个 ! 或 ¬ 不能证明全部约束都保留；
 4. 技术字面量、参数名、枚举、路径、代码和 Payload，禁止自动修正；
 5. 不新增需要私有词表才能读懂的代号，保留原有变量和公共术语。候选须包含理解其关系所需的上下文。
+候选可以是高密度关系式、短语或树形结构；不要求完整句子或与原文逐句同序。按候选自身的标题、缩进、括号及相邻关系读取共享主体、谓词和作用域；这些明确写出的上下文不属于信息缺失。公共符号、常用缩写、混合语言、紧凑枚举与省略虚词本身不是失败原因；仅用于组织段落的编号也不是新增业务数值。仍须核实分支、全称/存在、并行/顺序、必要/充分及模态；不能从原文替候选补齐含糊或缺失的关系，也不能用符号数量代替完整性判断。
 这次对照不是形式证明，也不是只见候选的独立阅读实验。无法确认时返回 false。
 只输出一个 JSON 对象；必须同时包含 boolean 类型的 pass 和 string[] 类型的 missing。不要代码围栏或其他文字：
 {"pass": true, "missing": []}
@@ -400,8 +401,11 @@ type constraintClause struct{ Kind, Body, Marker string }
 func constraintKind(marker string) string {
 	m := strings.ToLower(strings.Join(strings.Fields(marker), " "))
 	switch m {
-	case "cannot", "may not":
-		return "ambiguous" // Capability/possibility and prohibition need context.
+	case "cannot", "may not", "not", "no", "不", "未":
+		// Bare negation can be a statement, an imperative or part of a modal
+		// phrase. Do not call "do not X" -> "MUST NOT X" a factual conflict.
+		// Contextual comparison must still decide whether the force is equal.
+		return "ambiguous"
 	case "must not", "shall not", "never", "不允许", "不可以", "禁止", "不得", "严禁", "绝不", "不能", "不可":
 		return "prohibition"
 	case "must", "shall", "必须", "务必", "应当", "须", "不得不", "不能不":

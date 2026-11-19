@@ -9,15 +9,23 @@ import (
 )
 
 func TestModalGuardAmbiguitiesReachComparison(t *testing.T) {
-	for _, tc := range []struct{ source, candidate, modality string }{
-		{"The system cannot delete logs.", "The system can not delete logs.", "capability"},
-		{"The system may not delete logs.", "The system might not delete logs.", "uncertain"},
+	for _, tc := range []struct {
+		source, candidate, modality, action, object string
+		negated                                     bool
+	}{
+		{"The system cannot delete logs.", "The system can not delete logs.", "capability", "delete", "logs", true},
+		{"The system may not delete logs.", "The system might not delete logs.", "uncertain", "delete", "logs", true},
+		{"If either fails, do not start build_report.", "either fails → MUST NOT start build_report.", "prohibition", "start", "build_report", false},
+		{"MUST NOT delete logs.", "Do not delete logs.", "prohibition", "delete", "logs", false},
+		{"只展示，不执行", "仅展示; 禁止执行", "prohibition", "执行", "", false},
+		{"禁止执行", "不执行", "prohibition", "执行", "", false},
+		{"The system does not delete logs.", "The system MUST NOT delete logs.", "prohibition", "delete", "logs", false},
 	} {
 		for _, mode := range []string{"compare", "blind"} {
 			t.Run(mode+" "+tc.source, func(t *testing.T) {
 				var readerCalls, comparatorCalls atomic.Int32
-				reading := BlindReading{SchemaVersion: 1, Entities: []string{"system", "logs"}, Ambiguities: []string{}, Relations: []BlindRelation{{
-					Subject: "system", Relation: "delete", Object: "logs", Conditions: []string{}, Modality: tc.modality, Negated: true, Quantities: []BlindQuantity{}, Evidence: tc.candidate,
+				reading := BlindReading{SchemaVersion: 1, Entities: []string{}, Ambiguities: []string{}, Relations: []BlindRelation{{
+					Relation: tc.action, Object: tc.object, Conditions: []string{}, Modality: tc.modality, Negated: tc.negated, Quantities: []BlindQuantity{}, Evidence: tc.candidate,
 				}}}
 				service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					var body compilerRequestBody
@@ -65,5 +73,8 @@ func TestModalGuardUncertainCandidateDoesNotBecomeKnownConflict(t *testing.T) {
 	}
 	if issues := checkDeterministicInvariants("禁止删除日志", "允许删除日志", nil); len(issues) == 0 {
 		t.Fatal("explicit Chinese prohibition-to-permission conflict was not rejected")
+	}
+	if issues := checkDeterministicInvariants("尚未删除日志", "禁止删除日志", nil); len(issues) == 0 {
+		t.Fatal("explicit factual-negation-to-prohibition conflict was not rejected")
 	}
 }
