@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 )
 
@@ -144,6 +145,7 @@ func newServerMux() *http.ServeMux {
 		}
 	})
 	mux.HandleFunc("/api/domains", domainAPIHandler)
+	mux.HandleFunc("/api/validate", candidateValidationHandler)
 
 	mux.HandleFunc("/api/config", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -152,12 +154,15 @@ func newServerMux() *http.ServeMux {
 			safeProfiles := make(map[string]map[string]any)
 			for name, prof := range cfg.Profiles {
 				safeProfiles[name] = map[string]any{
-					"name":           name,
-					"api_key_masked": maskKey(prof.APIKey),
-					"has_api_key":    prof.APIKey != "",
-					"base_url":       prof.BaseURL,
-					"model":          prof.Model,
-					"upstream_url":   prof.UpstreamURL,
+					"name":            name,
+					"api_key_masked":  maskKey(prof.APIKey),
+					"has_api_key":     prof.APIKey != "",
+					"base_url":        prof.BaseURL,
+					"model":           prof.Model,
+					"upstream_url":    prof.UpstreamURL,
+					"token_encoding":  normalizeTokenEncoding(prof.TokenEncoding),
+					"validation_mode": normalizeValidationMode(prof.ValidationMode),
+					"reader_profile":  prof.ReaderProfile,
 				}
 			}
 			cacheMutex.RLock()
@@ -165,23 +170,28 @@ func newServerMux() *http.ServeMux {
 			cacheMutex.RUnlock()
 
 			json.NewEncoder(w).Encode(map[string]any{
-				"active_profile": cfg.ActiveProfile,
-				"config_path":    configPath(),
-				"cache_path":     cacheFilePath(),
-				"cache_count":    cacheCount,
-				"profiles":       safeProfiles,
+				"active_profile":   cfg.ActiveProfile,
+				"config_path":      configPath(),
+				"cache_path":       cacheFilePath(),
+				"cache_count":      cacheCount,
+				"profiles":         safeProfiles,
+				"token_encodings":  supportedTokenEncodings(),
+				"validation_modes": []string{"compare", "blind"},
 			})
 			return
 		}
 
 		if r.Method == "POST" {
 			var req struct {
-				Action      string `json:"action"`
-				ProfileName string `json:"profile_name"`
-				APIKey      string `json:"api_key"`
-				BaseURL     string `json:"base_url"`
-				Model       string `json:"model"`
-				UpstreamURL string `json:"upstream_url"`
+				Action         string  `json:"action"`
+				ProfileName    string  `json:"profile_name"`
+				APIKey         string  `json:"api_key"`
+				BaseURL        string  `json:"base_url"`
+				Model          string  `json:"model"`
+				UpstreamURL    string  `json:"upstream_url"`
+				TokenEncoding  *string `json:"token_encoding"`
+				ValidationMode *string `json:"validation_mode"`
+				ReaderProfile  *string `json:"reader_profile"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				w.WriteHeader(400)
@@ -200,6 +210,18 @@ func newServerMux() *http.ServeMux {
 
 			switch req.Action {
 			case "delete":
+				var readers []string
+				for profileName, profile := range cfg.Profiles {
+					if profileName != name && strings.TrimSpace(profile.ReaderProfile) == name {
+						readers = append(readers, profileName)
+					}
+				}
+				if len(readers) > 0 {
+					sort.Strings(readers)
+					w.WriteHeader(http.StatusBadRequest)
+					json.NewEncoder(w).Encode(map[string]string{"detail": "该方案仍被用作阅读器，请先修改这些方案的阅读器选择: " + strings.Join(readers, ", ")})
+					return
+				}
 				if len(cfg.Profiles) <= 1 {
 					w.WriteHeader(400)
 					json.NewEncoder(w).Encode(map[string]string{"detail": "至少保留一个配置方案"})
@@ -232,6 +254,29 @@ func newServerMux() *http.ServeMux {
 					existing.Model = req.Model
 				}
 				existing.UpstreamURL = req.UpstreamURL
+				if req.TokenEncoding != nil {
+					existing.TokenEncoding = normalizeTokenEncoding(*req.TokenEncoding)
+				}
+				if req.ValidationMode != nil {
+					existing.ValidationMode = normalizeValidationMode(*req.ValidationMode)
+				}
+				if req.ReaderProfile != nil {
+					existing.ReaderProfile = strings.TrimSpace(*req.ReaderProfile)
+				}
+				optionErr := validateTokenEncoding(existing.TokenEncoding)
+				if optionErr == nil {
+					optionErr = validateValidationMode(existing.ValidationMode)
+				}
+				if optionErr == nil && existing.ReaderProfile != "" {
+					if _, exists := cfg.Profiles[existing.ReaderProfile]; !exists {
+						optionErr = fmt.Errorf("阅读器配置方案不存在: %s", existing.ReaderProfile)
+					}
+				}
+				if optionErr != nil {
+					w.WriteHeader(http.StatusBadRequest)
+					json.NewEncoder(w).Encode(map[string]string{"detail": optionErr.Error()})
+					return
+				}
 				cfg.Profiles[name] = existing
 				cfg.ActiveProfile = name
 			}

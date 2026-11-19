@@ -505,6 +505,9 @@ func runValidation(p Profile, orig, comp string, requiredKeywords []string) Vali
 func validationSummary(result ValidationResult) string {
 	switch result.Status {
 	case "passed":
+		if result.Method == "blind_read" {
+			return "[PASS] 独立阅读与对照通过；不构成语义等价或跨模型保证"
+		}
 		return "[PASS] 本次字面检查未发现明确冲突，模型对照通过；不构成语义等价或跨模型保证"
 	case "failed", "error":
 		return (&ValidationError{Validation: result}).Error()
@@ -520,19 +523,46 @@ func runAuditGate(p Profile, orig, comp string, requiredKeywords []string) (bool
 	return result.Status == "passed", validationSummary(result)
 }
 
-func fillCompileStats(out *CompileResp, original string) {
-	out.Stats.OriginalChars, out.Stats.CompiledChars, out.Stats.OriginalTokens,
-		out.Stats.CompiledTokens, out.Stats.CompressionRatio = formatStats(original, out.Compiled)
-	out.Stats.MeasurementKind = "estimated"
-	out.Stats.MeasurementSource = "heuristic-v2"
-	out.Stats.MeasurementScope = "text"
+func fillCompileStats(out *CompileResp, original, encoding string) error {
+	before, err := measureTokens(original, encoding)
+	if err != nil {
+		return &TokenMeasurementError{Encoding: encoding, Err: err}
+	}
+	after, err := measureTokens(out.Compiled, encoding)
+	if err != nil {
+		return &TokenMeasurementError{Encoding: encoding, Err: err}
+	}
+	out.Stats.OriginalChars, out.Stats.CompiledChars = utf8.RuneCountInString(original), utf8.RuneCountInString(out.Compiled)
+	out.Stats.OriginalTokens, out.Stats.CompiledTokens = before.Tokens, after.Tokens
+	out.Stats.MeasurementKind, out.Stats.MeasurementSource = before.Kind, before.Source
+	out.Stats.MeasurementScope, out.Stats.MeasurementEncoding, out.Stats.MeasurementVersion = before.Scope, before.Encoding, before.Version
+	label := "估算"
+	if before.Kind == "exact" {
+		label = "所选编码精确计数: " + before.Encoding
+	}
+	direction, percent := "减少", 0.0
+	if before.Tokens > 0 {
+		percent = (1.0 - float64(after.Tokens)/float64(before.Tokens)) * 100
+	}
+	if percent < 0 {
+		direction, percent = "增加", -percent
+	}
+	out.Stats.CompressionRatio = fmt.Sprintf("文本 Token（%s）%d→%d (%s%.1f%%)", label, before.Tokens, after.Tokens, direction, percent)
+	return nil
 }
 
-func validateCompileResponse(req CompileReq, p Profile, out CompileResp) (CompileResp, error) {
+func validateCompileResponse(req CompileReq, p, reader Profile, out CompileResp) (CompileResp, error) {
 	out.Audit = ""
 	out.Validation = newValidation("not_run", "none")
+	if err := fillCompileStats(&out, req.Text, p.TokenEncoding); err != nil {
+		return out, err
+	}
 	if req.Verify || req.StrictGate {
-		out.Validation = runValidation(p, req.Text, out.Compiled, req.RequiredKeywords)
+		if p.ValidationMode == "blind" {
+			out.Validation = runBlindValidation(reader, p, req.Text, out.Compiled, req.RequiredKeywords)
+		} else {
+			out.Validation = runValidation(p, req.Text, out.Compiled, req.RequiredKeywords)
+		}
 	} else if len(req.RequiredKeywords) > 0 {
 		if issues := checkDeterministicInvariants(req.Text, out.Compiled, req.RequiredKeywords); len(issues) > 0 {
 			out.Validation = newValidation("failed", "local_checks", issues...)
@@ -552,17 +582,20 @@ func doCompile(req CompileReq) (CompileResp, error) {
 		return CompileResp{}, fmt.Errorf("编译文本不能为空")
 	}
 	cfg := loadConfig()
-	p := getActiveProfile(cfg, req.Profile)
-	if req.APIKey != "" && !strings.Contains(req.APIKey, "***") {
-		p.APIKey = req.APIKey
+	p, err := resolveCompileProfile(cfg, req)
+	if err != nil {
+		return CompileResp{}, err
 	}
-	if req.BaseURL != "" {
-		p.BaseURL = req.BaseURL
+	reader := p
+	if p.ValidationMode == "blind" {
+		reader, err = resolveReaderProfile(cfg, p)
+		if err != nil {
+			return CompileResp{}, err
+		}
 	}
-	if req.Model != "" {
-		p.Model = req.Model
+	if !utf8.ValidString(req.Text) {
+		return CompileResp{}, fmt.Errorf("编译文本不是有效 UTF-8")
 	}
-	p = effectiveCompilerProfile(p)
 
 	dialect, err := composeDialect(req.Mode, req.Domains, req.Text)
 	if err != nil {
@@ -582,12 +615,11 @@ func doCompile(req CompileReq) (CompileResp, error) {
 			return CompileResp{}, false
 		}
 		out := CompileResp{Compiled: cached.Compiled, Dialect: dialect.Name, CacheHit: true}
-		fillCompileStats(&out, req.Text)
 		return out, true
 	}
 	if !req.NoCache {
 		if out, hit := readCandidate(); hit {
-			return validateCompileResponse(req, p, out)
+			return validateCompileResponse(req, p, reader, out)
 		}
 	}
 
@@ -617,7 +649,6 @@ func doCompile(req CompileReq) (CompileResp, error) {
 			saveDiskCache()
 		}
 		out := CompileResp{Compiled: compiled, Dialect: dialect.Name}
-		fillCompileStats(&out, req.Text)
 		return out, nil
 	}
 
@@ -634,5 +665,5 @@ func doCompile(req CompileReq) (CompileResp, error) {
 	}
 	// Only generation is shared. Every request satisfies its own current gate,
 	// including cache hits and followers of a non-verifying request.
-	return validateCompileResponse(req, p, out)
+	return validateCompileResponse(req, p, reader, out)
 }

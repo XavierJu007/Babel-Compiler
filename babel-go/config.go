@@ -34,11 +34,13 @@ func defaultProfile() Profile {
 		model = "gpt-4o-mini"
 	}
 	return Profile{
-		Name:        "default",
-		APIKey:      os.Getenv("BABEL_API_KEY"),
-		BaseURL:     base,
-		Model:       model,
-		UpstreamURL: os.Getenv("BABEL_UPSTREAM_URL"),
+		Name:           "default",
+		APIKey:         os.Getenv("BABEL_API_KEY"),
+		BaseURL:        base,
+		Model:          model,
+		UpstreamURL:    os.Getenv("BABEL_UPSTREAM_URL"),
+		TokenEncoding:  os.Getenv("BABEL_TOKEN_ENCODING"),
+		ValidationMode: os.Getenv("BABEL_VALIDATION_MODE"),
 	}
 }
 
@@ -91,9 +93,11 @@ func getActiveProfile(cfg Config, overrideName string) Profile {
 		name = overrideName
 	}
 	if p, ok := cfg.Profiles[name]; ok {
+		p.Name = name // The map key is the identity, including legacy files without name.
 		return p
 	}
-	for _, p := range cfg.Profiles {
+	for name, p := range cfg.Profiles {
+		p.Name = name
 		return p
 	}
 	return defaultProfile()

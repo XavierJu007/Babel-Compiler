@@ -10,7 +10,8 @@ Babel 的思路是：把句子里展开叙述的关系，整理为语义图的�
 
 - 压缩长提示词、SOP、API 契约和工具描述中的重复措辞，保留条件、关系与约束。
 - 独立组合领域表达库与输出预设；通过 Web UI、命令行或 HTTP API 编译文本。
-- 作为 OpenAI Chat Completions / Anthropic Messages 代理，检查失败或候选未减少估算 Token 时保留原文。
+- 按指定编码在本地计算文本 Token；可用只看候选的独立阅读器检查可读性，再与原文对照。
+- 作为 OpenAI Chat Completions / Anthropic Messages 代理，检查失败或候选未减少所选计数时保留原文。
 
 ### 表达效果示意
 
@@ -28,7 +29,7 @@ Babel 的思路是：把句子里展开叙述的关系，整理为语义图的�
 否则: 禁止修改订单
 ```
 
-这是表达方式示意。实际输出与节省幅度取决于输入和模型；当前 Token 统计为估算，审计结果不代表语义无损保证。
+这是表达方式示意，实际输出与节省幅度取决于输入和模型。默认计数为估算，可选 `cl100k_base` / `o200k_base` 精确文本计数；审计通过不代表语义无损保证。
 
 ## 怎么用
 
@@ -53,6 +54,9 @@ go build -o bin/babel ./babel-go
 
 # 组合领域，从文件读取并执行严格审计
 ./bin/babel -m standard -domains application-security,api-contract -gate -f prompt.md
+
+# 指定目标编码，并用独立阅读检查候选（额外模型调用）
+./bin/babel -token-encoding o200k_base -validation-mode blind -gate -f prompt.md
 
 # 只输出编译文本，便于管道使用
 ./bin/babel -q -f prompt.md > compiled.txt
@@ -91,9 +95,9 @@ curl http://127.0.0.1:8080/api/compile \
 
 编译服务始终使用 OpenAI 兼容协议；最终上游需支持客户端所用协议。当前服务默认面向本机使用。
 
-## 设计与后续改进
+## 详细说明
 
-[领域表达库使用指南](docs/usage/domain-library.md) · [语义图表达与领域词典设计](docs/design/semantic-compression.md)
+[领域表达库](docs/usage/domain-library.md) · [Token 计数](docs/usage/token-counting.md) · [验证模式](docs/usage/validation.md) · [设计与路线图](docs/design/semantic-compression.md)
 
 ## License
 

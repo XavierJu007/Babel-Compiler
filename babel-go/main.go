@@ -27,8 +27,17 @@ func main() {
 	apiKey := flag.String("api-key", "", "指定 API Key")
 	baseURL := flag.String("base-url", "", "指定编译器 Base URL")
 	model := flag.String("model", "", "指定编译器模型名称")
+	tokenEncoding := flag.String("token-encoding", "", "消费文本计数编码：estimate | cl100k_base | o200k_base（留空继承方案）")
+	validationMode := flag.String("validation-mode", "", "验证模式：compare 原文对照 | blind 独立阅读后对照（配合 -v/-gate）")
+	readerName := flag.String("reader-profile", "", "blind 阅读器的已保存方案（显式空值使用编译方案）")
 	saveCfg := flag.Bool("save-config", false, "保存当前参数为配置方案")
 	flag.Parse()
+	var readerOverride *string
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "reader-profile" {
+			readerOverride = readerName
+		}
+	})
 	if domainLoadErr != nil && !*quiet {
 		fmt.Fprintf(os.Stderr, "[领域加载] %v\n", domainLoadErr)
 	}
@@ -62,6 +71,29 @@ func main() {
 		}
 		if *model != "" {
 			p.Model = *model
+		}
+		if *tokenEncoding != "" {
+			p.TokenEncoding = normalizeTokenEncoding(*tokenEncoding)
+		}
+		if *validationMode != "" {
+			p.ValidationMode = normalizeValidationMode(*validationMode)
+		}
+		if readerOverride != nil {
+			p.ReaderProfile = strings.TrimSpace(*readerOverride)
+		}
+		if err := validateTokenEncoding(p.TokenEncoding); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if err := validateValidationMode(p.ValidationMode); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if p.ReaderProfile != "" {
+			if _, exists := cfg.Profiles[p.ReaderProfile]; !exists {
+				fmt.Fprintf(os.Stderr, "阅读器配置方案不存在: %s\n", p.ReaderProfile)
+				os.Exit(1)
+			}
 		}
 		cfg.Profiles[name] = p
 		cfg.ActiveProfile = name
@@ -108,16 +140,19 @@ func main() {
 		domainNames = strings.Split(*domains, ",")
 	}
 	res, err := doCompile(CompileReq{
-		Text:       input,
-		Mode:       *mode,
-		Domains:    domainNames,
-		Verify:     *verify,
-		StrictGate: *strictGate,
-		NoCache:    *noCache,
-		Profile:    *profileName,
-		APIKey:     *apiKey,
-		BaseURL:    *baseURL,
-		Model:      *model,
+		Text:           input,
+		Mode:           *mode,
+		Domains:        domainNames,
+		Verify:         *verify,
+		StrictGate:     *strictGate,
+		NoCache:        *noCache,
+		Profile:        *profileName,
+		APIKey:         *apiKey,
+		BaseURL:        *baseURL,
+		Model:          *model,
+		TokenEncoding:  *tokenEncoding,
+		ValidationMode: *validationMode,
+		ReaderProfile:  readerOverride,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[Error] %v\n", err)

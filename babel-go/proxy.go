@@ -137,6 +137,7 @@ func translateMessageBlock(protocol, role, text string, p Profile, dialect Diale
 	}
 
 	res, err := doCompile(CompileReq{
+		Profile:          p.Name,
 		Text:             text,
 		Mode:             dialect.Name,
 		Domains:          domains,
@@ -145,6 +146,9 @@ func translateMessageBlock(protocol, role, text string, p Profile, dialect Diale
 		APIKey:           p.APIKey,
 		BaseURL:          p.BaseURL,
 		Model:            p.Model,
+		TokenEncoding:    p.TokenEncoding,
+		ValidationMode:   p.ValidationMode,
+		ReaderProfile:    &p.ReaderProfile,
 	})
 	// A source-derived cache key is not a request ID: repeated requests must not
 	// overwrite one another's provider usage in the log.
@@ -153,11 +157,18 @@ func translateMessageBlock(protocol, role, text string, p Profile, dialect Diale
 		ID: logID, Timestamp: time.Now().Format("15:04:05"),
 		Protocol: protocol, Dialect: dialect.Name, Domains: domains, Role: role,
 		Original: text, Compiled: text, CacheHit: res.CacheHit,
-		Decision: "kept_original",
+		Decision:            "kept_original",
+		MeasurementKind:     res.Stats.MeasurementKind,
+		MeasurementEncoding: res.Stats.MeasurementEncoding,
+		ValidationMethod:    res.Validation.Method,
 	}
 	if err != nil {
 		var validationErr *ValidationError
-		if errors.As(err, &validationErr) && validationErr.Validation.Status == "failed" {
+		var measurementErr *TokenMeasurementError
+		if errors.As(err, &measurementErr) {
+			compilerCB.RecordSuccess()
+			entry.Reason = "目标文本计数不可用，已保留原文"
+		} else if errors.As(err, &validationErr) && validationErr.Validation.Status == "failed" {
 			// A rejected candidate proves the compiler is reachable. Release any
 			// half-open probe rather than leaving the circuit permanently busy.
 			compilerCB.RecordSuccess()
@@ -171,16 +182,22 @@ func translateMessageBlock(protocol, role, text string, p Profile, dialect Diale
 	}
 
 	compilerCB.RecordSuccess()
+	// Aggregate log totals stay explicitly heuristic. Adoption uses the selected
+	// encoding's per-request counts, never an earlier singleflight caller's count.
 	compTok := estimateTokensBPE(res.Compiled)
-	if strings.TrimSpace(res.Compiled) == "" || compTok >= origTok {
-		entry.Reason = "候选未减少估算 Token，已保留原文"
+	countLabel := "估算 Token"
+	if res.Stats.MeasurementKind == "exact" {
+		countLabel = res.Stats.MeasurementEncoding + " 文本 Token"
+	}
+	if strings.TrimSpace(res.Compiled) == "" || res.Stats.CompiledTokens >= res.Stats.OriginalTokens {
+		entry.Reason = "候选未减少" + countLabel + "，已保留原文"
 		appendProxyLog(entry)
 		return text, logID, origTok, origTok
 	}
 	entry.Compiled = res.Compiled
 	entry.Ratio = res.Stats.CompressionRatio
 	entry.Decision = "adopted"
-	entry.Reason = "本次审计通过，且文本估算 Token 更少"
+	entry.Reason = "本次审计通过，且" + countLabel + "更少"
 	appendProxyLog(entry)
 	return res.Compiled, logID, origTok, compTok
 }
@@ -331,7 +348,11 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := loadConfig()
-	p := getActiveProfile(cfg, r.Header.Get("X-Babel-Profile"))
+	p, err := resolveProxyProfile(r, cfg)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	dialect, domains, err := resolveProxyDialect(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -507,7 +528,11 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := loadConfig()
-	p := getActiveProfile(cfg, r.Header.Get("X-Babel-Profile"))
+	p, err := resolveProxyProfile(r, cfg)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	dialect, domains, err := resolveProxyDialect(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)

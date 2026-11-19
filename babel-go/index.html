@@ -686,7 +686,8 @@
         .modal-sub { font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); margin-top: 4px; }
 
         .form-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-        @media (max-width: 640px) { .form-grid-2 { grid-template-columns: 1fr; } }
+        .form-grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+        @media (max-width: 640px) { .form-grid-2, .form-grid-3 { grid-template-columns: 1fr; } }
 
         .form-group { display: flex; flex-direction: column; gap: 6px; }
         .form-label { font-size: 12px; color: var(--text-secondary); }
@@ -843,6 +844,33 @@
             <button type="button" class="link-btn" onclick="toggleDomainModal(true)">编辑领域词条</button>
         </div>
         <div id="domainSelectionHint" class="domain-note">公共逻辑始终参与；只选用与原文相关的词条，保留实体和关系，不增加业务要求。</div>
+        <div class="form-grid-3" style="border-top: 1px solid var(--border-subtle); padding-top: 10px;">
+            <div class="form-group">
+                <label for="tokenEncodingSelect" class="form-label">本次目标 Token 编码</label>
+                <select id="tokenEncodingSelect" class="select-dark" onchange="updateCompileOptionsHint()">
+                    <option value="">继承方案</option>
+                    <option value="estimate">estimate · 启发式估算</option>
+                    <option value="cl100k_base">cl100k_base · 本地文本计数</option>
+                    <option value="o200k_base">o200k_base · 本地文本计数</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="validationModeSelect" class="form-label">本次校验方式</label>
+                <select id="validationModeSelect" class="select-dark" onchange="updateCompileOptionsHint()">
+                    <option value="">继承方案</option>
+                    <option value="compare">compare · 原文与候选对照</option>
+                    <option value="blind">blind · 独立盲读后对照</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="readerProfileSelect" class="form-label">本次盲读阅读器方案</label>
+                <select id="readerProfileSelect" class="select-dark" onchange="updateCompileOptionsHint()">
+                    <option value="">继承方案</option>
+                    <option value="same">与编译方案相同</option>
+                </select>
+            </div>
+        </div>
+        <div id="compileOptionsHint" class="domain-note">默认 estimate；目标编码由用户确认，不根据编译模型推测。</div>
     </div>
 
     <!-- 双栏编辑器 -->
@@ -855,8 +883,8 @@
                     <span id="inputCharCount" class="char-counter">0 chars</span>
                 </div>
                 <div class="pane-actions">
-                    <label class="checkbox-label" title="由后端执行本地检查与模型对照；未通过或校验异常时不返回候选。通过不代表完整语义证明。">
-                        <input id="verifyCheck" type="checkbox" checked> 严格校验
+                    <label class="checkbox-label" title="由后端执行本地检查及所选校验；未通过或校验异常时不返回候选。通过不代表完整语义证明。">
+                        <input id="verifyCheck" type="checkbox" checked onchange="updateCompileOptionsHint()"> 严格校验
                     </label>
                     <div class="dialect-group">
                         <select id="modeSelect" class="select-dark" aria-label="输出预设" onchange="updateDomainSelectionHint()"></select>
@@ -1154,6 +1182,30 @@
         <div class="form-group">
             <label class="form-label">上游 Agent Base URL (可选，仅透明代理转发时使用)</label>
             <input id="cfgUpstreamUrl" type="text" class="form-input" placeholder="留空则默认转发至上方 Base URL">
+        </div>
+
+        <div class="form-grid-2">
+            <div class="form-group">
+                <label for="cfgTokenEncoding" class="form-label">目标 Token 编码</label>
+                <select id="cfgTokenEncoding" class="select-dark">
+                    <option value="estimate">estimate · 启发式估算</option>
+                    <option value="cl100k_base">cl100k_base · 本地文本计数</option>
+                    <option value="o200k_base">o200k_base · 本地文本计数</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="cfgValidationMode" class="form-label">严格校验方式</label>
+                <select id="cfgValidationMode" class="select-dark" onchange="updateConfigValidationHint()">
+                    <option value="compare">compare · 原文与候选对照</option>
+                    <option value="blind">blind · 独立盲读后对照</option>
+                </select>
+            </div>
+        </div>
+        <div class="form-group">
+            <label for="cfgReaderProfile" class="form-label">盲读阅读器（已保存的模型方案）</label>
+            <select id="cfgReaderProfile" class="select-dark"><option value="">与编译方案相同</option></select>
+            <span id="cfgValidationHint" class="domain-note"></span>
+            <span class="domain-note">目标编码与编译模型独立；不能把 OpenAI 编码默认用于 Qwen 或 Claude。计数仅含文本本体，不代表整次请求账单。</span>
         </div>
 
         <div class="form-group" style="border-top: 1px solid var(--border-subtle); padding-top: 12px;">
@@ -1970,7 +2022,10 @@
                         api_key: localBackup.api_key,
                         base_url: localBackup.base_url,
                         model: localBackup.model,
-                        upstream_url: localBackup.upstream_url || ''
+                        upstream_url: localBackup.upstream_url || '',
+                        token_encoding: localBackup.token_encoding || 'estimate',
+                        validation_mode: localBackup.validation_mode || 'compare',
+                        reader_profile: localBackup.reader_profile || ''
                     })
                 });
                 serverConfig = await fetchJSON('/api/config');
@@ -1991,12 +2046,78 @@
             headerSel.add(new Option(name, name, false, name === serverConfig.active_profile));
             modalSel.add(new Option(name, name, false, name === serverConfig.active_profile));
         });
+        headerSel.value = serverConfig.active_profile;
+        modalSel.value = serverConfig.active_profile;
 
         const active = serverConfig.profiles[serverConfig.active_profile];
         if (active) {
             document.getElementById('headerModelBadge').textContent = `${active.model || '未设模型'} ${active.has_api_key ? '✓' : '⚠缺Key'}`;
             fillFormFromProfile(serverConfig.active_profile);
         }
+        populateReaderProfiles('readerProfileSelect', document.getElementById('readerProfileSelect').value, true);
+        updateCompileOptionsHint();
+    }
+
+    function setSelectValue(id, value) {
+        const select = document.getElementById(id);
+        if (![...select.options].some(option => option.value === value)) {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = `${value}（当前不可用）`;
+            select.appendChild(option);
+        }
+        select.value = value;
+    }
+
+    function populateReaderProfiles(id, selected = '', allowInherit = false) {
+        const select = document.getElementById(id);
+        select.replaceChildren();
+        function add(value, label) {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = label;
+            select.appendChild(option);
+        }
+        if (allowInherit) add('', '继承方案');
+        add(allowInherit ? 'same' : '', '与编译方案相同');
+        Object.entries(serverConfig.profiles || {}).forEach(([name, profile]) => {
+            add(allowInherit ? `profile:${name}` : name, `${name} · ${profile.model || '未设模型'}`);
+        });
+        setSelectValue(id, selected || '');
+    }
+
+    function selectedCompileOptions() {
+        const active = serverConfig.profiles[serverConfig.active_profile] || {};
+        const reader = document.getElementById('readerProfileSelect').value;
+        const options = {
+            token_encoding: document.getElementById('tokenEncodingSelect').value || active.token_encoding || 'estimate',
+            validation_mode: document.getElementById('validationModeSelect').value || active.validation_mode || 'compare',
+            effective_reader: reader === 'same' ? '' : reader.startsWith('profile:') ? reader.slice(8) : active.reader_profile || ''
+        };
+        // Omitted means inherit; an explicit empty string means use the current
+        // compiler profile even when the saved profile names another reader.
+        if (reader === 'same') options.reader_profile = '';
+        else if (reader.startsWith('profile:')) options.reader_profile = reader.slice(8);
+        return options;
+    }
+
+    function updateCompileOptionsHint() {
+        const options = selectedCompileOptions();
+        const strict = document.getElementById('verifyCheck').checked;
+        const blind = options.validation_mode === 'blind';
+        document.getElementById('readerProfileSelect').disabled = !strict || !blind;
+        const validation = !strict ? '严格校验未开启：本次不执行模型验收。' : blind
+            ? `盲读：阅读器 ${options.effective_reader || '与编译方案相同'} 只看候选，随后对照原文；比 compare 额外调用一次阅读器。`
+            : '对照：同一审计调用读取原文与候选。';
+        document.getElementById('compileOptionsHint').textContent = `目标计数：${options.token_encoding}（文本本体，不含请求包装）；编码不根据编译模型推测。${validation}`;
+    }
+
+    function updateConfigValidationHint() {
+        const blind = document.getElementById('cfgValidationMode').value === 'blind';
+        document.getElementById('cfgReaderProfile').disabled = !blind;
+        document.getElementById('cfgValidationHint').textContent = blind
+            ? '仅在严格校验开启时执行。阅读器只看候选；相对 compare，增加一次阅读器调用。使用同一模型方案也会单独发起阅读请求。'
+            : 'compare 在同一次审计调用中对照原文和候选；阅读器选择只在 blind 模式生效。';
     }
 
     function fillFormFromProfile(name) {
@@ -2006,6 +2127,10 @@
         document.getElementById('cfgBaseUrl').value = p.base_url || '';
         document.getElementById('cfgModel').value = p.model || '';
         document.getElementById('cfgUpstreamUrl').value = p.upstream_url || '';
+        setSelectValue('cfgTokenEncoding', p.token_encoding || 'estimate');
+        setSelectValue('cfgValidationMode', p.validation_mode || 'compare');
+        populateReaderProfiles('cfgReaderProfile', p.reader_profile || '');
+        updateConfigValidationHint();
         document.getElementById('cfgApiKey').value = '';
         document.getElementById('cfgApiKey').placeholder = p.has_api_key
             ? `已保存 (${p.api_key_masked})，留空则保持不变`
@@ -2093,6 +2218,9 @@
         const baseUrl = document.getElementById('cfgBaseUrl').value.trim();
         const model = document.getElementById('cfgModel').value.trim();
         const upstreamUrl = document.getElementById('cfgUpstreamUrl').value.trim();
+        const tokenEncoding = document.getElementById('cfgTokenEncoding').value || 'estimate';
+        const validationMode = document.getElementById('cfgValidationMode').value || 'compare';
+        const readerProfile = document.getElementById('cfgReaderProfile').value;
 
         try {
             await fetchJSON('/api/config', {
@@ -2104,7 +2232,10 @@
                     api_key: apiKey,
                     base_url: baseUrl,
                     model: model,
-                    upstream_url: upstreamUrl
+                    upstream_url: upstreamUrl,
+                    token_encoding: tokenEncoding,
+                    validation_mode: validationMode,
+                    reader_profile: readerProfile
                 })
             });
 
@@ -2114,7 +2245,10 @@
                 api_key: apiKey || prevBackup.api_key || '',
                 base_url: baseUrl,
                 model: model,
-                upstream_url: upstreamUrl
+                upstream_url: upstreamUrl,
+                token_encoding: tokenEncoding,
+                validation_mode: validationMode,
+                reader_profile: readerProfile
             }));
 
             await loadInitConfig();
@@ -2146,19 +2280,42 @@
 
     // ==================== 6. 后端校验结果与计量来源 ====================
     function normalizeValidation(validation) {
+        const invalid = () => ({ status: 'error', method: 'none', policy_version: 'semantic-gate-v2',
+            issues: ['无法识别后端校验结果，请重新编译。'], stages: [] });
         if (!validation || typeof validation !== 'object') {
-            return { status: 'not_run', method: 'none', issues: ['后端未提供本次校验结果。'] };
+            return { status: 'not_run', method: 'none', policy_version: 'semantic-gate-v2',
+                issues: ['后端未提供本次校验结果。'], stages: [] };
         }
         const statuses = ['not_run', 'passed', 'failed', 'error'];
-        const methods = ['none', 'local_checks', 'llm_compare'];
+        const methods = ['none', 'local_checks', 'llm_compare', 'blind_read'];
+        const stages = validation.stages === undefined ? [] : validation.stages;
+        const stagesValid = Array.isArray(stages) && stages.every(stage => stage &&
+            ['local_checks', 'reader', 'comparator'].includes(stage.name) &&
+            ['not_run', 'completed', 'passed', 'failed', 'error'].includes(stage.status) &&
+            typeof stage.policy_version === 'string' && Array.isArray(stage.issues) &&
+            stage.issues.every(issue => typeof issue === 'string') &&
+            (stage.model === undefined || typeof stage.model === 'string')) &&
+            new Set(stages.map(stage => stage.name)).size === stages.length;
         const valid = statuses.includes(validation.status) && methods.includes(validation.method) &&
-            validation.policy_version === 'semantic-gate-v2' && Array.isArray(validation.issues) &&
+            validation.policy_version === (validation.method === 'blind_read' ? 'semantic-blind-v1' : 'semantic-gate-v2') &&
+            stagesValid && Array.isArray(validation.issues) &&
             validation.issues.every(issue => typeof issue === 'string') &&
             !(validation.status === 'passed' && (validation.method === 'none' || validation.issues.length > 0));
-        if (!valid) {
-            return { status: 'error', method: 'none', issues: ['无法识别后端校验结果，请重新编译。'] };
+        if (!valid) return invalid();
+        if (validation.status === 'passed' && stages.some(stage =>
+            ['failed', 'error'].includes(stage.status) || stage.issues.length > 0)) return invalid();
+        if (validation.status === 'passed' && validation.method === 'blind_read') {
+            const requiredStages = [
+                { name: 'local_checks', status: 'completed', policy_version: 'semantic-gate-v2' },
+                { name: 'reader', status: 'completed', policy_version: 'blind-reader-v1' },
+                { name: 'comparator', status: 'passed', policy_version: 'blind-comparator-v1' }
+            ];
+            if (stages.length !== requiredStages.length || requiredStages.some(required => {
+                const stage = stages.find(item => item.name === required.name);
+                return !stage || stage.status !== required.status || stage.policy_version !== required.policy_version;
+            })) return invalid();
         }
-        return validation;
+        return { ...validation, stages };
     }
 
     function renderValidation(validation, detail = '') {
@@ -2171,7 +2328,7 @@
         title.style.fontWeight = '600';
         title.textContent = '后端校验:';
         box.appendChild(title);
-        const methodLabel = { none: '未执行', local_checks: '本地检查', llm_compare: '模型对照' }[result.method];
+        const methodLabel = { none: '未执行', local_checks: '本地检查', llm_compare: '模型对照', blind_read: '独立盲读对照' }[result.method];
         const labels = { not_run: '未校验', passed: `${methodLabel}通过`, failed: '校验未通过', error: '校验异常' };
         const pill = document.createElement('span');
         pill.className = result.status === 'passed' ? 'inv-pill-ok' :
@@ -2183,6 +2340,7 @@
         const explanations = {
             not_run: '本次候选未完成校验，不能据此判断约束是否完整保留。',
             passed: result.method === 'local_checks' ? '仅通过已实现的本地检查项，尚未完成模型对照。' :
+                result.method === 'blind_read' ? '阅读器只根据候选提取理解，随后与原文对照通过；这不保证任意模型都能正确理解。' :
                 '本次模型对照未发现问题；这不是完整语义保留或跨模型可读性的证明。',
             failed: '后端检测到缺失、冲突或歧义；本次候选未通过。',
             error: '本次校验或请求未能正常完成，不能判定为通过。'
@@ -2190,6 +2348,25 @@
         const auditBox = document.getElementById('auditBox');
         auditBox.className = `audit-bar is-${result.status}`;
         auditBox.textContent = [explanations[result.status], ...result.issues, detail].filter(Boolean).join('\n');
+        const stageNames = { local_checks: '本地检查', reader: '独立阅读器', comparator: '原文对照' };
+        const stageStatuses = { not_run: '未执行', completed: '已完成', passed: '通过', failed: '未通过', error: '异常' };
+        (result.stages || []).forEach(stage => {
+            const line = document.createElement('div');
+            const timing = Number.isFinite(stage.duration_ms) ? ` · ${stage.duration_ms} ms` : '';
+            line.textContent = `${stageNames[stage.name]}：${stageStatuses[stage.status]}${stage.model ? ` · ${stage.model}` : ''}${timing}`;
+            auditBox.appendChild(line);
+            if (stage.issues.length || stage.reading) {
+                const details = document.createElement('details');
+                const summary = document.createElement('summary');
+                summary.textContent = `${stageNames[stage.name]}明细 · ${stage.policy_version}`;
+                const pre = document.createElement('pre');
+                pre.style.whiteSpace = 'pre-wrap';
+                pre.textContent = [stage.issues.join('\n'), stage.reading ? JSON.stringify(stage.reading, null, 2) : ''].filter(Boolean).join('\n');
+                details.appendChild(summary);
+                details.appendChild(pre);
+                auditBox.appendChild(details);
+            }
+        });
     }
 
     function resetCompileResult() {
@@ -2212,13 +2389,26 @@
         const original = stats.original_tokens;
         const compiled = stats.compiled_tokens;
         const estimated = stats.measurement_kind === 'estimated';
-        const kind = estimated ? '估算' : '未确认计量来源';
+        const exact = stats.measurement_kind === 'exact' && stats.measurement_scope === 'text' &&
+            ['cl100k_base', 'o200k_base'].includes(stats.measurement_encoding) &&
+            stats.measurement_source === 'tiktoken-go/tokenizer' && typeof stats.measurement_version === 'string' &&
+            stats.measurement_version.length > 0;
+        const kind = estimated ? '估算' : exact ? `精确 [${stats.measurement_encoding}]` : '未确认计量来源';
         const scope = stats.measurement_scope === 'text' ? '文本' : '范围未确认';
-        const change = original > 0 && estimated ? `（估算${compiled <= original ? '减少' : '增加'} ${Math.abs((1 - compiled / original) * 100).toFixed(1)}%）` : '';
+        const change = original > 0 && (estimated || exact) ? `（${estimated ? '估算' : ''}${compiled <= original ? '减少' : '增加'} ${Math.abs((1 - compiled / original) * 100).toFixed(1)}%）` : '';
+        const provenance = exact ? ` · ${stats.measurement_source} ${stats.measurement_version}` : '';
         return {
-            text: `${scope} Token ${kind} ${original}→${compiled}${change}`,
-            title: `计数来源：${stats.measurement_source || '未提供'}；此处不代表目标模型实际 Token 用量或账单节省。`
+            text: `${scope} Token ${kind} ${original}→${compiled}${change}${provenance}`,
+            title: `范围：${stats.measurement_scope || '未提供'}；编码：${stats.measurement_encoding || '未提供'}；来源：${stats.measurement_source || '未提供'}；版本：${stats.measurement_version || '未提供'}。所选编码只计算文本本体，不代表模型整次请求的实际用量或账单节省。`
         };
+    }
+
+    function formatProxyMeasurement(item) {
+        const match = typeof item.ratio === 'string' && item.ratio.match(/(\d+)→(\d+)/);
+        if (!match) return '';
+        const exact = item.measurement_kind === 'exact' && ['cl100k_base', 'o200k_base'].includes(item.measurement_encoding);
+        const label = exact ? `文本精确 [${item.measurement_encoding}]` : item.measurement_kind === 'estimated' ? '文本估算' : '文本计量来源未确认';
+        return `${label} ${match[1]}→${match[2]} tok`;
     }
 
     function formatProxyUsage(item) {
@@ -2306,6 +2496,7 @@
         isOverdrive = true;
 
         const strictGate = document.getElementById('verifyCheck').checked;
+        const options = selectedCompileOptions();
 
         try {
             const data = await fetchJSON('/api/compile', {
@@ -2315,6 +2506,9 @@
                     text,
                     mode: document.getElementById('modeSelect').value,
                     domains: [...selectedDomains],
+                    token_encoding: options.token_encoding,
+                    validation_mode: options.validation_mode,
+                    ...(options.reader_profile !== undefined ? { reader_profile: options.reader_profile } : {}),
                     verify: strictGate,
                     strict_gate: strictGate,
                     no_cache: noCache
@@ -2325,14 +2519,18 @@
                 throw new Error('后端未返回有效的编译文本。');
             }
             const validation = normalizeValidation(data.validation);
-            if (strictGate && (validation.status !== 'passed' || validation.method !== 'llm_compare')) {
-                const error = new Error('严格校验未完成，本次候选未显示。');
+            const expectedMethod = options.validation_mode === 'blind' ? 'blind_read' : 'llm_compare';
+            if (strictGate && (validation.status !== 'passed' || validation.method !== expectedMethod)) {
+                const error = new Error(`所选 ${options.validation_mode} 严格校验未完成，本次候选未显示。`);
                 error.validation = validation;
                 throw error;
             }
             document.getElementById('dslOutput').value = data.compiled;
             document.getElementById('copyBtn').disabled = false;
-            renderValidation(data.validation);
+            renderValidation(!strictGate && !['failed', 'error'].includes(validation.status) ? {
+                status: 'not_run', method: 'none', policy_version: 'semantic-gate-v2',
+                issues: ['本次未开启严格校验，未执行模型验收。']
+            } : validation);
 
             const badge = document.getElementById('statsBadge');
             const measurement = formatTokenMeasurement(data.stats);
@@ -2463,7 +2661,10 @@
                 const keptOriginal = item.decision === 'kept_original';
                 addTag(adopted ? '已采用候选' : keptOriginal ? '已保留原文' : '决策未提供',
                     adopted ? 'tag tag-dialect' : 'tag tag-role');
-                if (item.ratio) addTag(`文本估算：${item.ratio}`, 'tag tag-estimated');
+                const measurement = formatProxyMeasurement(item);
+                if (measurement) addTag(measurement, 'tag tag-estimated');
+                const validationLabel = { blind_read: '盲读对照', llm_compare: '模型对照', local_checks: '本地检查', none: '未执行校验' }[item.validation_method];
+                if (validationLabel) addTag(`校验方式：${validationLabel}`, 'tag tag-role');
                 const usage = formatProxyUsage(item);
                 if (usage) {
                     addTag(usage, 'tag tag-billing').title = '整次请求的实际用量与所检查文本的估算范围不同，不能据此计算实际节省；同一请求的 usage 可能显示在多条记录中，请勿相加。';

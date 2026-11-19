@@ -6,11 +6,14 @@ import (
 )
 
 type Profile struct {
-	Name        string `json:"name"`
-	APIKey      string `json:"api_key"`
-	BaseURL     string `json:"base_url"`
-	Model       string `json:"model"`
-	UpstreamURL string `json:"upstream_url"`
+	Name           string `json:"name"`
+	APIKey         string `json:"api_key"`
+	BaseURL        string `json:"base_url"`
+	Model          string `json:"model"`
+	UpstreamURL    string `json:"upstream_url"`
+	TokenEncoding  string `json:"token_encoding,omitempty"`
+	ValidationMode string `json:"validation_mode,omitempty"`
+	ReaderProfile  string `json:"reader_profile,omitempty"`
 }
 
 type Config struct {
@@ -43,15 +46,19 @@ type CompileReq struct {
 	APIKey           string   `json:"api_key,omitempty"`
 	BaseURL          string   `json:"base_url,omitempty"`
 	Model            string   `json:"model,omitempty"`
+	TokenEncoding    string   `json:"token_encoding,omitempty"`
+	ValidationMode   string   `json:"validation_mode,omitempty"`
+	ReaderProfile    *string  `json:"reader_profile,omitempty"`
 }
 
 // ValidationResult describes this request's checks, never a cached assertion.
 // A passed LLM comparison is evidence from that check, not a proof of equivalence.
 type ValidationResult struct {
-	Status        string   `json:"status"`
-	Method        string   `json:"method"`
-	PolicyVersion string   `json:"policy_version"`
-	Issues        []string `json:"issues"`
+	Status        string            `json:"status"`
+	Method        string            `json:"method"`
+	PolicyVersion string            `json:"policy_version"`
+	Issues        []string          `json:"issues"`
+	Stages        []ValidationStage `json:"stages,omitempty"`
 }
 
 type ValidationError struct {
@@ -65,14 +72,16 @@ type CompileResp struct {
 	CacheHit   bool             `json:"cache_hit"`
 	Validation ValidationResult `json:"validation"`
 	Stats      struct {
-		OriginalChars     int    `json:"original_chars"`
-		CompiledChars     int    `json:"compiled_chars"`
-		OriginalTokens    int    `json:"original_tokens"`
-		CompiledTokens    int    `json:"compiled_tokens"`
-		CompressionRatio  string `json:"compression_ratio"`
-		MeasurementKind   string `json:"measurement_kind"`
-		MeasurementSource string `json:"measurement_source"`
-		MeasurementScope  string `json:"measurement_scope"`
+		OriginalChars       int    `json:"original_chars"`
+		CompiledChars       int    `json:"compiled_chars"`
+		OriginalTokens      int    `json:"original_tokens"`
+		CompiledTokens      int    `json:"compiled_tokens"`
+		CompressionRatio    string `json:"compression_ratio"`
+		MeasurementKind     string `json:"measurement_kind"`
+		MeasurementSource   string `json:"measurement_source"`
+		MeasurementScope    string `json:"measurement_scope"`
+		MeasurementEncoding string `json:"measurement_encoding"`
+		MeasurementVersion  string `json:"measurement_version"`
 	} `json:"stats"`
 }
 
@@ -87,22 +96,25 @@ type CacheEntry struct {
 }
 
 type ProxyLog struct {
-	ID               string   `json:"id"`
-	Timestamp        string   `json:"timestamp"`
-	Protocol         string   `json:"protocol"`
-	Dialect          string   `json:"dialect"`
-	Domains          []string `json:"domains,omitempty"`
-	Decision         string   `json:"decision,omitempty"`
-	Reason           string   `json:"reason,omitempty"`
-	Role             string   `json:"role"`
-	Original         string   `json:"original"`
-	Compiled         string   `json:"compiled"`
-	Ratio            string   `json:"ratio"`
-	CacheHit         bool     `json:"cache_hit"`
-	Redacted         bool     `json:"redacted"`
-	RealPromptTokens int      `json:"real_prompt_tokens,omitempty"`
-	EstOrigTokens    int      `json:"est_orig_tokens,omitempty"`
-	RealBillingRatio string   `json:"real_billing_ratio,omitempty"`
+	ID                  string   `json:"id"`
+	Timestamp           string   `json:"timestamp"`
+	Protocol            string   `json:"protocol"`
+	Dialect             string   `json:"dialect"`
+	Domains             []string `json:"domains,omitempty"`
+	Decision            string   `json:"decision,omitempty"`
+	Reason              string   `json:"reason,omitempty"`
+	Role                string   `json:"role"`
+	Original            string   `json:"original"`
+	Compiled            string   `json:"compiled"`
+	Ratio               string   `json:"ratio"`
+	CacheHit            bool     `json:"cache_hit"`
+	Redacted            bool     `json:"redacted"`
+	RealPromptTokens    int      `json:"real_prompt_tokens,omitempty"`
+	EstOrigTokens       int      `json:"est_orig_tokens,omitempty"`
+	RealBillingRatio    string   `json:"real_billing_ratio,omitempty"`
+	MeasurementKind     string   `json:"measurement_kind,omitempty"`
+	MeasurementEncoding string   `json:"measurement_encoding,omitempty"`
+	ValidationMethod    string   `json:"validation_method,omitempty"`
 }
 
 // ==================== 编译器故障熔断器 ====================
