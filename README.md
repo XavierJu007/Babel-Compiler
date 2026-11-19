@@ -52,8 +52,9 @@ go build -o bin/babel ./babel-go
 # 编译一段文本
 ./bin/babel -m token "你的提示词"
 
-# 可选：在同一次改写中转为简洁英文，是否更短看所选编码计数
+# 可选：简洁英文或混合语言，是否更短看所选编码计数
 ./bin/babel -m en-terse -f prompt.md
+./bin/babel -m mixed -f prompt.md
 
 # 组合领域，从文件读取并执行严格审计
 ./bin/babel -m standard -domains application-security,api-contract -gate -f prompt.md
@@ -89,7 +90,7 @@ curl http://127.0.0.1:8080/api/compile \
 代理使用前，在模型配置中设置最终服务的 `upstream_url`。**配置中的模型用于编译，请求体中的 `model` 用于最终执行。**
 
 客户端请求携带最终服务的认证信息：OpenAI 使用 `Authorization`，Anthropic 使用 `x-api-key`。
-可用 `X-Babel-Dialect` 选择输出预设，`X-Babel-Domains` 以逗号分隔选择领域。
+可用 `X-Babel-Dialect` 选择输出预设（如 `mixed` 允许内部混合语言表达），`X-Babel-Domains` 以逗号分隔选择领域。
 
 | 客户端协议 | Babel 代理端点 |
 | --- | --- |

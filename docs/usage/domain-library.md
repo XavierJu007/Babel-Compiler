@@ -20,7 +20,7 @@
 - 未指定领域时，通常只使用 `common`。
 - `code-audit` 预设在未指定领域时，额外使用 `application-security`。
 - 一旦显式指定领域，就以该列表为准，再加上 `common`。例如 `code-audit + api-contract` 不再自动附带安全领域；需要两者时应同时填写。
-- 保留旧预设名称：`extreme`、`token`、`standard`、`code-audit`、`en-terse`。领域名称不再用来替代输出预设。
+- 预设包括 `extreme`、`token`、`standard`、`code-audit`、`en-terse`，以及允许混合语言与公共表达的 `mixed`。领域名称不再用来替代输出预设。
 
 公共语义规则始终参与编译，包括不新造私有码本、保留条件与模态、保护技术字面量。编辑领域或预设不会移除这层规则。
 
@@ -68,6 +68,8 @@ X-Babel-Domains: application-security,api-contract
 `X-Babel-Dialect` 选择预设，`X-Babel-Domains` 选择领域。后者是逗号分隔的名称列表，适用于 OpenAI 与 Anthropic 代理入口。
 未知预设或未知领域返回明确错误；代理不应把拼错的选择静默替换成默认值。
 未传领域列表时，默认规则与 CLI 相同。代理未传预设时使用 `token`。
+
+透明代理可设置 `X-Babel-Dialect: mixed`，允许发给消费模型的文本中英混用并采用公共符号；无需修改客户端显示的原始输入，也不需要给消费模型附加词典。原任务的回答语言和格式要求仍须保留；代理直接透传模型响应，不额外回译。若需要固定回答语言，请在原有任务或系统提示中明确约定。
 
 ## 4. 创建或编辑领域
 
