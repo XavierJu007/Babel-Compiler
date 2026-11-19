@@ -183,6 +183,9 @@ func parseDomainJSON(b []byte) (DomainPack, error) {
 	if len(b) > maxDomainFileBytes {
 		return p, fmt.Errorf("领域文件超过 %d 字节", maxDomainFileBytes)
 	}
+	if !utf8.Valid(b) {
+		return p, fmt.Errorf("领域JSON必须为有效 UTF-8，未自动替换非法字节")
+	}
 	decoder := json.NewDecoder(bytes.NewReader(b))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&p); err != nil {

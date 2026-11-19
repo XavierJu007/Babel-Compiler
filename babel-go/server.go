@@ -108,7 +108,7 @@ func newServerMux() *http.ServeMux {
 				APIKey         string  `json:"api_key"`
 				BaseURL        string  `json:"base_url"`
 				Model          string  `json:"model"`
-				UpstreamURL    string  `json:"upstream_url"`
+				UpstreamURL    *string `json:"upstream_url"`
 				TokenEncoding  *string `json:"token_encoding"`
 				ValidationMode *string `json:"validation_mode"`
 				ReaderProfile  *string `json:"reader_profile"`
@@ -173,7 +173,9 @@ func newServerMux() *http.ServeMux {
 				if req.Model != "" {
 					existing.Model = req.Model
 				}
-				existing.UpstreamURL = req.UpstreamURL
+				if req.UpstreamURL != nil {
+					existing.UpstreamURL = *req.UpstreamURL
+				}
 				if req.TokenEncoding != nil {
 					existing.TokenEncoding = normalizeTokenEncoding(*req.TokenEncoding)
 				}
@@ -231,8 +233,16 @@ func newServerMux() *http.ServeMux {
 		}
 
 		cfg := loadConfig()
-		prof := getActiveProfile(cfg, strings.TrimSpace(req.ProfileName))
-		prof.Name = firstNonEmpty(strings.TrimSpace(req.ProfileName), cfg.ActiveProfile, prof.Name, "default")
+		name := strings.TrimSpace(req.ProfileName)
+		var prof Profile
+		if name == "" {
+			prof = getActiveProfile(cfg, "")
+		} else {
+			// An unsaved draft has no inherited credentials. Form values below
+			// can still test it before saving, without borrowing another account.
+			prof = cfg.Profiles[name]
+			prof.Name = name
+		}
 
 		// 表单值优先于已存配置：允许在保存前先验证一份新的 Key / 地址 / 模型。
 		if key := strings.TrimSpace(req.APIKey); key != "" && !strings.Contains(key, "***") {

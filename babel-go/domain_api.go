@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"unicode/utf8"
 )
 
 func domainAPIHandler(w http.ResponseWriter, r *http.Request) {
@@ -33,13 +35,22 @@ func domainAPIHandler(w http.ResponseWriter, r *http.Request) {
 		// The envelope adds a little overhead to the domain file's own limit.
 		r.Body = http.MaxBytesReader(w, r.Body, maxDomainFileBytes+2048)
 		defer r.Body.Close()
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			respondError(http.StatusBadRequest, fmt.Errorf("领域请求无效: %w", err))
+			return
+		}
+		if !utf8.Valid(raw) {
+			respondError(http.StatusBadRequest, fmt.Errorf("领域请求必须为有效 UTF-8，未保存或替换非法字节"))
+			return
+		}
 		var req struct {
 			Action string     `json:"action"`
 			Scope  string     `json:"scope"`
 			Name   string     `json:"name"`
 			Domain DomainPack `json:"domain"`
 		}
-		decoder := json.NewDecoder(r.Body)
+		decoder := json.NewDecoder(bytes.NewReader(raw))
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&req); err != nil {
 			respondError(http.StatusBadRequest, fmt.Errorf("领域请求无效: %w", err))
