@@ -114,6 +114,178 @@ func TestCanceledNoCacheCompileAPIStopsGenerationWithoutAudit(t *testing.T) {
 	}
 }
 
+func TestCanceledDefaultCacheCallersStopGenerationBeforeOutlineRepair(t *testing.T) {
+	for _, callers := range []int{1, 2} {
+		name := "sole caller"
+		if callers == 2 {
+			name = "all shared callers"
+		}
+		t.Run(name, func(t *testing.T) {
+			isolateDomainIntegration(t)
+			const source = "一、资格判定\n检查订单状态并记录判定依据。\n二、审批链\n检查退款金额并记录审批结果。"
+			started, stopped, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var calls atomic.Int32
+			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body compilerRequestBody
+				json.NewDecoder(r.Body).Decode(&body)
+				if calls.Add(1) == 1 {
+					close(started)
+					select {
+					case <-r.Context().Done():
+						close(stopped)
+					case <-release:
+					}
+				}
+				// If abandoned work kept running, this retained outline would
+				// otherwise cause a second model request for restructuring.
+				writeModelContent(w, source)
+			}))
+			defer provider.Close()
+			defer close(release)
+			req := CompileReq{Text: source, StrictGate: true, BaseURL: provider.URL, APIKey: "test", Model: "test"}
+			var cancels []context.CancelFunc
+			var results []chan error
+			defer func() {
+				for _, cancel := range cancels {
+					cancel()
+				}
+			}()
+			for i := 0; i < callers; i++ {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancels = append(cancels, cancel)
+				result := make(chan error, 1)
+				results = append(results, result)
+				go func() {
+					_, err := doCompileContext(ctx, req)
+					result <- err
+				}()
+				if i == 0 {
+					waitCancellationSignal(t, started, "default-cache generation")
+				}
+			}
+			var call *flightCall
+			deadline := time.Now().Add(2 * time.Second)
+			for call == nil && time.Now().Before(deadline) {
+				compileFlight.mu.Lock()
+				for _, current := range compileFlight.calls {
+					if current.active == callers {
+						call = current
+						break
+					}
+				}
+				compileFlight.mu.Unlock()
+				runtime.Gosched()
+			}
+			if call == nil {
+				t.Fatal("callers did not join the shared generation")
+			}
+			for _, cancel := range cancels {
+				cancel()
+			}
+			for _, result := range results {
+				select {
+				case err := <-result:
+					if !errors.Is(err, context.Canceled) {
+						t.Fatalf("canceled caller returned %v", err)
+					}
+				case <-time.After(2 * time.Second):
+					t.Fatal("canceled caller kept waiting for generation")
+				}
+			}
+			waitCancellationSignal(t, stopped, "canceled shared upstream request")
+			waitCancellationSignal(t, call.done, "abandoned generation completion")
+			if calls.Load() != 1 {
+				t.Fatalf("abandoned generation started repair or validation: calls=%d", calls.Load())
+			}
+			cacheMutex.RLock()
+			entries := len(diskCache)
+			cacheMutex.RUnlock()
+			if entries != 0 {
+				t.Fatal("abandoned generation populated the candidate cache")
+			}
+			compileFlight.mu.Lock()
+			inflight := len(compileFlight.calls)
+			compileFlight.mu.Unlock()
+			if inflight != 0 {
+				t.Fatal("abandoned generation retained its flight entry")
+			}
+		})
+	}
+}
+
+func TestCanceledFlightCannotDeleteReplacementForSameKey(t *testing.T) {
+	var group flightGroup
+	oldStarted, oldStopped, oldRelease := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	newStarted, newRelease := make(chan struct{}), make(chan struct{})
+	var oldOnce, newOnce sync.Once
+	unblockOld := func() { oldOnce.Do(func() { close(oldRelease) }) }
+	unblockNew := func() { newOnce.Do(func() { close(newRelease) }) }
+	defer unblockOld()
+	defer unblockNew()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	oldResult := make(chan error, 1)
+	go func() {
+		_, _, err := group.Do(ctx, "same-key", func(work context.Context) (CompileResp, error) {
+			close(oldStarted)
+			<-work.Done()
+			close(oldStopped)
+			<-oldRelease // Simulate late teardown after cancellation.
+			return CompileResp{}, work.Err()
+		})
+		oldResult <- err
+	}()
+	waitCancellationSignal(t, oldStarted, "first generation")
+	group.mu.Lock()
+	oldCall := group.calls["same-key"]
+	group.mu.Unlock()
+	cancel()
+	select {
+	case err := <-oldResult:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("old caller did not cancel")
+	}
+	waitCancellationSignal(t, oldStopped, "shared context cancellation")
+	type result struct {
+		out    CompileResp
+		shared bool
+		err    error
+	}
+	newResult := make(chan result, 1)
+	go func() {
+		out, shared, err := group.Do(context.Background(), "same-key", func(work context.Context) (CompileResp, error) {
+			close(newStarted)
+			<-newRelease
+			return CompileResp{Compiled: "replacement"}, work.Err()
+		})
+		newResult <- result{out, shared, err}
+	}()
+	waitCancellationSignal(t, newStarted, "replacement generation")
+	group.mu.Lock()
+	newCall := group.calls["same-key"]
+	group.mu.Unlock()
+	unblockOld()
+	waitCancellationSignal(t, oldCall.done, "late old generation completion")
+	group.mu.Lock()
+	stillCurrent := group.calls["same-key"] == newCall
+	group.mu.Unlock()
+	if !stillCurrent {
+		t.Fatal("late completion deleted another generation's entry")
+	}
+	unblockNew()
+	select {
+	case got := <-newResult:
+		if got.err != nil || got.shared || got.out.Compiled != "replacement" {
+			t.Fatalf("replacement damaged by old flight: %+v", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("replacement generation did not finish")
+	}
+}
+
 func TestCanceledSharedCallerLeavesOtherRequestsAndValidationIndependent(t *testing.T) {
 	for _, canceledCaller := range []string{"leader", "follower"} {
 		t.Run(canceledCaller, func(t *testing.T) {

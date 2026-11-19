@@ -220,7 +220,9 @@ type flightCall struct {
 	done    chan struct{}
 	res     CompileResp
 	err     error
-	waiters int // protected by flightGroup.mu
+	waiters int // Joined followers, protected by flightGroup.mu.
+	active  int // Callers still waiting, protected by flightGroup.mu.
+	cancel  context.CancelFunc
 }
 
 type flightGroup struct {
@@ -228,29 +230,51 @@ type flightGroup struct {
 	calls map[string]*flightCall
 }
 
-func (g *flightGroup) Do(ctx context.Context, key string, fn func() (CompileResp, error)) (CompileResp, bool, error) {
+func (g *flightGroup) Do(ctx context.Context, key string, fn func(context.Context) (CompileResp, error)) (CompileResp, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return CompileResp{}, false, err
 	}
 	g.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		g.mu.Unlock()
+		return CompileResp{}, false, err
+	}
 	if g.calls == nil {
 		g.calls = make(map[string]*flightCall)
 	}
 	c, shared := g.calls[key]
 	if shared {
 		c.waiters++
+		c.active++
 	} else {
-		c = &flightCall{done: make(chan struct{})}
+		generationCtx, cancel := context.WithCancel(context.Background())
+		c = &flightCall{done: make(chan struct{}), active: 1, cancel: cancel}
 		g.calls[key] = c
 		go func() {
-			c.res, c.err = fn()
+			c.res, c.err = fn(generationCtx)
 			g.mu.Lock()
-			delete(g.calls, key)
+			// A canceled flight may already have been replaced under this key.
+			if g.calls[key] == c {
+				delete(g.calls, key)
+			}
 			g.mu.Unlock()
 			close(c.done)
 		}()
 	}
 	g.mu.Unlock()
+	defer func() {
+		g.mu.Lock()
+		c.active--
+		if c.active == 0 {
+			// An individual caller cannot cancel work another caller still
+			// needs. Once nobody is waiting, stop generation and any repair.
+			c.cancel()
+			if g.calls[key] == c {
+				delete(g.calls, key)
+			}
+		}
+		g.mu.Unlock()
+	}()
 	select {
 	case <-ctx.Done():
 		return CompileResp{}, shared, ctx.Err()

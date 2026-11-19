@@ -207,7 +207,8 @@ func translateMessageBlockContext(ctx context.Context, protocol, role, text stri
 			// A rejected candidate proves the compiler is reachable. Release any
 			// half-open probe rather than leaving the circuit permanently busy.
 			compilerCB.RecordSuccess()
-			entry.Reason = "候选未通过语义检查，已保留原文"
+			entry.ValidationMethod = validationErr.Validation.Method
+			entry.Reason = "候选未通过编译检查，已保留原文"
 		} else {
 			compilerCB.RecordFailure()
 			entry.Reason = "编译或审计服务异常，已保留原文"

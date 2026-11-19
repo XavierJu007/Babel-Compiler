@@ -78,3 +78,11 @@ func TestModalGuardUncertainCandidateDoesNotBecomeKnownConflict(t *testing.T) {
 		t.Fatal("explicit factual-negation-to-prohibition conflict was not rejected")
 	}
 }
+
+func TestConditionalNegationDoesNotConflictWithAnotherScope(t *testing.T) {
+	original := "单笔不超过99元时无需审批；未经审批不得导出原始明细。"
+	candidate := "单笔≤99元: 无需审批; 未经审批→禁止导出原始明细。"
+	if issues := checkDeterministicInvariants(original, candidate, nil); len(issues) != 0 {
+		t.Fatalf("approval prerequisite was confused with an exemption in another scope: %v", issues)
+	}
+}
