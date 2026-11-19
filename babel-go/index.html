@@ -1386,6 +1386,7 @@
             input.onchange = () => {
                 input.checked ? selectedDomains.add(pack.name) : selectedDomains.delete(pack.name);
                 updateDomainSelectionHint();
+                invalidateCompileContext();
             };
             label.appendChild(input);
             const text = document.createElement('span');
@@ -1397,24 +1398,33 @@
     }
 
     async function loadDomainPacks(reload = false) {
-        if (reload) await fetchJSON('/api/domains', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'reload' })
-        });
-        const data = await fetchJSON('/api/domains');
-        if (!Array.isArray(data.domains) || data.domains.some(pack =>
-            typeof pack.name !== 'string' || typeof pack.label !== 'string' || !Array.isArray(pack.entries))) {
-            throw new Error('领域库响应格式无效。');
+        if (reload) {
+            await fetchJSON('/api/domains', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'reload' })
+            });
+            invalidateCompileContext(true);
         }
-        domainPacks = data.domains;
-        publicSymbols = Array.isArray(data.public_symbols) ? data.public_symbols.filter(item =>
-            typeof item.symbol === 'string' && typeof item.meaning === 'string') : [];
-        const warning = document.getElementById('domainWarning');
-        warning.textContent = Array.isArray(data.warning) ? data.warning.join('\n') : data.warning || '';
-        warning.classList.toggle('hidden', !warning.textContent);
-        renderDomainChoices();
-        renderDomainSidebar();
-        return data;
+        try {
+            const data = await fetchJSON('/api/domains');
+            if (!Array.isArray(data.domains) || data.domains.some(pack =>
+                typeof pack.name !== 'string' || typeof pack.label !== 'string' || !Array.isArray(pack.entries))) {
+                throw new Error('领域库响应格式无效。');
+            }
+            domainPacks = data.domains;
+            publicSymbols = Array.isArray(data.public_symbols) ? data.public_symbols.filter(item =>
+                typeof item.symbol === 'string' && typeof item.meaning === 'string') : [];
+            const warning = document.getElementById('domainWarning');
+            warning.textContent = Array.isArray(data.warning) ? data.warning.join('\n') : data.warning || '';
+            warning.classList.toggle('hidden', !warning.textContent);
+            renderDomainChoices();
+            renderDomainSidebar();
+            invalidateCompileContext();
+            return data;
+        } catch (error) {
+            if (reload) error.domainReloaded = true;
+            throw error;
+        }
     }
 
     function renderDomainSidebar() {
@@ -1751,6 +1761,7 @@
 
     async function saveDomainPack() {
         if (!domainDraft || domainSavePending) return;
+        let saved = false;
         try {
             const pack = collectDomainPack();
             validateDomainEditor(pack);
@@ -1762,14 +1773,18 @@
             showDomainMessage('正在保存领域…');
             await fetchJSON('/api/domains', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: 'save', scope, domain: pack }) });
+            saved = true;
+            if (pack.name === 'common' || selectedDomains.has(pack.name)) invalidateCompileContext(true);
             await loadDomainPacks();
-            selectDomainPackForEdit(pack.name, true);
             const effective = domainPacks.find(item => item.name === pack.name);
+            if (!effective) throw new Error('刷新后未找到该领域，请检查加载警告。');
+            selectDomainPackForEdit(pack.name, true);
             showDomainMessage(effective?.source !== scope ?
                 '保存成功；当前生效的是更高优先级的覆盖。请检查当前来源。' :
                 '领域已保存并加载。勾选该领域后用于编译；示例与词条尚不代表跨模型验证结果。', 'passed');
         } catch (error) {
-            showDomainMessage(`保存失败：${error.message}`, 'error');
+            showDomainMessage(saved ? `领域已保存，但刷新未完成：${error.message} 当前草稿已保留，请重载确认。` :
+                `保存失败：${error.message}`, 'error');
         } finally {
             setDomainBusy(false);
         }
@@ -1780,10 +1795,13 @@
         const name = domainEditingName;
         const scope = document.getElementById('dmScope').value;
         if (!confirm(`删除 ${name} 的${scope === 'workspace' ? '工作区' : '全局'}覆盖？下一层同名领域会重新生效；未保存修改会丢弃。`)) return;
+        let deleted = false;
         try {
             setDomainBusy(true);
             await fetchJSON('/api/domains', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: 'delete', scope, name }) });
+            deleted = true;
+            if (name === 'common' || selectedDomains.has(name)) invalidateCompileContext(true);
             await loadDomainPacks();
             if (!domainPacks.some(pack => pack.name === name)) {
                 selectedDomains.delete(name);
@@ -1793,7 +1811,8 @@
             if (next) selectDomainPackForEdit(next.name, true);
             showDomainMessage('覆盖已删除；当前显示重新加载后的生效版本。', 'passed');
         } catch (error) {
-            showDomainMessage(`删除失败：${error.message}`, 'error');
+            showDomainMessage(deleted ? `覆盖已删除，但刷新未完成：${error.message} 当前显示尚未同步，请重载确认。` :
+                `删除失败：${error.message}`, 'error');
         } finally {
             setDomainBusy(false);
         }
@@ -1802,13 +1821,19 @@
     async function reloadDomainLibrary() {
         if (!mayDiscardDomainDraft()) return;
         try {
+            setDomainBusy(true);
+            showDomainMessage('正在从磁盘重载领域库…');
             const name = domainEditingName;
             await loadDomainPacks(true);
             const next = domainPacks.find(pack => pack.name === name) || domainPacks[0];
             if (next) selectDomainPackForEdit(next.name, true);
             showDomainMessage('领域库已从磁盘重载。');
         } catch (error) {
-            showDomainMessage(`重载失败：${error.message}`, 'error');
+            showDomainMessage(error.domainReloaded ?
+                `词典已重载，但列表刷新未完成：${error.message} 当前草稿已保留。` :
+                `重载失败：${error.message}`, 'error');
+        } finally {
+            setDomainBusy(false);
         }
     }
 
@@ -1840,7 +1865,8 @@
 
             const activeProf = serverConfig.profiles[serverConfig.active_profile];
             const localBackup = JSON.parse(localStorage.getItem(LOCAL_BACKUP_KEY) || 'null');
-            if ((!activeProf || !activeProf.has_api_key) && localBackup && localBackup.api_key) {
+            if ((!activeProf || !activeProf.has_api_key) && localBackup && localBackup.api_key &&
+                (localBackup.profile_name || 'default') === serverConfig.active_profile) {
                 await fetchJSON('/api/config', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -1914,8 +1940,13 @@
         setSelectValue(id, selected || '');
     }
 
+    function selectedCompileProfileName() {
+        return document.getElementById('headerProfileSelect').value ||
+            (serverConfig.profiles[serverConfig.active_profile] ? serverConfig.active_profile : '');
+    }
+
     function selectedCompileOptions() {
-        const active = serverConfig.profiles[serverConfig.active_profile] || {};
+        const active = serverConfig.profiles[selectedCompileProfileName()] || {};
         const reader = document.getElementById('readerProfileSelect').value;
         const options = {
             token_encoding: document.getElementById('tokenEncodingSelect').value || active.token_encoding || 'estimate',
@@ -1938,6 +1969,7 @@
             ? `盲读：阅读器 ${options.effective_reader || '与编译方案相同'} 只看候选，随后对照原文；比 compare 额外调用一次阅读器。`
             : '对照：同一审计调用读取原文与候选。';
         document.getElementById('compileOptionsHint').textContent = `目标计数：${options.token_encoding}（文本本体，不含请求包装）；编码不根据编译模型推测。${validation}`;
+        invalidateCompileContext();
     }
 
     function updateConfigValidationHint() {
@@ -1996,7 +2028,7 @@
     async function testModelConnection() {
         const btn = document.getElementById('cfgTestBtn');
         const payload = {
-            profile_name: document.getElementById('cfgProfileName').value.trim() || serverConfig.active_profile || 'default',
+            profile_name: document.getElementById('cfgProfileName').value.trim() || 'default',
             api_key: document.getElementById('cfgApiKey').value.trim(),
             base_url: document.getElementById('cfgBaseUrl').value.trim(),
             model: document.getElementById('cfgModel').value.trim()
@@ -2032,6 +2064,8 @@
     }
 
     async function quickSwitchProfile(name) {
+        document.getElementById('headerProfileSelect').value = name;
+        updateCompileOptionsHint();
         await fetchJSON('/api/config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -2066,11 +2100,12 @@
                     reader_profile: readerProfile
                 })
             });
+            invalidateCompileContext(true);
 
             const prevBackup = JSON.parse(localStorage.getItem(LOCAL_BACKUP_KEY) || '{}');
             localStorage.setItem(LOCAL_BACKUP_KEY, JSON.stringify({
                 profile_name: profileName,
-                api_key: apiKey || prevBackup.api_key || '',
+                api_key: apiKey || (prevBackup.profile_name === profileName ? prevBackup.api_key || '' : ''),
                 base_url: baseUrl,
                 model: model,
                 upstream_url: upstreamUrl,
@@ -2198,6 +2233,38 @@
     }
 
     let copyResultSequence = 0;
+    let lastCompileContext = null;
+    let compileContextRevision = 0;
+
+    function currentCompileContext() {
+        const profile = selectedCompileProfileName();
+        const options = selectedCompileOptions();
+        const domains = ['common', ...[...selectedDomains].sort()];
+        return JSON.stringify({ profile, options, strict: document.getElementById('verifyCheck').checked,
+            connection: serverConfig.profiles[profile] || null,
+            reader: options.validation_mode === 'blind' ? serverConfig.profiles[options.effective_reader || profile] || null : null,
+            domains: domains.map(name => [name, domainPacks.find(pack => pack.name === name) || null]),
+            revision: compileContextRevision });
+    }
+
+    function invalidateCompileContext(force = false) {
+        if (force) compileContextRevision++;
+        if (lastCompileContext !== null && lastCompileContext !== currentCompileContext()) {
+            markCompileInputChanged('编译方案、领域或校验设置已更改，请重新编译。');
+        }
+    }
+
+    function compileRequestIsCurrent(text, context) {
+        if (document.getElementById('rawInput').value !== text) {
+            markCompileInputChanged();
+            return false;
+        }
+        if (currentCompileContext() !== context) {
+            markCompileInputChanged('编译方案、领域或校验设置已更改，请重新编译。');
+            return false;
+        }
+        return true;
+    }
 
     function resetCompileResult() {
         copyResultSequence++;
@@ -2214,10 +2281,10 @@
         document.getElementById('auditBox').className = 'audit-bar hidden';
     }
 
-    function markCompileInputChanged() {
+    function markCompileInputChanged(message = '原文已更改，请重新编译。') {
         resetCompileResult();
         renderValidation({ status: 'not_run', method: 'none', policy_version: 'semantic-gate-v2',
-            issues: ['原文已更改，请重新编译。'] });
+            issues: [message] });
     }
 
     function formatTokenMeasurement(stats) {
@@ -2339,7 +2406,10 @@
         isOverdrive = true;
 
         const strictGate = document.getElementById('verifyCheck').checked;
+        const profile = selectedCompileProfileName();
         const options = selectedCompileOptions();
+        const requestContext = currentCompileContext();
+        lastCompileContext = requestContext;
 
         try {
             const data = await fetchJSON('/api/compile', {
@@ -2347,6 +2417,7 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     text,
+                    ...(profile ? { profile } : {}),
                     domains: [...selectedDomains],
                     token_encoding: options.token_encoding,
                     validation_mode: options.validation_mode,
@@ -2357,10 +2428,7 @@
                 })
             });
 
-            if (document.getElementById('rawInput').value !== text) {
-                markCompileInputChanged();
-                return;
-            }
+            if (!compileRequestIsCurrent(text, requestContext)) return;
             if (typeof data?.compiled !== 'string' || !data.compiled.trim()) {
                 throw new Error('后端未返回有效的编译文本。');
             }
@@ -2388,10 +2456,7 @@
             cacheBadge.classList.toggle('hidden', !data.cache_hit);
 
         } catch (err) {
-            if (document.getElementById('rawInput').value !== text) {
-                markCompileInputChanged();
-                return;
-            }
+            if (!compileRequestIsCurrent(text, requestContext)) return;
             resetCompileResult();
             const reported = normalizeValidation(err.validation);
             const validation = ['failed', 'error'].includes(reported.status) ? reported : {

@@ -213,6 +213,83 @@ test('responses and errors for an edited source cannot become the current result
     }
 });
 
+test('changed compile options and domains invalidate completed and in-flight results', async () => {
+    const changes = [
+        ['encoding', get => { get('tokenEncodingSelect').value = 'o200k_base'; }],
+        ['validation mode', get => { get('validationModeSelect').value = 'compare'; }],
+        ['reader', get => { get('readerProfileSelect').value = 'profile:reader'; }],
+        ['strict gate', get => { get('verifyCheck').checked = false; }],
+        ['domain', get => {
+            const input = get('domainChoices').children[1].children[0];
+            input.checked = true;
+            input.onchange();
+        }]
+    ];
+    for (const [name, change] of changes) {
+        for (const inFlight of [false, true]) {
+            let resolve;
+            const delayed = new Promise(done => { resolve = done; });
+            const { context, get, requests } = setup([
+                { data: configFixture() },
+                { data: domainPayload([domainPack('common'), domainPack('api-contract')]) },
+                inFlight ? () => delayed : { data: result({ validation: blindValidation() }) }
+            ]);
+            await context.loadInitConfig();
+            await context.loadDomainPacks();
+            get('verifyCheck').checked = true;
+            get('validationModeSelect').value = 'blind';
+            const pending = context.runCompile();
+            if (!inFlight) await pending;
+            change(get);
+            context.updateCompileOptionsHint();
+            assert.equal(get('invariantCapsules').dataset.validationStatus, 'not_run', name);
+            if (inFlight) {
+                resolve({ data: result({ validation: blindValidation() }) });
+                await pending;
+            }
+            assert.equal(JSON.parse(requests[2].options.body).profile, 'compiler');
+            assert.equal(get('dslOutput').value, '', name);
+            assert.equal(get('statsBadge').classList.contains('hidden'), true, name);
+            assert.equal(get('copyBtn').disabled, true, name);
+            assert.equal(get('invariantCapsules').dataset.validationStatus, 'not_run', name);
+            assert.match(get('auditBox').textContent, /设置已更改，请重新编译/, name);
+            assert.equal(get('runBtn').disabled, false, name);
+        }
+    }
+});
+
+test('profile switching pins each compile request and ignores a late old-profile error', async () => {
+    let resolveCompile, resolveSwitch;
+    const delayedCompile = new Promise(done => { resolveCompile = done; });
+    const delayedSwitch = new Promise(done => { resolveSwitch = done; });
+    const config = configFixture();
+    config.profiles.reader.token_encoding = 'cl100k_base';
+    const switched = structuredClone(config);
+    switched.active_profile = 'reader';
+    const { context, get, requests } = setup([
+        { data: config }, () => delayedCompile, () => delayedSwitch,
+        { data: result() }, { data: switched }
+    ]);
+    await context.loadInitConfig();
+    get('verifyCheck').checked = true;
+    const compiling = context.runCompile();
+    const switching = context.quickSwitchProfile('reader');
+    resolveCompile({ status: 502, data: { detail: '旧方案超时',
+        validation: validation('error', 'llm_compare', ['旧方案异常']) } });
+    await compiling;
+    assert.equal(JSON.parse(requests[1].options.body).profile, 'compiler');
+    assert.equal(get('dslOutput').value, '');
+    assert.equal(get('invariantCapsules').dataset.validationStatus, 'not_run');
+    assert.doesNotMatch(get('auditBox').textContent, /旧方案/);
+    await context.runCompile();
+    const nextRequest = JSON.parse(requests[3].options.body);
+    assert.equal(nextRequest.profile, 'reader');
+    assert.equal(nextRequest.token_encoding, 'cl100k_base');
+    resolveSwitch({ data: { success: true } });
+    await switching;
+    assert.equal(get('headerProfileSelect').value, 'reader');
+});
+
 test('copy reports success only after the exact result reaches the clipboard', async () => {
     const { context, get } = setup();
     const text = '  保留空格\n\n和换行\n';
@@ -344,6 +421,59 @@ function configFixture(overrides = {}) {
         reader: { name: 'reader', model: 'reader-model', has_api_key: true, token_encoding: 'estimate', validation_mode: 'compare', reader_profile: '' }
     }, token_encodings: ['estimate', 'cl100k_base', 'o200k_base'] };
 }
+
+test('blank profile keys preserve only a backup belonging to the same profile', async () => {
+    for (const profileName of ['compiler', 'fresh']) {
+        const saved = configFixture();
+        if (profileName === 'fresh') {
+            saved.profiles.fresh = { ...saved.profiles.compiler, name: 'fresh', has_api_key: false };
+            saved.active_profile = 'fresh';
+        }
+        const { context, get, requests, storage } = setup([
+            { data: configFixture() }, { data: { success: true } }, { data: saved }
+        ]);
+        storage.set('babel_dsl_backup_v2', JSON.stringify({ profile_name: 'compiler', api_key: 'fixture-old-key' }));
+        await context.loadInitConfig();
+        get('cfgProfileName').value = profileName;
+        get('cfgApiKey').value = '';
+        await context.saveProfileConfig();
+        const request = JSON.parse(requests[1].options.body);
+        assert.equal(request.profile_name, profileName);
+        assert.equal(request.api_key, '');
+        const backup = JSON.parse(storage.get('babel_dsl_backup_v2'));
+        assert.equal(backup.profile_name, profileName);
+        assert.equal(backup.api_key, profileName === 'compiler' ? 'fixture-old-key' : '');
+        assert.equal(requests.length, 3, 'saving a new blank-key profile must not trigger backup key restoration');
+        assert.equal(get('headerProfileSelect').value, profileName);
+    }
+});
+
+test('a missing active-profile key cannot restore another profile backup or switch identity', async () => {
+    const config = configFixture();
+    config.active_profile = 'reader';
+    config.profiles.reader.has_api_key = false;
+    const { context, get, requests, storage } = setup([{ data: config }]);
+    storage.set('babel_dsl_backup_v2', JSON.stringify({ profile_name: 'compiler', api_key: 'fixture-old-key' }));
+    await context.loadInitConfig();
+    assert.equal(requests.length, 1);
+    assert.equal(get('headerProfileSelect').value, 'reader');
+    assert.match(get('headerModelBadge').textContent, /缺Key/);
+    assert.equal(JSON.parse(storage.get('babel_dsl_backup_v2')).profile_name, 'compiler');
+});
+
+test('connection tests use the same default profile name as saving a blank-name form', async () => {
+    const { context, get, requests } = setup([
+        { data: configFixture() }, { data: { ok: false, detail: 'missing key' } }
+    ]);
+    await context.loadInitConfig();
+    get('cfgProfileName').value = '  ';
+    get('cfgApiKey').value = '';
+    await context.testModelConnection();
+    const request = JSON.parse(requests[1].options.body);
+    assert.equal(request.profile_name, 'default');
+    assert.equal(request.api_key, '');
+    assert.match(get('cfgTestResult').textContent, /missing key/);
+});
 
 test('profile token encoding and independent reader choices load, save, and persist', async () => {
     const saved = configFixture({ token_encoding: 'o200k_base', validation_mode: 'blind', reader_profile: 'reader' });
@@ -705,6 +835,127 @@ test('domain field edits, public symbols and examples survive entry navigation a
     assert.deepEqual(request.domain.entries[0].symbols[1], { symbol: '!=', meaning: '不等于' });
     assert.equal(request.domain.entries[0].examples[1].output, '处理前提：值 != null');
     assert.match(get('domainStatus').textContent, /已保存并加载/);
+});
+
+test('reloading blocks draft edits until completion and releases controls after failure', async () => {
+    for (const fails of [false, true]) {
+        let resolve;
+        const delayed = new Promise(done => { resolve = done; });
+        const original = domainPack('api-contract');
+        const refreshed = structuredClone(original);
+        refreshed.entries[0].canonical = '磁盘中的新术语';
+        const { context, get, requests } = setup([
+            { data: domainPayload([original]) }, () => delayed,
+            { data: domainPayload([refreshed]) }
+        ]);
+        await context.loadDomainPacks();
+        context.selectDomainPackForEdit('api-contract');
+        context.updateDomainEntryField('canonical', '重载前的草稿');
+        const draft = get('domainJSON').value;
+        const controls = [get('deCanonical'), get('dmName'), get('saveDomainBtn')];
+        get('domainModal').querySelectorAll = () => controls;
+        const pending = context.reloadDomainLibrary();
+        assert.equal(controls.every(control => control.disabled), true);
+        context.updateDomainEntryField('canonical', '重载期间不能接收的编辑');
+        context.prepareNewDomain();
+        assert.equal(get('domainJSON').value, draft);
+        resolve(fails ? { status: 502, data: { detail: 'reload offline' } } : { data: { success: true } });
+        await pending;
+        assert.equal(controls.every(control => !control.disabled), true);
+        if (fails) {
+            assert.equal(get('domainJSON').value, draft);
+            assert.match(get('domainStatus').textContent, /重载失败.*reload offline/);
+            assert.equal(requests.length, 2);
+        } else {
+            assert.equal(get('deCanonical').value, '磁盘中的新术语');
+            assert.match(get('domainStatus').textContent, /已从磁盘重载/);
+        }
+    }
+});
+
+test('committed domain saves and deletes distinguish refresh failure from write failure', async () => {
+    for (const action of ['save', 'delete']) {
+        for (const committed of [false, true]) {
+            const { context, get, requests } = setup([
+                { data: domainPayload([domainPack('api-contract', 'workspace')]) },
+                committed ? { data: { success: true } } : { status: 500, data: { detail: 'write failed' } },
+                new Error('GET refresh offline')
+            ]);
+            await context.loadDomainPacks();
+            context.selectDomainPackForEdit('api-contract');
+            context.updateDomainEntryField('canonical', '保留当前草稿');
+            const draft = get('domainJSON').value;
+            await (action === 'save' ? context.saveDomainPack() : context.deleteDomainPack());
+            assert.equal(get('domainJSON').value, draft);
+            assert.equal(get('domainStatus').classList.contains('is-passed'), false);
+            const message = get('domainStatus').textContent;
+            if (committed) {
+                assert.match(message, action === 'save' ? /领域已保存，但刷新未完成/ : /覆盖已删除，但刷新未完成/);
+                assert.match(message, /GET refresh offline/);
+                assert.doesNotMatch(message, /^(保存|删除)失败/);
+                assert.equal(requests.length, 3);
+            } else {
+                assert.match(message, action === 'save' ? /^保存失败/ : /^删除失败/);
+                assert.match(message, /write failed/);
+                assert.equal(requests.length, 2);
+            }
+        }
+    }
+});
+
+test('a committed dictionary reload invalidates old results even when its refresh fails', async () => {
+    const common = domainPack('common');
+    const reloaded = structuredClone(common);
+    reloaded.entries[0].canonical = '服务端重载后的术语';
+    const { context, get, requests } = setup([
+        { data: domainPayload([common]) }, { data: result() },
+        { data: domainPayload([reloaded]) }, new Error('GET refresh offline')
+    ]);
+    await context.loadDomainPacks();
+    context.selectDomainPackForEdit('common');
+    const draft = get('domainJSON').value;
+    get('verifyCheck').checked = true;
+    await context.runCompile();
+    assert.equal(get('invariantCapsules').dataset.validationStatus, 'passed');
+    assert.equal(get('copyBtn').disabled, false);
+    await context.reloadDomainLibrary();
+    assert.deepEqual(JSON.parse(requests[2].options.body), { action: 'reload' });
+    assert.equal(get('domainJSON').value, draft);
+    assert.match(get('domainStatus').textContent, /词典已重载，但列表刷新未完成.*GET refresh offline.*当前草稿已保留/);
+    assert.doesNotMatch(get('domainStatus').textContent, /^重载失败/);
+    assert.equal(get('dslOutput').value, '');
+    assert.equal(get('copyBtn').disabled, true);
+    assert.equal(get('statsBadge').classList.contains('hidden'), true);
+    assert.equal(get('invariantCapsules').dataset.validationStatus, 'not_run');
+    assert.match(get('auditBox').textContent, /设置已更改，请重新编译/);
+});
+
+test('dictionary refresh invalidates results only when an effective selected dictionary changes', async () => {
+    const common = domainPack('common');
+    const selected = domainPack('api-contract');
+    const unused = domainPack('my-api', 'global');
+    const changedUnused = structuredClone(unused);
+    changedUnused.entries[0].canonical = '未选词典的新术语';
+    const changedSelected = structuredClone(selected);
+    changedSelected.entries[0].canonical = '所选词典的新术语';
+    const { context, get } = setup([
+        { data: domainPayload([common, selected, unused]) }, { data: result() },
+        { data: domainPayload([common, selected, changedUnused]) },
+        { data: domainPayload([common, changedSelected, changedUnused]) }
+    ]);
+    await context.loadDomainPacks();
+    const input = get('domainChoices').children[1].children[0];
+    input.checked = true;
+    input.onchange();
+    get('verifyCheck').checked = true;
+    await context.runCompile();
+    await context.loadDomainPacks();
+    assert.equal(get('invariantCapsules').dataset.validationStatus, 'passed');
+    assert.equal(get('copyBtn').disabled, false);
+    await context.loadDomainPacks();
+    assert.equal(get('invariantCapsules').dataset.validationStatus, 'not_run');
+    assert.equal(get('dslOutput').value, '');
+    assert.equal(get('statsBadge').classList.contains('hidden'), true);
 });
 
 test('domain editor refuses incomplete entries and never deletes a builtin', async () => {
