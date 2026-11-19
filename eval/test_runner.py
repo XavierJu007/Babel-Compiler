@@ -54,6 +54,15 @@ def blind_rejection(stage_name):
     return body
 
 
+def compiled_fixture(candidate="generated fixture", original=100, compiled=60, **metadata):
+    return {"compiled": candidate, "stats": {
+        "original_tokens": original, "compiled_tokens": compiled,
+        "measurement_kind": "exact", "measurement_source": "fixture_counter",
+        "measurement_scope": "text", "measurement_encoding": "cl100k_base",
+        "measurement_version": "fixture-v1", **metadata,
+    }}
+
+
 class EvaluationRunnerTests(unittest.TestCase):
     def invoke(self, args):
         stdout, stderr = io.StringIO(), io.StringIO()
@@ -65,6 +74,18 @@ class EvaluationRunnerTests(unittest.TestCase):
         return ["--live", operation, "--endpoint", "http://127.0.0.1:8080",
                 "--profile", "explicit-test-profile", "--max-requests", "1",
                 "--output", str(path)]
+
+    def invoke_pipeline(self, responses, *, budget=None, limit=1, options=()):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "pipeline.jsonl"
+            args = self.live_args(path, "pipeline") + ["--limit", str(limit), *options]
+            args[args.index("--max-requests") + 1] = str(len(responses) if budget is None else budget)
+            with patch.object(runner, "request_json", side_effect=responses) as request:
+                code, output, error = self.invoke(args)
+            self.assertEqual(error, "")
+            text = path.read_text()
+            records = [json.loads(line) for line in text.splitlines()]
+            return code, json.loads(output), records, request.call_args_list, text
 
     def test_default_offline_never_calls_api(self):
         with patch.object(runner, "request_json", side_effect=AssertionError("offline used network")):
@@ -166,6 +187,225 @@ class EvaluationRunnerTests(unittest.TestCase):
             self.assertEqual(record["literal_presence_check"]["semantic_equivalence"], "not_evaluated")
             self.assertEqual(record["semantic_quality"], "not_evaluated")
             self.assertNotIn("draft_label_agreement", json.loads(output))
+
+    def test_pipeline_forwards_actual_candidate_and_uses_separate_validation_profile(self):
+        candidate = '  generated α → `user_id`\n"two  spaces"\n'
+        compiled = compiled_fixture(candidate, compression_ratio="untrusted display value")
+        compiled["usage"] = {"prompt_tokens": 1000, "completion_tokens": 50}
+        code, summary, records, calls, _ = self.invoke_pipeline([
+            (200, compiled), (200, validation("passed")),
+        ], options=["--validation-profile", "explicit-comparator", "--token-encoding", "cl100k_base"])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(calls[0].args[0].endswith("/api/compile"))
+        self.assertTrue(calls[1].args[0].endswith("/api/validate"))
+        compile_request, validate_request = calls[0].args[1], calls[1].args[1]
+        self.assertEqual(compile_request["profile"], "explicit-test-profile")
+        self.assertEqual(compile_request["token_encoding"], "cl100k_base")
+        self.assertIs(compile_request["no_cache"], True)
+        self.assertIs(compile_request["verify"], False)
+        self.assertIs(compile_request["strict_gate"], False)
+        self.assertEqual(validate_request["profile"], "explicit-comparator")
+        self.assertEqual(validate_request["candidate"], candidate)
+        self.assertEqual(validate_request["text"], compile_request["text"])
+        self.assertEqual(set(validate_request), {"text", "candidate", "profile", "validation_mode"})
+        for payload in (compile_request, validate_request):
+            for key in ("valid_candidate", "expected_relations", "invalid_candidates", "draft_expected_validation"):
+                self.assertNotIn(key, payload)
+        case = runner.load_cases(runner.DEFAULT_CASES)[0][0]
+        self.assertNotEqual(candidate, case["valid_candidate"])
+        manifest, record = records[:2]
+        self.assertEqual(manifest["format_version"], 2)
+        self.assertEqual(manifest["validation_profile"], "explicit-comparator")
+        self.assertEqual(manifest["selection_scope"], "evaluation_rule_only")
+        self.assertEqual(record["operation"], "pipeline")
+        self.assertEqual(record["candidate_id"], "generated")
+        self.assertEqual(record["candidate"], candidate)
+        self.assertEqual(record["stats"], compiled["stats"])
+        self.assertEqual(record["usage"], compiled["usage"])
+        self.assertEqual(record["selection"]["output"], "candidate")
+        self.assertEqual(record["measurement"]["effective_tokens"], 60)
+        for stage in record["stages"].values():
+            self.assertEqual(stage["http_status"], 200)
+            self.assertGreaterEqual(stage["elapsed_seconds"], 0)
+        self.assertEqual(summary["requests"], 2)
+        self.assertEqual(summary["api_success"], 2)
+        self.assertEqual(summary["validation_pass_rate"], 1)
+        self.assertEqual(summary["validation_decided"], 1)
+        self.assertEqual(summary["semantic_accuracy"], "not_established")
+        self.assertEqual(summary["billing_cost"], "not_measured")
+        self.assertEqual(summary["selection_scope"], "evaluation_rule_only")
+        self.assertFalse(any(key.startswith("draft_label_") for key in summary))
+        self.assertNotIn("draft_expected_validation", record)
+
+    def test_pipeline_shared_budget_preserves_generated_but_unvalidated_candidate(self):
+        code, summary, records, calls, _ = self.invoke_pipeline([
+            (200, compiled_fixture("first", compiled=80)), (200, validation("passed")),
+            (200, compiled_fixture("second", compiled=30)),
+        ], budget=3, limit=2)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual((summary["compile_requests"], summary["validate_requests"]), (2, 1))
+        self.assertEqual(summary["skipped_by_budget"], 1)
+        second = records[2]
+        self.assertEqual(second["candidate"], "second")
+        self.assertEqual(second["result"], "not_validated")
+        self.assertEqual(second["stages"]["validate"]["skip_reason"], "budget_exhausted")
+        self.assertIsNone(second["stages"]["validate"]["http_status"])
+        self.assertEqual(second["selection"]["output"], "source")
+        self.assertEqual(second["measurement"]["effective_tokens"], 100)
+        self.assertEqual(summary["validation_decided"], 1)
+        self.assertEqual(summary["excluded_from_validation"]["not_validated"], 1)
+        group = summary["measurement_groups"][0]
+        self.assertEqual((group["original_tokens"], group["candidate_tokens"], group["effective_tokens"]),
+                         (200, 110, 180))
+        self.assertEqual(group["effective_savings_tokens"], 20)
+
+    def test_pipeline_budget_exhaustion_keeps_one_record_for_each_selected_case(self):
+        code, summary, records, calls, _ = self.invoke_pipeline([
+            (200, compiled_fixture("only generated")),
+        ], budget=1, limit=2)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(records), 4)  # manifest, two cases, summary
+        self.assertEqual(summary["not_validated"], 2)
+        self.assertEqual(summary["skipped_by_budget"], 3)
+        self.assertIsNone(summary["validation_pass_rate"])
+        self.assertEqual(summary["selection_counts"], {"candidate": 0, "source": 2})
+        unstarted = records[2]
+        self.assertIsNone(unstarted["candidate"])
+        self.assertIsNone(unstarted["stats"])
+        self.assertEqual(unstarted["stages"]["compile"]["result"], "not_run")
+        self.assertEqual(unstarted["stages"]["validate"]["result"], "not_run")
+        self.assertEqual(summary["measurement_excluded"], {"candidate_unavailable": 1})
+
+    def test_pipeline_compile_failure_never_validates_or_retries(self):
+        responses = [
+            (502, {"compiled": "must not be used", "error": "provider secret fixture"}),
+            (200, {"compiled": ""}),
+            (None, {"response_error": "transport_error"}),
+        ]
+        for response in responses:
+            with self.subTest(http_status=response[0]):
+                code, summary, records, calls, text = self.invoke_pipeline([response], budget=2)
+                self.assertEqual(code, 2)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(summary["validate_requests"], 0)
+                self.assertEqual(summary["skipped_after_compile_failure"], 1)
+                self.assertEqual(summary["skipped_by_budget"], 0)
+                self.assertIsNone(records[1]["candidate"])
+                self.assertEqual(records[1]["stages"]["validate"]["skip_reason"], "compile_unavailable")
+                self.assertNotIn("provider secret fixture", text)
+
+    def test_pipeline_validation_uses_receipt_checks_and_excludes_errors_from_rate(self):
+        code, summary, records, calls, text = self.invoke_pipeline([
+            (200, compiled_fixture("compare receipt in blind request")), (200, validation("passed")),
+            (200, compiled_fixture("service fails")), (502, validation("error", ["provider secret fixture"])),
+            (200, compiled_fixture("rejected")), (200, blind_rejection("local_checks")),
+        ], limit=3, options=["--validation-mode", "blind"])
+        self.assertEqual(code, 2)
+        self.assertEqual(len(calls), 6)
+        self.assertEqual([record["result"] for record in records[1:-1]], ["unknown", "error", "failed"])
+        self.assertEqual(summary["validation_decided"], 1)
+        self.assertEqual(summary["validation_pass_rate"], 0)
+        self.assertEqual(summary["excluded_from_validation"], {"error": 1, "unknown": 1, "not_validated": 0})
+        self.assertEqual(summary["selection_counts"], {"candidate": 0, "source": 3})
+        self.assertEqual(summary["measurement_groups"][0]["effective_tokens"], 300)
+        self.assertEqual(summary["measurement_groups"][0]["effective_savings_tokens"], 0)
+        self.assertNotIn("provider secret fixture", text)
+
+    def test_pipeline_aggregates_only_complete_same_metadata_text_counts(self):
+        compiled = [
+            compiled_fixture("reduced", original=100, compiled=80),
+            compiled_fixture("expanded", original=50, compiled=70),
+            compiled_fixture("different encoding", compiled=40, measurement_encoding="o200k_base"),
+            compiled_fixture("estimate", compiled=30, measurement_kind="estimated",
+                             measurement_source="fixture_heuristic", measurement_encoding="estimate"),
+            compiled_fixture("different version", compiled=50, measurement_version="fixture-v2"),
+            compiled_fixture("different source", compiled=60, measurement_source="another_counter"),
+            compiled_fixture("missing source", measurement_source=""),
+            compiled_fixture("boolean count", original=True),
+            compiled_fixture("negative count", compiled=-1),
+        ]
+        responses = []
+        for body in compiled:
+            responses.extend([(200, body), (200, validation("passed"))])
+        code, summary, records, _, _ = self.invoke_pipeline(responses, limit=len(compiled))
+        self.assertEqual(code, 0)
+        groups = summary["measurement_groups"]
+        self.assertEqual(len(groups), 5)
+        key = lambda group: tuple(group[field] for field in runner.MEASUREMENT_FIELDS)
+        self.assertEqual(len({key(group) for group in groups}), 5)
+        combined = next(group for group in groups if group["cases"] == 2)
+        self.assertEqual(combined["measurement_kind"], "exact")
+        self.assertEqual(combined["measurement_encoding"], "cl100k_base")
+        self.assertEqual((combined["original_tokens"], combined["candidate_tokens"], combined["effective_tokens"]),
+                         (150, 150, 130))
+        self.assertEqual(combined["candidate_delta_tokens"], 0)
+        self.assertEqual(combined["effective_savings_tokens"], 20)
+        self.assertEqual(combined["candidate_changes"], {"reduced": 1, "unchanged": 0, "expanded": 1})
+        self.assertEqual((combined["adopted_candidates"], combined["fallback_to_source"]), (1, 1))
+        self.assertEqual(summary["measurement_excluded"], {
+            "missing_measurement_metadata": 1, "invalid_token_counts": 2,
+        })
+        self.assertEqual(summary["selection_counts"], {"candidate": 5, "source": 4})
+        self.assertNotIn("original_tokens", summary)  # No total across encodings or measurement kinds.
+        self.assertNotIn("effective_tokens", summary)
+        for record in records[-4:-1]:
+            self.assertEqual(record["result"], "passed")
+            self.assertEqual(record["measurement"]["status"], "excluded")
+            self.assertEqual(record["selection"]["output"], "source")
+
+    def test_pipeline_measurement_rejects_incomplete_or_non_text_metadata(self):
+        for field, value in (
+            ("original_tokens", False), ("original_tokens", -1), ("compiled_tokens", 1.5),
+            ("compiled_tokens", "60"), ("measurement_source", None), ("measurement_version", " "),
+            ("measurement_encoding", None), ("measurement_scope", "full_request"),
+            ("measurement_kind", "assumed_exact"),
+            ("measurement_encoding", "estimate"), ("measurement_source", "heuristic-v2"),
+        ):
+            with self.subTest(field=field, value=value):
+                stats = compiled_fixture()["stats"]
+                stats[field] = value
+                measurement, selection = runner.pipeline_measurement(stats, "passed", candidate_available=True)
+                self.assertEqual(measurement["status"], "excluded")
+                self.assertNotIn("group", measurement)
+                self.assertEqual(selection["output"], "source")
+        stats = compiled_fixture(original=50, compiled=50)["stats"]
+        measurement, selection = runner.pipeline_measurement(stats, "passed", candidate_available=True)
+        self.assertEqual(measurement["candidate_change"], "unchanged")
+        self.assertEqual(selection["reason"], "not_smaller")
+
+    def test_pipeline_reader_profiles_preserve_inheritance_and_explicit_empty(self):
+        for option in ([], ["--reader-profile="], ["--reader-profile", "explicit-reader"]):
+            with self.subTest(option=option):
+                code, _, records, calls, _ = self.invoke_pipeline([
+                    (200, compiled_fixture()), (200, blind_validation()),
+                ], options=["--validation-mode", "blind", *option])
+                self.assertEqual(code, 0)
+                self.assertEqual(records[0]["validation_profile"], "explicit-test-profile")
+                self.assertNotIn("reader_profile", calls[0].args[1])
+                if option:
+                    expected = "" if len(option) == 1 else "explicit-reader"
+                    self.assertEqual(calls[1].args[1]["reader_profile"], expected)
+                else:
+                    self.assertNotIn("reader_profile", calls[1].args[1])
+
+    def test_validation_profile_is_nonempty_and_only_used_for_pipeline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            argument_sets = [
+                ["--validation-profile", "profile"],
+                self.live_args(Path(tmp) / "validate.jsonl") + ["--validation-profile", "profile"],
+                self.live_args(Path(tmp) / "compile.jsonl", "compile") + ["--validation-profile", "profile"],
+                self.live_args(Path(tmp) / "empty.jsonl", "pipeline") + ["--validation-profile="],
+                self.live_args(Path(tmp) / "spaces.jsonl", "pipeline") + ["--validation-profile", " "],
+                self.live_args(Path(tmp) / "reader.jsonl", "pipeline") + ["--reader-profile="],
+            ]
+            for args in argument_sets:
+                with self.subTest(args=args), patch.object(runner, "request_json") as request:
+                    code, _, _ = self.invoke(args)
+                self.assertEqual(code, 1)
+                request.assert_not_called()
 
     def test_blind_request_contains_only_source_candidate_and_selected_profiles(self):
         with tempfile.TemporaryDirectory() as tmp:

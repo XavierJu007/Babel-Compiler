@@ -18,7 +18,9 @@
 
 - [cases.jsonl](cases.jsonl)：一行一个案例，`schema_version=1`。
 - [run.py](run.py)：仅使用 Python 标准库；默认离线检查。
+- [report.py](report.py)：将运行记录生成可搜索、筛选的离线 HTML 对照报告。
 - [test_runner.py](test_runner.py)：mock 行为测试，不调用真实模型。
+- [test_service_integration.py](test_service_integration.py)：可选的实际 Babel HTTP 集成，上游全部为本地 fixture。
 
 | 字段 | 含义 |
 | --- | --- |
@@ -54,6 +56,26 @@ python -m unittest discover -s eval -p 'test_*.py' -v
 联网运行必须同时指定 `--live`、`--endpoint`、`--profile`、`--max-requests` 和新的 `--output` 文件。
 `--endpoint` 是 Babel 服务基地址，不是上游模型服务地址。脚本不跟随重定向，不自动重试。
 已有输出文件不会覆盖，以免混淆不同运行。
+
+### 连续生成并验证实际候选
+
+`pipeline` 先编译原文，再把实际生成的文本逐字交给验证接口。不使用案例中的拟定候选替代编译结果，也不向模型提供草拟标签、预期关系或反例原因。
+
+```bash
+python eval/run.py --live pipeline \
+  --endpoint http://127.0.0.1:8080 \
+  --profile chosen-compiler \
+  --validation-mode blind \
+  --token-encoding o200k_base \
+  --limit 2 --max-requests 4 \
+  --output eval-runs/pipeline-pilot.jsonl
+```
+
+默认使用同一方案编译与对照；可另加 `--validation-profile chosen-comparator` 选择比较器，`--reader-profile chosen-reader` 选择盲读阅读器。目标编码应按最终消费模型选择，不由编译器名称推断。
+
+每例最多两次 Babel HTTP 请求：生成一次、验证一次，共用 `--max-requests`。完整的 blind 链路通常包含三次上游模型调用；HTTP 请求预算不等于模型调用或费用预算。编译失败不进入验证，预算耗尽时保留已生成但未验证的候选及未开始的案例，标为 `not_validated`，不会自动重试或补跑。
+
+每例记录生成与验证的 HTTP 状态、耗时、实际候选、计量来源和验证明细。仅在验证通过且候选计数更少时，评测规则才选择候选，否则按原文回退计算文本量。`selection_scope="evaluation_rule_only"` 明确表示这是评测中的选择规则：**没有把候选发送给最终消费模型，也没有测量实际账单。**
 
 ### 生成候选
 
@@ -101,7 +123,7 @@ python eval/run.py --live validate \
 `blind` 请求交由服务执行独立阅读和后续对照；脚本本身不实现或模拟阅读器。
 不传 `--reader-profile` 时继承所选方案保存的阅读器设置；传 `--reader-profile chosen-reader` 时覆盖为指定方案。
 显式 `--reader-profile=` 会发送空字符串，清除本次请求继承的阅读器覆盖，改用 `--profile` 指定的方案执行阅读；不会修改已保存的配置。
-这个参数（包括显式空串）只允许用于 `--live validate --validation-mode blind`。
+这个参数（包括显式空串）只允许用于 `--live validate` 或 `--live pipeline` 的 `blind` 模式；pipeline 中清空覆盖后，阅读器使用本次验证方案。
 脚本核对返回的执行方式和协议版本：`blind_read` / `semantic-blind-v1`，以及 `local_checks`、`reader`、`comparator` 三个阶段各自的当前版本。
 只有本地检查 `completed`、阅读器 `completed` 且附有 `relations` 非空、`ambiguities=[]` 的结构化阅读回执、对照器 `passed` 时，才把顶层 `passed` 计为独立阅读通过；`entities` 可以为空。
 在该模式下收到普通 `compare`、旧协议、缺失阶段或互相矛盾的状态，一律记为 `unknown`，不会降级为通过。
@@ -111,7 +133,7 @@ python eval/run.py --live validate \
 
 默认只运行文件顺序中的前 **2 个案例**，不是自动运行全量。
 `--case-id` 可重复指定；筛选后仍按文件顺序取前 `--limit` 个案例。
-编译模式每例最多一个 HTTP 请求；当前验证数据每例三个请求。
+编译模式每例最多一个 HTTP 请求；当前验证数据每例三个请求；pipeline 每例最多两个请求，编译失败会省去该例验证。
 计划请求数超过 `--max-requests` 时，执行到预算即停止，余下数量记为 `skipped_by_budget`；不会自动补跑。
 
 输出是逐行写入的 JSONL：运行说明、每次请求观察、最终汇总。
@@ -132,8 +154,36 @@ python eval/run.py --live validate \
 HTTP 502 等非 200 响应始终计为 `error`；HTTP 200 中明确的服务或阶段 `error` 也不计入语义失败。报告保留状态信息，省略异常详情中的上游原始正文。
 `api_success` 只表示协议层产生可用结果，不代表候选正确。
 
+`pipeline` 统计的是 `validation_pass_rate = passed / (passed + failed)`，即所选验证流程在已决结果中的通过率；本地检查提前拒绝也属于 `failed`。`error`、`unknown`、`not_validated` 的数量同时单列，不能隐藏这些样本后只展示通过率。pipeline 不计算与拟定合法/非法标签的一致比例，因为它验证的是本次生成的文本。
+
+pipeline 的 `measurement_groups` 按 `kind/source/scope/encoding/version` 完整组合分组，分别记录原文量、候选量、膨胀/缩短/不变数量，以及按规则回退后的有效文本量。不同编码和估算/精确结果不相加；无来源、非法计数或互相矛盾的元数据会被排除并记录原因。即使某候选很短，只要验证失败，它在回退后计量中的节省就是零。未知计量的案例不会悄悄填零混入统计。
+
 运行记录始终标明上游模型身份未独立核验。`--live` 代表启用网络；若 endpoint 指向 mock，它仍然只是 mock 结果。
 当前仓库没有随附真实模型分数。正式比较应在人工复核后冻结案例版本，固定模型、验证策略与编码，并保留失败案例；不能边修改案例边报告同一集合上的“提升”。
 
 退出码：`0` 表示结构检查或联网记录正常结束（即使存在草拟标签分歧）；`1` 表示输入、配置或文件错误；`2` 表示联网结果存在 API 异常或未知验证状态。
+
+## 5. 生成离线 HTML 报告
+
+```bash
+python eval/report.py eval-runs/pipeline-pilot.jsonl \
+  --output eval-runs/pipeline-pilot.html
+```
+
+报告支持已有 compile/validate 记录及 pipeline 记录。直接在浏览器打开 HTML 即可搜索文本、筛选结果，逐例并排查看原文与实际候选，展开问题和盲读结果，核对生成、验证及阅读阶段的耗时。内容全部内嵌，不加载外部脚本或字体，也不会访问模型服务。
+
+报告会显示运行是否完整、样例是否仍待人工复核、验证方式和计量依据。缺少最终汇总的记录会标为部分运行，不补造完成结果。明显矛盾或不匹配的验证回执不能显示为通过；原始问题与阶段证据保留以便审阅。生成器拒绝覆盖已有输出。
+
+## 6. 实际 HTTP 集成检查
+
+普通 Python 单测使用 mock；实际服务集成需要显式提供已经构建的 Babel 二进制。下面的测试会自行启动临时本机服务和模拟模型，使用临时配置，不使用个人密钥：
+
+```bash
+go build -o bin/babel ./babel-go
+BABEL_TEST_BINARY="$PWD/bin/babel" python -m unittest discover -s eval -p 'test_*.py' -v
+```
+
+PowerShell 可先用 `go build -o bin/babel.exe ./babel-go` 构建，再设置 `$env:BABEL_TEST_BINARY = (Resolve-Path .\bin\babel.exe).Path`，然后运行同一条 Python unittest 命令。未设置该变量时，只跳过实际服务集成测试，其余离线测试正常执行。
+
+集成检查覆盖实际候选逐字传入阅读器、独立方案路由、精确计量元数据、共享请求预算及生成 HTML 报告。它验证产品和评测器的配合；上游回答仍为 fixture，不构成真实模型语义效果证据。
 

@@ -25,6 +25,10 @@ BLIND_STAGE_POLICIES = {
     "reader": "blind-reader-v1",
     "comparator": "blind-comparator-v1",
 }
+MEASUREMENT_FIELDS = (
+    "measurement_kind", "measurement_source", "measurement_scope",
+    "measurement_encoding", "measurement_version",
+)
 
 
 def require(condition, message):
@@ -293,7 +297,210 @@ def emit_record(handle, record):
     handle.flush()
 
 
+def pipeline_measurement(stats, result, *, candidate_available):
+    """Use complete service-reported text counts, without inferring a tokenizer or bill."""
+    def excluded(reason):
+        return {"status": "excluded", "reason": reason}, {
+            "output": "source", "reason": "measurement_unavailable" if result == "passed"
+            else "validation_not_passed",
+        }
+
+    if not candidate_available:
+        measurement, selection = excluded("candidate_unavailable")
+        selection["reason"] = "compile_unavailable"
+        return measurement, selection
+    if not isinstance(stats, dict):
+        return excluded("missing_stats")
+    if not all(type(stats.get(key)) is int and stats[key] >= 0
+               for key in ("original_tokens", "compiled_tokens")):
+        return excluded("invalid_token_counts")
+    if not all(is_text(stats.get(key)) for key in MEASUREMENT_FIELDS):
+        return excluded("missing_measurement_metadata")
+    if stats["measurement_kind"] not in ("exact", "estimated"):
+        return excluded("unsupported_measurement_kind")
+    if stats["measurement_scope"] != "text":
+        return excluded("unsupported_measurement_scope")
+    if stats["measurement_kind"] == "exact" and (
+            stats["measurement_encoding"].strip().casefold() == "estimate"
+            or stats["measurement_source"].strip().casefold() == "heuristic-v2"):
+        return excluded("inconsistent_measurement_metadata")
+    original, candidate = stats["original_tokens"], stats["compiled_tokens"]
+    change = "reduced" if candidate < original else "expanded" if candidate > original else "unchanged"
+    adopted = result == "passed" and candidate < original
+    effective = candidate if adopted else original
+    measurement = {
+        "status": "included", "reason": None,
+        "group": {key: stats[key] for key in MEASUREMENT_FIELDS},
+        "original_tokens": original, "candidate_tokens": candidate,
+        "candidate_delta_tokens": candidate - original, "candidate_change": change,
+        "effective_tokens": effective, "effective_savings_tokens": original - effective,
+    }
+    selection = {
+        "output": "candidate" if adopted else "source",
+        "reason": "validation_passed_and_smaller" if adopted else
+        "validation_not_passed" if result != "passed" else "not_smaller",
+    }
+    return measurement, selection
+
+
+def add_pipeline_measurement(groups, excluded, measurement, selection):
+    if measurement["status"] == "excluded":
+        reason = measurement["reason"]
+        excluded[reason] = excluded.get(reason, 0) + 1
+        return
+    metadata = measurement["group"]
+    key = tuple(metadata[field] for field in MEASUREMENT_FIELDS)
+    group = groups.setdefault(key, {
+        **metadata, "cases": 0, "original_tokens": 0, "candidate_tokens": 0,
+        "candidate_delta_tokens": 0, "effective_tokens": 0, "effective_savings_tokens": 0,
+        "candidate_changes": {"reduced": 0, "unchanged": 0, "expanded": 0},
+        "adopted_candidates": 0, "fallback_to_source": 0,
+    })
+    group["cases"] += 1
+    for field in ("original_tokens", "candidate_tokens", "candidate_delta_tokens",
+                  "effective_tokens", "effective_savings_tokens"):
+        group[field] += measurement[field]
+    group["candidate_changes"][measurement["candidate_change"]] += 1
+    group["adopted_candidates" if selection["output"] == "candidate" else "fallback_to_source"] += 1
+
+
+def compile_payload(args, case):
+    payload = {"text": case["source"], "profile": args.profile,
+               "mode": args.mode, "domains": case["domains"],
+               "verify": False, "strict_gate": False, "no_cache": True}
+    if args.token_encoding:
+        payload["token_encoding"] = args.token_encoding
+    return payload
+
+
+def validate_payload(args, source, candidate, profile):
+    payload = {"text": source, "candidate": candidate, "profile": profile,
+               "validation_mode": args.validation_mode}
+    if args.reader_profile is not None:
+        payload["reader_profile"] = args.reader_profile
+    return payload
+
+
+def run_pipeline(args, cases, dataset_sha, handle):
+    validation_profile = args.validation_profile or args.profile
+    planned_requests = 2 * len(cases)  # Upper bound; failed compilation skips its validation.
+    emit_record(handle, {
+        "record_type": "manifest", "format_version": 2,
+        "started_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "annotation_status": ANNOTATION_STATUS, "dataset_sha256": dataset_sha,
+        "operation": "pipeline", "endpoint": args.endpoint, "profile": args.profile,
+        "validation_profile": validation_profile, "reader_profile": args.reader_profile,
+        "validation_mode": args.validation_mode,
+        "expected_validation_policy": BLIND_POLICY if args.validation_mode == "blind" else COMPARE_POLICY,
+        "output_preset": args.mode, "token_encoding_requested": args.token_encoding,
+        "planned_requests": planned_requests, "planned_requests_kind": "upper_bound",
+        "max_requests": args.max_requests, "selected_case_ids": [case["id"] for case in cases],
+        "upstream_model_identity": "not_independently_verified",
+        "selection_scope": "evaluation_rule_only",
+        "evidence_scope": "Babel API observations; HTTP budget is not an upstream-model-call budget",
+    })
+    counts = {key: 0 for key in (
+        "requests", "compile_requests", "validate_requests", "compile_successes", "api_success",
+        "passed", "failed", "error", "unknown", "not_validated", "skipped_by_budget",
+        "skipped_after_compile_failure",
+    )}
+    groups, excluded = {}, {}
+    selection_counts = {"candidate": 0, "source": 0}
+
+    def request_stage(name, payload):
+        start = time.monotonic()
+        http_status, body = request_json(args.endpoint + "/api/" + name, payload, args.timeout)
+        counts["requests"] += 1
+        counts[name + "_requests"] += 1
+        return body, {"http_status": http_status,
+                      "elapsed_seconds": round(time.monotonic() - start, 6)}
+
+    def skipped_stage(reason):
+        return {"result": "not_run", "http_status": None, "elapsed_seconds": None,
+                "skip_reason": reason}
+
+    for case in cases:
+        started = time.monotonic()
+        record = {
+            "record_type": "observation", "operation": "pipeline", "case_id": case["id"],
+            "candidate_id": "generated", "source": case["source"], "candidate": None,
+            "stats": None, "expected_relations": case["expected_relations"],
+            "protected_literals": case["protected_literals"], "stages": {},
+            "validation": {"requested_mode": args.validation_mode, "status": "not_run"},
+        }
+        if counts["requests"] >= args.max_requests:
+            category, skip_reason = "not_validated", "budget_exhausted"
+            record["stages"]["compile"] = skipped_stage(skip_reason)
+            record["stages"]["validate"] = skipped_stage(skip_reason)
+            record["validation"]["receipt_check"] = skip_reason
+            counts["skipped_by_budget"] += 2
+        else:
+            body, stage = request_stage("compile", compile_payload(args, case))
+            candidate = body.get("compiled")
+            success = stage["http_status"] == 200 and is_text(candidate)
+            stage["result"] = "api_success" if success else "error" if stage["http_status"] != 200 else "unknown"
+            record["stages"]["compile"] = stage
+            if not success:
+                category = stage["result"]
+                record["stages"]["validate"] = skipped_stage("compile_unavailable")
+                record["validation"]["receipt_check"] = "compile_unavailable"
+                counts["skipped_after_compile_failure"] += 1
+            else:
+                counts["compile_successes"] += 1
+                counts["api_success"] += 1
+                record["candidate"] = candidate  # Preserve exactly the actual API output.
+                if isinstance(body.get("stats"), dict):
+                    record["stats"] = body["stats"]
+                if isinstance(body.get("usage"), dict):
+                    record["usage"] = body["usage"]
+                record["literal_presence_check"] = {
+                    "missing": [literal for literal in case["protected_literals"] if literal not in candidate],
+                    "semantic_equivalence": "not_evaluated",
+                }
+                if counts["requests"] >= args.max_requests:
+                    category = "not_validated"
+                    record["stages"]["validate"] = skipped_stage("budget_exhausted")
+                    record["validation"]["receipt_check"] = "budget_exhausted"
+                    counts["skipped_by_budget"] += 1
+                else:
+                    body, stage = request_stage("validate", validate_payload(
+                        args, case["source"], candidate, validation_profile))
+                    category, detail = validation_observation(stage["http_status"], body, args.validation_mode)
+                    stage["result"] = category
+                    record["stages"]["validate"] = stage
+                    record["validation"] = detail
+                    if category in ("passed", "failed"):
+                        counts["api_success"] += 1
+        counts[category] += 1
+        record["result"] = category
+        record["elapsed_seconds"] = round(time.monotonic() - started, 6)
+        measurement, selection = pipeline_measurement(
+            record["stats"], category, candidate_available=record["candidate"] is not None)
+        record.update(measurement=measurement, selection=selection, semantic_accuracy="not_established")
+        add_pipeline_measurement(groups, excluded, measurement, selection)
+        selection_counts[selection["output"]] += 1
+        emit_record(handle, record)
+    decided = counts["passed"] + counts["failed"]
+    summary = {
+        "record_type": "summary", "operation": "pipeline", "cases": len(cases), **counts,
+        "planned_requests": planned_requests, "planned_requests_kind": "upper_bound",
+        "validation_decided": decided,
+        "validation_pass_rate": counts["passed"] / decided if decided else None,
+        "excluded_from_validation": {key: counts[key] for key in ("error", "unknown", "not_validated")},
+        "selection_counts": selection_counts,
+        "selection_scope": "evaluation_rule_only",
+        "measurement_groups": [groups[key] for key in sorted(groups)],
+        "measurement_excluded": excluded, "measurement_evidence": "service_reported_text_counts",
+        "annotation_status": ANNOTATION_STATUS, "semantic_accuracy": "not_established",
+        "billing_cost": "not_measured", "upstream_model_identity": "not_independently_verified",
+    }
+    emit_record(handle, summary)
+    return summary
+
+
 def run_live(args, cases, dataset_sha, handle):
+    if args.live == "pipeline":
+        return run_pipeline(args, cases, dataset_sha, handle)
     plan = make_plan(cases, args.live)
     emit_record(handle, {
         "record_type": "manifest", "format_version": 1,
@@ -314,17 +521,11 @@ def run_live(args, cases, dataset_sha, handle):
               "draft_invalid": {"passed": 0, "failed": 0}}
     counts = {"requests": 0, "api_success": 0, "error": 0, "unknown": 0}
     for case, candidate_id, candidate, expected in plan[:args.max_requests]:
-        payload = {"text": case["source"], "profile": args.profile}
         if args.live == "compile":
-            payload.update(mode=args.mode, domains=case["domains"], verify=False,
-                           strict_gate=False, no_cache=True)
-            if args.token_encoding:
-                payload["token_encoding"] = args.token_encoding
+            payload = compile_payload(args, case)
             route = "/api/compile"
         else:
-            payload.update(candidate=candidate, validation_mode=args.validation_mode)
-            if args.reader_profile is not None:
-                payload["reader_profile"] = args.reader_profile
+            payload = validate_payload(args, case["source"], candidate, args.profile)
             route = "/api/validate"
         start = time.monotonic()
         http_status, body = request_json(args.endpoint + route, payload, args.timeout)
@@ -390,10 +591,12 @@ def run_live(args, cases, dataset_sha, handle):
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES)
-    parser.add_argument("--live", choices=("compile", "validate"),
+    parser.add_argument("--live", choices=("compile", "validate", "pipeline"),
                         help="explicitly send requests; omitted means offline structure checks only")
     parser.add_argument("--endpoint", help="Babel base URL; required for live mode")
     parser.add_argument("--profile", help="explicit saved Babel profile; required for live mode")
+    parser.add_argument("--validation-profile",
+                        help="pipeline comparator profile; omitted uses --profile")
     parser.add_argument("--reader-profile",
                         help="blind reader profile: omitted inherits; empty clears the saved override")
     parser.add_argument("--validation-mode", choices=("compare", "blind"), default="compare")
@@ -417,7 +620,8 @@ def main(argv=None):
         require(selected_ids <= {case["id"] for case in cases}, "--case-id contains an unknown ID")
         if not args.live:
             require(not args.endpoint and not args.profile and args.reader_profile is None
-                    and args.max_requests is None and args.token_encoding is None,
+                    and args.max_requests is None and args.token_encoding is None
+                    and args.validation_profile is None,
                     "network/model options require explicit --live")
             summary = {
                 "operation": "offline_structure_check", "structure_checks": "passed",
@@ -437,10 +641,13 @@ def main(argv=None):
                 "--live requires a positive explicit --max-requests")
         require(args.output is not None, "--live requires --output for reviewable records")
         require(args.reader_profile is None or
-                (args.live == "validate" and args.validation_mode == "blind"),
-                "--reader-profile is only used with --live validate --validation-mode blind")
-        require(not args.token_encoding or args.live == "compile",
-                "--token-encoding is only used with --live compile")
+                (args.live in ("validate", "pipeline") and args.validation_mode == "blind"),
+                "--reader-profile requires --live validate/pipeline --validation-mode blind")
+        require(args.validation_profile is None or
+                (args.live == "pipeline" and is_text(args.validation_profile)),
+                "--validation-profile requires --live pipeline and a nonempty profile name")
+        require(not args.token_encoding or args.live in ("compile", "pipeline"),
+                "--token-encoding is only used with --live compile/pipeline")
         args.endpoint = validate_endpoint(args.endpoint)
         selected = [case for case in cases if not selected_ids or case["id"] in selected_ids][:args.limit]
         args.output.parent.mkdir(parents=True, exist_ok=True)
