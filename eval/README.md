@@ -8,7 +8,7 @@
 | 结果 | 能说明什么 | 不能说明什么 |
 | --- | --- | --- |
 | 离线结构检查通过 | JSONL 合法、ID 唯一、反例关系引用有效、保护字面量存在 | 候选语义等价、标签正确、token 更少 |
-| mock 回归测试通过 | 脚本正确处理预算、参数、响应、错误和统计 | 编译器或真实模型的语义能力 |
+| mock 回归测试通过 | 工具正确处理预算、参数、响应、错误和统计 | 编译器或真实模型的语义能力 |
 | 显式联网运行记录 | 指定 Babel API 对实际请求的返回结果 | 自动证明上游模型身份、普遍语义正确率 |
 
 案例覆盖条件与原因、必要与充分条件、当且仅当、模态强度、多条否定、量词范围、阈值与单位、数值绑定、先后与并行、null/空值/缺失、字面量与空格、私有码本、已有变量，以及领域知识误补。
@@ -17,10 +17,9 @@
 ## 文件与 schema
 
 - [cases.jsonl](cases.jsonl)：一行一个案例，`schema_version=1`。
-- [run.py](run.py)：仅使用 Python 标准库；默认离线检查。
-- [report.py](report.py)：将运行记录生成可搜索、筛选的离线 HTML 对照报告。
-- [test_runner.py](test_runner.py)：mock 行为测试，不调用真实模型。
-- [test_service_integration.py](test_service_integration.py)：可选的实际 Babel HTTP 集成，上游全部为本地 fixture。
+- [babel-eval](../cmd/babel-eval/main.go)：Go 命令入口；默认离线检查，`report` 子命令生成可搜索、筛选的离线 HTML 对照报告。
+- [evalrun](../internal/evalrun/)：评测实现与行为测试，只使用 Go 标准库；单测使用本地 mock。
+- [service_integration_test.go](../internal/evalrun/service_integration_test.go)：可选的实际 Babel HTTP 集成，上游全部为本地 fixture。
 
 | 字段 | 含义 |
 | --- | --- |
@@ -40,21 +39,21 @@
 在仓库根目录执行：
 
 ```bash
-python eval/run.py
-python -m unittest discover -s eval -p 'test_*.py' -v
+go run ./cmd/babel-eval
+go test ./internal/evalrun
 ```
 
 第一条命令检查完整案例集，输出结构检查结果和数据文件 SHA-256；没有网络请求。
-第二条命令使用模拟 API 返回值检查脚本行为，也不访问上游模型。
+第二条命令使用模拟 API 返回值检查工具行为，也不访问上游模型。报告前端的筛选行为测试在本机有 Node 时运行，没有 Node 时只跳过这一项。
 离线检查不会用文本相似度或“数字仍在”推导语义得分。
 
 ## 2. 显式调用真实 Babel 服务
 
-先启动 Babel，并在产品中配置需要使用的模型方案。脚本只把显式 `--profile` 名称交给服务，不读取模型配置文件、环境 API Key 或 `/api/config`。
+先启动 Babel，并在产品中配置需要使用的模型方案。评测器只把显式 `--profile` 名称交给服务，不读取模型配置文件、环境 API Key 或 `/api/config`。
 以下方案名只是占位示例，须替换成用户自行选择的已有方案；未知方案由服务拒绝。
 
 联网运行必须同时指定 `--live`、`--endpoint`、`--profile`、`--max-requests` 和新的 `--output` 文件。
-`--endpoint` 是 Babel 服务基地址，不是上游模型服务地址。脚本不跟随重定向，不自动重试。
+`--endpoint` 是 Babel 服务基地址，不是上游模型服务地址。评测器不跟随重定向，不自动重试。
 已有输出文件不会覆盖，以免混淆不同运行。
 
 ### 连续生成并验证实际候选
@@ -62,7 +61,7 @@ python -m unittest discover -s eval -p 'test_*.py' -v
 `pipeline` 先编译原文，再把实际生成的文本逐字交给验证接口。不使用案例中的拟定候选替代编译结果，也不向模型提供草拟标签、预期关系或反例原因。
 
 ```bash
-python eval/run.py --live pipeline \
+go run ./cmd/babel-eval --live pipeline \
   --endpoint http://127.0.0.1:8080 \
   --profile chosen-compiler \
   --validation-mode blind \
@@ -80,7 +79,7 @@ python eval/run.py --live pipeline \
 ### 生成候选
 
 ```bash
-python eval/run.py --live compile \
+go run ./cmd/babel-eval --live compile \
   --endpoint http://127.0.0.1:8080 \
   --profile chosen-compiler \
   --limit 2 --max-requests 2 \
@@ -96,7 +95,7 @@ python eval/run.py --live compile \
 ### 对照已有候选
 
 ```bash
-python eval/run.py --live validate \
+go run ./cmd/babel-eval --live validate \
   --endpoint http://127.0.0.1:8080 \
   --profile chosen-comparator \
   --validation-mode compare \
@@ -111,7 +110,7 @@ python eval/run.py --live validate \
 ### 独立阅读模式
 
 ```bash
-python eval/run.py --live validate \
+go run ./cmd/babel-eval --live validate \
   --endpoint http://127.0.0.1:8080 \
   --profile chosen-comparator \
   --validation-mode blind --reader-profile chosen-reader \
@@ -120,11 +119,11 @@ python eval/run.py --live validate \
   --output eval-runs/blind-pilot.jsonl
 ```
 
-`blind` 请求交由服务执行独立阅读和后续对照；脚本本身不实现或模拟阅读器。
+`blind` 请求交由服务执行独立阅读和后续对照；评测器本身不实现或模拟阅读器。
 不传 `--reader-profile` 时继承所选方案保存的阅读器设置；传 `--reader-profile chosen-reader` 时覆盖为指定方案。
 显式 `--reader-profile=` 会发送空字符串，清除本次请求继承的阅读器覆盖，改用 `--profile` 指定的方案执行阅读；不会修改已保存的配置。
 这个参数（包括显式空串）只允许用于 `--live validate` 或 `--live pipeline` 的 `blind` 模式；pipeline 中清空覆盖后，阅读器使用本次验证方案。
-脚本核对返回的执行方式和协议版本：`blind_read` / `semantic-blind-v1`，以及 `local_checks`、`reader`、`comparator` 三个阶段各自的当前版本。
+评测器核对返回的执行方式和协议版本：`blind_read` / `semantic-blind-v1`，以及 `local_checks`、`reader`、`comparator` 三个阶段各自的当前版本。
 只有本地检查 `completed`、阅读器 `completed` 且附有 `relations` 非空、`ambiguities=[]` 的结构化阅读回执、对照器 `passed` 时，才把顶层 `passed` 计为独立阅读通过；`entities` 可以为空。
 在该模式下收到普通 `compare`、旧协议、缺失阶段或互相矛盾的状态，一律记为 `unknown`，不会降级为通过。
 一次验证请求可能涉及阅读与对照两次上游模型调用。`--max-requests` 限制的是 HTTP 请求数，不是上游调用次数、token 或费用上限。
@@ -143,12 +142,12 @@ python eval/run.py --live validate \
 ## 4. 如何阅读结果
 
 `compile` 仅记录生成结果与保护字面量的出现情况，`semantic_quality` 保持 `not_evaluated`。
-服务提供的 `measurement_kind/source/scope/encoding/version` 原样保留，脚本不把估算 token 改称实测账单。
+服务提供的 `measurement_kind/source/scope/encoding/version` 原样保留，评测器不把估算 token 改称实测账单。
 
 `validate` 的 `draft_label_confusion_matrix` 将草拟合法/非法标签与服务 `passed/failed` 结果交叉统计。
 普通对照只接受 `semantic-gate-v2` 下的 `llm_compare` 回执，或本地检查明确拒绝的 `local_checks` 回执。
 独立阅读允许本地检查拒绝、阅读器拒绝或最终对照拒绝，但后续未运行的阶段必须与拒绝位置一致；阅读器完成本身不算通过。
-每条观察记录包含 `requested_mode`、`receipt_check` 和阶段元数据，便于定位协议不匹配。协议升级后须先同步脚本的版本约定，不能仅凭顶层状态继续计分。
+每条观察记录包含 `requested_mode`、`receipt_check` 和阶段元数据，便于定位协议不匹配。协议升级后须先同步评测器的版本约定，不能仅凭顶层状态继续计分。
 `draft_label_agreement` 是这两类已决结果与草拟标签的一致比例，名称和含义均是 **draft-label agreement**，不是事实语义正确率。
 `error` 和 `unknown` 单列并排除在一致比例分母之外，不能算作“成功拒绝反例”；没有已决结果时比例为 `null`。
 HTTP 502 等非 200 响应始终计为 `error`；HTTP 200 中明确的服务或阶段 `error` 也不计入语义失败。报告保留状态信息，省略异常详情中的上游原始正文。
@@ -166,7 +165,7 @@ pipeline 的 `measurement_groups` 按 `kind/source/scope/encoding/version` 完�
 ## 5. 生成离线 HTML 报告
 
 ```bash
-python eval/report.py eval-runs/pipeline-pilot.jsonl \
+go run ./cmd/babel-eval report eval-runs/pipeline-pilot.jsonl \
   --output eval-runs/pipeline-pilot.html
 ```
 
@@ -176,14 +175,14 @@ python eval/report.py eval-runs/pipeline-pilot.jsonl \
 
 ## 6. 实际 HTTP 集成检查
 
-普通 Python 单测使用 mock；实际服务集成需要显式提供已经构建的 Babel 二进制。下面的测试会自行启动临时本机服务和模拟模型，使用临时配置，不使用个人密钥：
+普通 Go 单测使用 mock；实际服务集成需要显式提供已经构建的 Babel 二进制。下面的测试会自行启动临时本机服务和模拟模型，使用临时配置，不使用个人密钥：
 
 ```bash
 go build -o bin/babel ./babel-go
-BABEL_TEST_BINARY="$PWD/bin/babel" python -m unittest discover -s eval -p 'test_*.py' -v
+BABEL_TEST_BINARY="$PWD/bin/babel" go test ./internal/evalrun -run TestRealService -count=1
 ```
 
-PowerShell 可先用 `go build -o bin/babel.exe ./babel-go` 构建，再设置 `$env:BABEL_TEST_BINARY = (Resolve-Path .\bin\babel.exe).Path`，然后运行同一条 Python unittest 命令。未设置该变量时，只跳过实际服务集成测试，其余离线测试正常执行。
+PowerShell 可先用 `go build -o bin/babel.exe ./babel-go` 构建，再设置 `$env:BABEL_TEST_BINARY = (Resolve-Path .\bin\babel.exe).Path`，然后运行同一条 Go 测试命令。未设置该变量时，只跳过实际服务集成测试，其余离线测试正常执行。
 
 集成检查覆盖实际候选逐字传入阅读器、独立方案路由、精确计量元数据、共享请求预算及生成 HTML 报告。它验证产品和评测器的配合；上游回答仍为 fixture，不构成真实模型语义效果证据。
 

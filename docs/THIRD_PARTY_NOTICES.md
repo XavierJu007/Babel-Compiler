@@ -60,7 +60,7 @@ SOFTWARE.
 
 ## OpenAI tiktoken
 
-The tokenizer vocabulary originates from OpenAI tiktoken. The official Python implementation is also used only to regenerate reference test vectors.
+The tokenizer vocabulary originates from OpenAI tiktoken. Frozen reference test vectors were originally generated with the independent official tiktoken 0.12.0 implementation; current builds and tests do not require that runtime.
 
 Source license: https://github.com/openai/tiktoken/blob/0.12.0/LICENSE
 

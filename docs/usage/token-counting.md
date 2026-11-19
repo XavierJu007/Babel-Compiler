@@ -88,24 +88,18 @@ X-Babel-Token-Encoding: o200k_base
 
 原始文件：[cl100k_base.tiktoken](https://openaipublic.blob.core.windows.net/encodings/cl100k_base.tiktoken)、[o200k_base.tiktoken](https://openaipublic.blob.core.windows.net/encodings/o200k_base.tiktoken)。官方编码定义与校验值见 [OpenAI tiktoken 0.12.0](https://github.com/openai/tiktoken/blob/0.12.0/tiktoken_ext/openai_public.py)。
 
-## 5. 离线回归与参考数据再生成
+## 5. 离线回归与固定参考数据
 
-`babel-go/testdata/token_count_vectors.json` 保存独立的官方 Python tiktoken 0.12.0 参考结果，覆盖 29 条文本、2 种编码。包括中文、英文、日文、阿拉伯文、数学符号、组合字符、emoji、连续空格、换行、控制字符，以及看似特殊 token 的正文。
+`babel-go/testdata/token_count_vectors.json` 保存此前由独立的官方 tiktoken 0.12.0 实现生成的固定参考结果，覆盖 29 条文本、2 种编码。包括中文、英文、日文、阿拉伯文、数学符号、组合字符、emoji、连续空格、换行、控制字符，以及看似特殊 token 的正文。
 
-正常 Go 测试直接读取这些参考值，不需要 Python，不需要联网：
+Go 测试直接读取这些参考值，不依赖其他语言运行时，也不需要联网：
 
 ```bash
 go test ./babel-go -run TestTokenCounter -count=1
 go test -race ./babel-go -run TestTokenCounter -count=1
 ```
 
-参考数据只在维护 tokenizer 时重新生成。在独立 Python 环境安装 `tiktoken==0.12.0` 后运行：
-
-```bash
-python babel-go/testdata/generate_token_count_vectors.py
-```
-
-再生成脚本只加载公开词表并执行本地分词，不使用 API key，不调用模型。参考测试验证选定文本与指定版本一致；它不是对所有模型计费规则或任意未来 tokenizer 版本的保证。
+参考数据不在测试时重算，也不能用待测的 Go tokenizer 自己生成预期值。若维护 tokenizer 时需要更新，应先取得并记录独立核验的参考结果。参考测试只验证选定文本与指定版本一致，不保证所有模型的计费规则或任意未来 tokenizer 版本。
 
 ## 6. 固定混合表达与缩写
 
