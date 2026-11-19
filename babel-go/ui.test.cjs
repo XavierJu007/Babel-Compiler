@@ -56,8 +56,19 @@ function setup(responses = []) {
     };
     const requests = [];
     const storage = new Map();
+    const dialectScopes = ['global', 'workspace'].map(value => {
+        const input = new Element('input');
+        input.value = value;
+        input.checked = value === 'global';
+        return input;
+    });
     const context = vm.createContext({
-        document: { getElementById: get, createElement: tagName => new Element(tagName) },
+        document: {
+            getElementById: get, createElement: tagName => new Element(tagName),
+            querySelectorAll: selector => selector === 'input[name="dlScope"]' ? dialectScopes : [],
+            querySelector: selector => selector === 'input[name="dlScope"]:checked'
+                ? dialectScopes.find(input => input.checked) || null : null
+        },
         Option: function(text, value, defaultSelected, selected) {
             const option = new Element('option');
             option.textContent = text;
@@ -430,6 +441,134 @@ function domainPack(name, source = 'builtin') {
 function domainPayload(domains) {
     return { domains, public_symbols: [{ symbol: '∈', meaning: '集合成员' }, { symbol: '!=', meaning: '不等于' }] };
 }
+
+test('domain copy preserves current edits as a separate unsaved dictionary', async () => {
+    const base = domainPack('api-contract', 'workspace');
+    base.file_path = '/fixture/domains/api-contract.json';
+    base.version = 9;
+    const { context, get, requests } = setup([{ data: domainPayload([
+        domainPack('common'), base, domainPack('api-contract-copy', 'global'),
+        domainPack('api-contract-copy-2', 'workspace')
+    ]) }]);
+    await context.loadDomainPacks();
+    const choice = get('domainChoices').children[1].children[0];
+    choice.checked = true;
+    choice.onchange();
+    get('modeSelect').value = 'token';
+    context.selectDomainPackForEdit('api-contract');
+    assert.equal(get('copyDomainBtn').disabled, false);
+    get('dmLabel').value = '我的接口词典';
+    get('dmVersion').value = '12';
+    context.updateDomainEntryField('canonical', '订单请求契约');
+    context.updateDomainEntryField('preserve', '方法及路径\n字段大小写');
+    const exampleOutput = get('domainExampleRows').children[0].children[1].children[1];
+    exampleOutput.value = '  技术文本中的空格\n不能丢失\n';
+    exampleOutput.oninput();
+    context.confirm = () => { throw new Error('copy must preserve edits, not discard them'); };
+    context.copyDomainPack();
+    const copy = JSON.parse(get('domainJSON').value);
+    assert.equal(copy.name, 'api-contract-copy-3');
+    assert.equal(copy.label, '我的接口词典（副本）');
+    assert.equal(copy.version, 1);
+    assert.equal(copy.source, undefined);
+    assert.equal(copy.file_path, undefined);
+    assert.equal(copy.entries[0].canonical, '订单请求契约');
+    assert.deepEqual(copy.entries[0].preserve, ['方法及路径', '字段大小写']);
+    assert.deepEqual(copy.entries[0].symbols, base.entries[0].symbols);
+    assert.equal(copy.entries[0].examples[0].output, '  技术文本中的空格\n不能丢失\n');
+    assert.equal(get('dmScope').value, 'workspace');
+    assert.equal(get('deleteDomainBtn').disabled, true);
+    assert.equal(choice.checked, true);
+    assert.equal(get('modeSelect').value, 'token');
+    assert.equal(requests.length, 1); // Copying sends no save request.
+    assert.match(get('domainStatus').textContent, /新草稿/);
+    context.updateDomainEntryField('canonical', '只修改副本');
+    context.confirm = () => true;
+    context.selectDomainPackForEdit('api-contract');
+    assert.equal(get('dmLabel').value, base.label);
+    assert.equal(get('deCanonical').value, base.entries[0].canonical);
+    assert.equal(get('domainExampleRows').children[0].children[1].children[1].value,
+        base.entries[0].examples[0].output);
+});
+
+test('domain copy rejects occupied names and saves only under a new identity', async () => {
+    const base = domainPack('api-contract');
+    const copy = domainPack('my-api', 'workspace');
+    const { context, get, requests } = setup([
+        { data: domainPayload([domainPack('common'), base]) },
+        { data: { status: 'saved' } }, { data: domainPayload([domainPack('common'), base, copy]) }
+    ]);
+    await context.loadDomainPacks();
+    context.selectDomainPackForEdit('api-contract');
+    context.copyDomainPack();
+    get('dmName').value = 'api-contract';
+    await context.saveDomainPack();
+    assert.equal(requests.length, 1);
+    assert.match(get('domainStatus').textContent, /未占用的领域标识/);
+    get('dmName').value = 'my-api';
+    get('dmScope').value = 'workspace';
+    await context.saveDomainPack();
+    const payload = JSON.parse(requests[1].options.body);
+    assert.equal(payload.action, 'save');
+    assert.equal(payload.scope, 'workspace');
+    assert.equal(payload.domain.name, 'my-api');
+    assert.deepEqual(payload.domain.entries, base.entries);
+    assert.equal(Object.hasOwn(payload.domain, 'source'), false);
+    assert.equal(Object.hasOwn(payload.domain, 'file_path'), false);
+    assert.equal(get('dmName').value, 'my-api');
+    assert.match(get('domainStatus').textContent, /已保存并加载/);
+    assert.equal(get('domainChoices').children[2].children[0].checked, false);
+});
+
+test('domain copy keeps maximum-length identifiers valid and refuses changes during save', async () => {
+    const base = domainPack('a'.repeat(64));
+    base.label = '字'.repeat(120);
+    const occupied = domainPack('a'.repeat(59) + '-copy', 'global');
+    const { context, get, requests } = setup([{ data: domainPayload([base, occupied]) }]);
+    await context.loadDomainPacks();
+    context.selectDomainPackForEdit(base.name);
+    context.setDomainBusy(true);
+    context.copyDomainPack();
+    assert.equal(get('dmName').value, base.name);
+    context.setDomainBusy(false);
+    context.copyDomainPack();
+    assert.equal(get('dmName').value, 'a'.repeat(57) + '-copy-2');
+    assert.match(get('dmName').value, /^[a-z][a-z0-9_-]{0,63}$/);
+    assert.equal(Array.from(get('dmLabel').value).length, 120);
+    assert.equal(requests.length, 1);
+});
+
+test('builtin professional domains are marked as examples without relabelling user dictionaries', async () => {
+    const { context, get } = setup([{ data: domainPayload([
+        domainPack('common'), domainPack('api-contract'), domainPack('my-api', 'global')
+    ]) }]);
+    await context.loadDomainPacks();
+    const choices = get('domainChoices').children;
+    assert.doesNotMatch(choices[0].textContent, /示例/);
+    assert.match(choices[1].textContent, /示例/);
+    assert.doesNotMatch(choices[2].textContent, /示例/);
+    context.selectDomainPackForEdit('api-contract');
+    assert.match(get('domainSourceInfo').textContent, /内置示例/);
+    context.selectDomainPackForEdit('my-api');
+    assert.doesNotMatch(get('domainSourceInfo').textContent, /示例/);
+});
+
+test('dialect deletion sends the selected scope and names it in the confirmation', async () => {
+    for (const scope of ['workspace', 'global']) {
+        const preset = { name: 'my-preset', label: '自己的预设', prompt: '简洁规则列表', source: scope };
+        const { context, get, requests } = setup([
+            { data: { dialects: [preset] } }, { data: { status: 'deleted' } }, { data: { dialects: [] } }
+        ]);
+        await context.hotReloadDialects();
+        context.selectDialectForEdit('my-preset');
+        let confirmation;
+        context.confirm = message => { confirmation = message; return true; };
+        await context.deleteDialect();
+        assert.deepEqual(JSON.parse(requests[1].options.body), { action: 'delete', name: 'my-preset', scope });
+        assert.match(confirmation, scope === 'workspace' ? /工作区/ : /全局/);
+        assert.equal(get('dlName').value, '');
+    }
+});
 
 test('domain selection is independent of the output preset and common is implicit', async () => {
     const { context, get, requests } = setup([

@@ -1016,7 +1016,7 @@
         <div class="modal-header">
             <div>
                 <div id="domainModalTitle" class="modal-title cyan">📖 领域表达库</div>
-                <div class="modal-sub">词条指导编译器选择公共表达；最终文本无需词典或图例即可理解。</div>
+                <div class="modal-sub">专业内置词典作为示例，可复制后自行编写。词条指导公共表达，最终文本无需词典或图例即可理解。</div>
             </div>
             <div class="pane-actions">
                 <button type="button" class="btn" onclick="reloadDomainLibrary()">↻ 从磁盘重载</button>
@@ -1035,6 +1035,10 @@
                 <div class="domain-note">优先级：工作区覆盖 → 全局覆盖 → 内置。删除覆盖后，下一层同名领域重新生效。</div>
             </div>
             <div class="domain-form">
+                <div class="domain-section-head">
+                    <span class="form-label">当前词典</span>
+                    <button id="copyDomainBtn" type="button" class="btn" onclick="copyDomainPack()" disabled>复制为新词典</button>
+                </div>
                 <div class="form-grid-2">
                     <div class="form-group">
                         <label for="dmName" class="form-label">领域标识</label>
@@ -1516,13 +1520,14 @@
 
     async function deleteDialect() {
         const name = document.getElementById('dlName').value.trim();
+        const scope = document.querySelector('input[name="dlScope"]:checked')?.value || 'global';
         if (!name) return;
-        if (!confirm(`确定删除输出预设覆盖 [${name}.md] 吗？同名内置预设仍会保留。`)) return;
+        if (!confirm(`确定删除${scope === 'workspace' ? '工作区' : '全局'}的输出预设覆盖 [${name}.md] 吗？同名内置预设仍会保留。`)) return;
         try {
             await fetchJSON('/api/dialects', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'delete', name })
+                body: JSON.stringify({ action: 'delete', name, scope })
             });
             await hotReloadDialects(false);
             prepareNewDialect();
@@ -1549,6 +1554,7 @@
     let domainEditingName = '';
     let domainLibraryDirty = false;
     let domainSavePending = false;
+    let domainDraftIsCopy = false;
     const domainEntryFields = {
         id: 'deId', canonical: 'deCanonical', aliases: 'deAliases', triggers: 'deTriggers',
         use_when: 'deUseWhen', preserve: 'dePreserve', do_not_merge_with: 'deDoNotMerge'
@@ -1558,6 +1564,10 @@
         const box = document.getElementById('domainStatus');
         box.textContent = message;
         box.className = `audit-bar domain-status${kind ? ` is-${kind}` : ''}${message ? '' : ' hidden'}`;
+    }
+
+    function isBuiltinDomainExample(pack) {
+        return pack.source === 'builtin' && pack.name !== 'common';
     }
 
     function updateDomainSelectionHint() {
@@ -1594,7 +1604,7 @@
             };
             label.appendChild(input);
             const text = document.createElement('span');
-            text.textContent = pack.label;
+            text.textContent = pack.label + (isBuiltinDomainExample(pack) ? '（示例）' : '');
             label.appendChild(text);
             box.appendChild(label);
         }
@@ -1635,7 +1645,8 @@
             label.textContent = pack.label;
             const info = document.createElement('span');
             info.className = 'domain-note';
-            const source = { builtin: '内置', global: '全局覆盖', workspace: '工作区覆盖' }[pack.source] || '来源未知';
+            const source = isBuiltinDomainExample(pack) ? '内置示例' :
+                { builtin: '内置', global: '全局覆盖', workspace: '工作区覆盖' }[pack.source] || '来源未知';
             info.textContent = `${pack.name} · v${pack.version} · ${source} · ${pack.entries.length} 词条`;
             button.appendChild(label);
             button.appendChild(info);
@@ -1652,11 +1663,13 @@
         domainEditingName = editingName;
         domainEntryIndex = 0;
         domainLibraryDirty = false;
+        domainDraftIsCopy = false;
         document.getElementById('dmName').value = pack.name || '';
         document.getElementById('dmLabel').value = pack.label || '';
         document.getElementById('dmVersion').value = pack.version || 1;
         document.getElementById('dmScope').value = pack.source === 'workspace' ? 'workspace' : 'global';
-        const source = { builtin: '内置；保存后建立同名覆盖', global: '全局覆盖', workspace: '工作区覆盖' }[pack.source] || '新领域，尚未保存';
+        const source = isBuiltinDomainExample(pack) ? '内置示例；保存后建立同名覆盖' :
+            { builtin: '内置；保存后建立同名覆盖', global: '全局覆盖', workspace: '工作区覆盖' }[pack.source] || '新领域，尚未保存';
         document.getElementById('domainSourceInfo').textContent = `当前来源：${source}。修改后需保存；编译只读取已保存的版本。`;
         showDomainMessage('');
         renderDomainSidebar();
@@ -1680,6 +1693,32 @@
         if (!mayDiscardDomainDraft()) return;
         setDomainDraft({ schema_version: 1, name: '', label: '', version: 1, entries: [newDomainEntry()] }, '');
         markDomainDirty();
+        document.getElementById('dmName').focus();
+    }
+
+    function copyDomainPack() {
+        if (!domainDraft || domainSavePending) return;
+        // Collect the current form, including unsaved edits, without storage metadata.
+        const pack = collectDomainPack();
+        const origin = pack.name || pack.label || '当前词典';
+        const scope = document.getElementById('dmScope').value;
+        const base = /^[a-z][a-z0-9_-]*$/.test(pack.name) ? pack.name : 'custom-domain';
+        for (let number = 1; ; number++) {
+            const suffix = number === 1 ? '-copy' : `-copy-${number}`;
+            const name = base.slice(0, 64 - suffix.length) + suffix;
+            if (!domainPacks.some(item => item.name === name) && !selectedDomains.has(name)) {
+                pack.name = name;
+                break;
+            }
+        }
+        pack.label = Array.from(pack.label || origin).slice(0, 116).join('') + '（副本）';
+        pack.version = 1;
+        setDomainDraft(pack, '');
+        domainDraftIsCopy = true;
+        document.getElementById('dmScope').value = scope;
+        document.getElementById('domainSourceInfo').textContent = `复制来源：${origin}。这是未保存的新词典，保存后可勾选用于编译。`;
+        markDomainDirty();
+        showDomainMessage('已复制当前编辑内容为新草稿。请确认新词典标识与保存位置，再保存。');
         document.getElementById('dmName').focus();
     }
 
@@ -1905,6 +1944,7 @@
     }
 
     function updateDomainDeleteButton() {
+        document.getElementById('copyDomainBtn').disabled = domainSavePending || !domainDraft;
         const button = document.getElementById('deleteDomainBtn');
         const scope = document.getElementById('dmScope').value;
         const pack = domainPacks.find(item => item.name === domainEditingName);
@@ -1929,6 +1969,9 @@
         try {
             const pack = collectDomainPack();
             validateDomainEditor(pack);
+            if (domainDraftIsCopy && domainPacks.some(item => item.name === pack.name)) {
+                throw new Error('复制的新词典须使用未占用的领域标识，请修改后保存。');
+            }
             const scope = document.getElementById('dmScope').value;
             setDomainBusy(true);
             showDomainMessage('正在保存领域…');
