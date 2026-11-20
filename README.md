@@ -1,33 +1,29 @@
 # Babel-Compiler
 
+![Babel 二次元少女主题海报](docs/assets/babel-poster.png)
+
 **把自然语言提示词编译成高密度巴别语的小工具。**
 
-Babel 默认用混合语言浅树组织主体、动作、条件与约束：主动使用公开术语、符号和 `role` / `goal` 等短标签，跨章节重组依赖与异常，省掉完整句子及原提纲。输出保留必要短语与技术字面量，无需整体翻译成英文。Web、命令行、API 和代理固定使用同一套 `mixed` 规则；专业词典由你自己编写。
+- **更紧凑**：固定使用混合语言浅树，以公开术语、缩写和符号表达主体、条件与依赖，减少句子展开。
+- **自解释**：不使用私有码本，输出无需额外图例；专业领域词典由你自己编写。
+- **可校验**：提供文本 Token 计数与等义审计；代理只采用本次审计通过且更短的候选，否则保留原文。
 
-两条原则：**不使用私有码本；输出无需额外图例即可理解。** 自解释不要求写成完整自然语言句子。
+## 表达示意
 
-## 表达效果
-
-原文：
-
-> 对每条支付回调，首先验证签名，再检查签名是否覆盖 order_id 和 amount 字段。只有这两项检查都通过，并且订单当前状态为 pending 时，才允许将订单状态改成 paid。其他情况不得修改订单。
-
-巴别语表达示意：
+> 每笔支付回调先验签，再检查签名覆盖 order_id 与 amount。仅当两项检查通过且订单状态为 pending 时，才可改为 paid；否则不得修改订单。
 
 ```text
 ∀支付回调
 ├flow: 验签→检查{order_id, amount}⊆签名覆盖字段
-├仅当两项检查通过∧订单状态=pending: 允许订单状态pending→paid
+├仅当两项通过∧状态=pending: 允许pending→paid
 └else: 禁止修改订单
 ```
 
-目标是保留信息并减少 Token，具体幅度取决于输入、模型和编码。Babel 提供文本 Token 计数和语义审计；代理只采用本次审计通过且所选计数更少的候选，否则保留原文。示意不代表实测模型输出，审计通过也不等于语义无损保证。
+示意非实测输出。压缩幅度取决于输入、模型和编码，审计通过也不等于无损保证。[查看完整售后 SOP 示例](docs/examples/README.md)。
 
-长文本见[完整售后 SOP 与巴别语参考](docs/examples/README.md)。需重组的多章正文要求树状分支；删编号、改标题或加装饰树枝不算重组。结构不达标最多额外重写一次，仍失败则明确报错。
+## 快速开始
 
-## 怎么用
-
-需要 **Go 1.22+**，以及一个 OpenAI Chat Completions 兼容的编译模型服务。
+需要 **Go 1.22+** 和一个 OpenAI Chat Completions 兼容的编译模型服务。
 
 ```bash
 git clone https://github.com/XavierJu007/Babel-Compiler.git
@@ -36,32 +32,18 @@ go build -o bin/babel ./babel-go
 ./bin/babel
 ```
 
-直接启动后，程序从 `127.0.0.1:8080–8099` 选择可用端口并尝试打开浏览器。在「模型配置中心」保存请求 URL、API Key 和模型名，然后粘贴文本编译。**完整端点按填写值原样发送 POST**（路径、末尾斜杠、查询参数都保留）；只填到主机或以 `/v1` 结尾的基址会自动补 `/chat/completions`。更换服务协议、主机或端口时须重新填写对应 Key；出站请求不跟随重定向。
+启动后自动选择 `127.0.0.1:8080–8099` 的可用端口并尝试打开浏览器。在「模型配置中心」保存请求 URL、API Key、模型名，即可粘贴文本编译；专业词典在「领域表达库」自建。
 
-专业词典在「领域表达库」新建，也可将内置示例「复制为新词典」后修改、保存，再选中使用。目标计数默认是估算；确认消费模型编码后，可使用 `cl100k_base` / `o200k_base` 精确文本计数。
+**完整端点原样发送 POST**；只填主机或以 `/v1` 结尾的基址时兼容补全 `/chat/completions`。远程服务必须使用 HTTPS，HTTP 仅限本机环回。[地址与校验说明](docs/usage/validation.md)。
 
-### 命令行
-
-保存好模型配置后：
+## 命令行与 API
 
 ```bash
-# 编译文本并执行严格审计
 ./bin/babel -gate "你的提示词"
-
-# 从文件读取，只输出通过审计的候选
 ./bin/babel -gate -q -f prompt.md > compiled.txt
-
-# 可选：指定领域；其余参数见 -h
-./bin/babel -domains api-contract -gate -f spec.md
 ```
 
-### HTTP API 与代理
-
-```bash
-./bin/babel -serve 127.0.0.1:8080
-```
-
-在另一个终端调用：
+用 `./bin/babel -serve 127.0.0.1:8080` 启动固定端口，另开终端调用 API：
 
 ```bash
 curl http://127.0.0.1:8080/api/compile \
@@ -69,12 +51,19 @@ curl http://127.0.0.1:8080/api/compile \
   -d '{"text":"你的提示词","strict_gate":true}'
 ```
 
-代理使用前，在模型配置中设置最终服务的基址 `upstream_url`，代理按协议构造转发路径。OpenAI 代理留空时原样复用编译请求 URL；Anthropic 代理须填写该基址或 `X-Upstream-BaseURL`。**配置中的模型用于编译，请求体中的 `model` 用于最终执行。**
+## 透明代理
 
-客户端连接 `/v1/chat/completions`（OpenAI，使用 `Authorization`）或 `/v1/messages`（Anthropic，使用 `x-api-key`），**必须携带最终服务的认证信息，代理不会借用编译 Key**。代理压缩 `system`、`user` 和工具描述，仅替换对应文本；`developer`、工具结构与结果保留。如需领域词典，用 `X-Babel-Domains` 传入名称。模型响应直接透传，不额外回译。
+在模型配置中填写最终服务基址 `upstream_url`，客户端连接本机对应入口：
 
-服务只允许环回监听，浏览器请求须同源，API 写入须使用 JSON。远程上游必须使用 HTTPS，执行 TLS 1.2+ 与标准证书校验；HTTP 只允许本机环回。传输保护用于防中间人窃听与篡改，语义校验用于检查压缩等义，不审查原文内容。更多用法：[领域表达库](docs/usage/domain-library.md) · [Token 计数](docs/usage/token-counting.md) · [验证与代理边界](docs/usage/validation.md) · [安全边界](docs/security/transparent-proxy-review.md)。
+| 协议 | 入口 | 调用方携带的上游认证 |
+| --- | --- | --- |
+| OpenAI | `/v1/chat/completions` | `Authorization` |
+| Anthropic | `/v1/messages` | `x-api-key` |
 
-## License
+**编译使用已保存方案，最终执行使用请求体中的 `model`。** 上游 Key 必须由调用方提供，代理不会借用编译 Key。
 
-[MIT](LICENSE)
+代理压缩 `system`、`user` 和工具描述，只替换对应文本，保留消息角色与工具结构；模型响应直接透传，不额外回译。[完整接入与回退规则](docs/usage/validation.md#4-代理使用)。
+
+## 文档
+
+[领域表达库](docs/usage/domain-library.md) · [Token 计数](docs/usage/token-counting.md) · [设计说明](docs/design/semantic-compression.md) · [传输安全](docs/security/transparent-proxy-review.md) · [路线图](docs/plans/ROADMAP.md) · [MIT License](LICENSE)

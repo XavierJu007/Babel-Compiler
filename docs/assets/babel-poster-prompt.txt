@@ -1,0 +1,11 @@
+Use case: ads-marketing.
+Asset: finished wide landscape anime illustration poster for the GitHub README of Babel-Compiler, approximately 2:1 aspect ratio, high resolution and exceptionally crisp.
+
+Create an original, beautiful Japanese anime key visual starring one cute young adult anime woman: long flowing silver-lilac hair, luminous cyan eyes, a warm confident expression, and an elegant modest futuristic outfit with white fabric, dark navy details, and subtle cyan light accents. Detailed expressive face, graceful natural hands, sophisticated illustration quality, clean delicate linework and richly shaded hair. She is gently guiding a luminous stream of language fragments with one open hand.
+
+Babel-Compiler transforms expanded natural-language prompts into compact, self-explanatory semantic graph text. Visualize this artistically: scattered multilingual letter fragments and thin glowing sentence ribbons gather around her hand and resolve into an airy, precise branching constellation of small connected nodes and a few recognizable public symbols: →, ⇒, ∧, ∨, ¬, ∈, ∀. Use an abstract architectural echo of a luminous Babel tower in the distance, integrated with the graph motif. This is an evocative illustration, not a technical diagram.
+
+A refined deep midnight-blue backdrop with cyan, silver and restrained violet light matches a technical project. Gentle luminous particles, clear depth, restrained bloom; the character stays the strongest focal point. Balance the character with ample calm negative space for beautifully typeset branding. Designed to remain striking and readable when embedded at GitHub README width.
+
+Exact text only: large elegant uppercase “BABEL”, with smaller “COMPILER” directly below. One small subtitle: “NATURAL LANGUAGE → SEMANTIC GRAPH”. Make all title text sharp, accurately spelled and integrated into the composition.
+Full-bleed completed poster; no mockup, no frame, no screenshot, no UI cards, no badges, no watermarks, no extra logos or extra characters, no promotional performance claims, no sexualized clothing.
