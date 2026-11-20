@@ -53,6 +53,7 @@ func bindAvailableListener(preferredAddr string) (net.Listener, string, error) {
 
 func newServerMux() *http.ServeMux {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/assets/babel-poster.png", servePosterAsset)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)

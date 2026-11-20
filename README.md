@@ -1,29 +1,31 @@
 # Babel-Compiler
 
-![Babel 二次元少女主题海报](docs/assets/babel-poster.png)
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-**把自然语言提示词编译成高密度巴别语的小工具。**
+![Babel anime girl poster](babel-go/assets/babel-poster.png)
 
-- **更紧凑**：固定使用混合语言浅树，以公开术语、缩写和符号表达主体、条件与依赖，减少句子展开。
-- **自解释**：不使用私有码本，输出无需额外图例；专业领域词典由你自己编写。
-- **可校验**：提供文本 Token 计数与等义审计；代理只采用本次审计通过且更短的候选，否则保留原文。
+**A small tool that compiles natural-language prompts into compact Babel notation.**
 
-## 表达示意
+- **Compact**: One fixed mixed-language shallow-tree format uses public terminology, abbreviations and symbols to express actors, conditions and dependencies.
+- **Self-explanatory**: No private codebook or extra legend; write your own domain dictionaries.
+- **Verifiable**: Text token counts and semantic equivalence checks; the proxy adopts a candidate only if the current check passes and its token count is lower, otherwise it keeps the original.
 
-> 每笔支付回调先验签，再检查签名覆盖 order_id 与 amount。仅当两项检查通过且订单状态为 pending 时，才可改为 paid；否则不得修改订单。
+## Example
+
+> For each payment callback, verify the signature, then check that it covers order_id and amount. Allow the order to change from pending to paid only when both checks pass and its current state is pending; otherwise, do not modify the order.
 
 ```text
-∀支付回调
-├flow: 验签→检查{order_id, amount}⊆签名覆盖字段
-├仅当两项通过∧状态=pending: 允许pending→paid
-└else: 禁止修改订单
+∀payment callback
+├flow: verify signature→check{order_id, amount}⊆signed fields
+├only if both checks pass∧order.state=pending: may pending→paid
+└else: do not modify order
 ```
 
-示意非实测输出。压缩幅度取决于输入、模型和编码，审计通过也不等于无损保证。[查看完整售后 SOP 示例](docs/examples/README.md)。
+Illustrative, not a measured model output. Savings depend on the input, model and encoding; passing a check does not guarantee lossless compression. [Full refund SOP example (Chinese)](docs/examples/README.md).
 
-## 快速开始
+## Quick start
 
-需要 **Go 1.22+** 和一个 OpenAI Chat Completions 兼容的编译模型服务。
+Requires **Go 1.22+** and an OpenAI Chat Completions-compatible service for the compiler model.
 
 ```bash
 git clone https://github.com/XavierJu007/Babel-Compiler.git
@@ -32,38 +34,38 @@ go build -o bin/babel ./babel-go
 ./bin/babel
 ```
 
-启动后自动选择 `127.0.0.1:8080–8099` 的可用端口并尝试打开浏览器。在「模型配置中心」保存请求 URL、API Key、模型名，即可粘贴文本编译；专业词典在「领域表达库」自建。
+Babel selects an available port in `127.0.0.1:8080–8099` and tries to open your browser. Save the request URL, API key and model name in the model settings, then paste a prompt to compile. Create your own dictionaries in the domain library.
 
-**完整端点原样发送 POST**；只填主机或以 `/v1` 结尾的基址时兼容补全 `/chat/completions`。远程服务必须使用 HTTPS，HTTP 仅限本机环回。[地址与校验说明](docs/usage/validation.md)。
+**Complete endpoints receive POST requests unchanged.** Host-only URLs and base URLs ending in `/v1` get `/chat/completions` appended for compatibility. Remote services require HTTPS; HTTP is allowed only on loopback. [Endpoint and validation guide (Chinese)](docs/usage/validation.md).
 
-## 命令行与 API
+## CLI and API
 
 ```bash
-./bin/babel -gate "你的提示词"
+./bin/babel -gate "Your prompt"
 ./bin/babel -gate -q -f prompt.md > compiled.txt
 ```
 
-用 `./bin/babel -serve 127.0.0.1:8080` 启动固定端口，另开终端调用 API：
+Start a fixed port with `./bin/babel -serve 127.0.0.1:8080`, then call the API from another terminal:
 
 ```bash
 curl http://127.0.0.1:8080/api/compile \
   -H 'Content-Type: application/json' \
-  -d '{"text":"你的提示词","strict_gate":true}'
+  -d '{"text":"Your prompt","strict_gate":true}'
 ```
 
-## 透明代理
+## Transparent proxy
 
-在模型配置中填写最终服务基址 `upstream_url`，客户端连接本机对应入口：
+Set the final service's base URL as `upstream_url` in the model settings, then point your client at the corresponding local endpoint:
 
-| 协议 | 入口 | 调用方携带的上游认证 |
+| Protocol | Endpoint | Upstream authentication supplied by the caller |
 | --- | --- | --- |
 | OpenAI | `/v1/chat/completions` | `Authorization` |
 | Anthropic | `/v1/messages` | `x-api-key` |
 
-**编译使用已保存方案，最终执行使用请求体中的 `model`。** 上游 Key 必须由调用方提供，代理不会借用编译 Key。
+**Compilation uses the saved profile; final execution uses `model` from the request body.** The caller must provide the upstream key; the proxy never borrows the compiler key.
 
-代理压缩 `system`、`user` 和工具描述，只替换对应文本，保留消息角色与工具结构；模型响应直接透传，不额外回译。[完整接入与回退规则](docs/usage/validation.md#4-代理使用)。
+The proxy compresses `system`, `user` and tool descriptions, replacing only their text while preserving message roles and tool structure. Model responses pass through without translation. [Full setup and fallback rules (Chinese)](docs/usage/validation.md#4-代理使用).
 
-## 文档
+## Documentation
 
-[领域表达库](docs/usage/domain-library.md) · [Token 计数](docs/usage/token-counting.md) · [设计说明](docs/design/semantic-compression.md) · [传输安全](docs/security/transparent-proxy-review.md) · [路线图](docs/plans/ROADMAP.md) · [MIT License](LICENSE)
+Guides in Chinese: [Domain library](docs/usage/domain-library.md) · [Token counting](docs/usage/token-counting.md) · [Design](docs/design/semantic-compression.md) · [Transport security](docs/security/transparent-proxy-review.md) · [Roadmap](docs/plans/ROADMAP.md). License: [MIT](LICENSE).
