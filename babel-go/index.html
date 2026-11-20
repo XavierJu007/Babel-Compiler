@@ -2497,7 +2497,10 @@
             };
             renderCompileCandidate(err.data, validation);
             renderValidation(validation, err.message || '编译请求失败，请重试。');
-            if ((err.message || '').includes('API Key')) toggleConfigModal(true);
+            if (!document.getElementById('dslOutput').value && err.status === 400 &&
+                /^当前配置方案 \[[^\r\n]*\] 未设置 API Key$/.test(err.message || '')) {
+                toggleConfigModal(true);
+            }
         } finally {
             if (requestSequence === compileRequestSequence) {
                 btn.textContent = '编译 ⚡';

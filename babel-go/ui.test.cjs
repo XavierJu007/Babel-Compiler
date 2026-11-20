@@ -194,6 +194,52 @@ test('audit service errors retain the current candidate and diagnostics without 
     assert.match(get('statsBadge').textContent, /估算 100→70/);
 });
 
+test('candidate failures mentioning API Key must not obscure the candidate with a configuration dialog', async () => {
+    const literalIssue = '未保留技术字面量: "API Key"';
+    const readerIssue = '当前配置方案 [reader] 未设置 API Key';
+    const readerError = blindValidation('error');
+    readerError.issues = [readerIssue];
+    readerError.stages[1].status = 'error';
+    readerError.stages[1].issues = [readerIssue];
+    readerError.stages[2].status = 'not_run';
+    for (const tc of [
+        { status: 422, detail: `[语义门禁拦截] ${literalIssue}`, validation: validation('failed', 'local_checks', [literalIssue]) },
+        { status: 502, detail: readerIssue, validation: readerError }
+    ]) {
+        const { context, get } = setup([{ data: configFixture() }, { status: tc.status, data: result({
+            compiled: '保留配置字段', detail: tc.detail, validation: tc.validation }) }]);
+        await context.loadInitConfig();
+        get('verifyCheck').checked = true;
+        get('validationModeSelect').value = tc.validation.method === 'blind_read' ? 'blind' : 'compare';
+        get('configModal').className = 'hidden';
+        get('rawInput').value = '请逐字保留字符串 "API Key"。';
+        await context.runCompile();
+        assert.equal(get('dslOutput').value, '保留配置字段');
+        assert.equal(get('invariantCapsules').dataset.validationStatus, tc.validation.status);
+        assert.ok(get('auditBox').textContent.includes(tc.detail));
+        assert.equal(get('configModal').classList.contains('hidden'), true);
+        if (tc.validation.method === 'blind_read') {
+            assert.match(get('auditBox').textContent, /独立阅读器：异常/);
+            assert.match(get('auditBox').textContent, /原文对照：未执行/);
+        }
+    }
+});
+
+test('a local missing-key error without a candidate still opens model configuration', async () => {
+    const { context, get } = setup([{ data: configFixture({ has_api_key: false }) }, {
+        status: 400, data: { detail: '当前配置方案 [compiler] 未设置 API Key' }
+    }]);
+    await context.loadInitConfig();
+    get('verifyCheck').checked = true;
+    get('configModal').className = 'hidden';
+    await context.runCompile();
+    assert.equal(get('dslOutput').value, '');
+    assert.equal(get('copyBtn').disabled, true);
+    assert.equal(get('invariantCapsules').dataset.validationStatus, 'error');
+    assert.equal(get('configModal').classList.contains('hidden'), false);
+    assert.equal(get('cfgProfileName').value, 'compiler');
+});
+
 test('error responses cannot manufacture acceptance or display absent or invalid token counts', async () => {
     for (const stats of [undefined, null, {}, { original_tokens: 100, compiled_tokens: -1 },
         { original_tokens: '100', compiled_tokens: 70 }, { original_tokens: 100.5, compiled_tokens: 70 },

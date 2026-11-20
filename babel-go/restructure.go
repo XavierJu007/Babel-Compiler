@@ -18,7 +18,7 @@ const outlineRewriteInstruction = `【本次必须重组原提纲】
 func generateBabelCandidate(ctx context.Context, p Profile, dialect Dialect, original string) (string, error) {
 	raw, err := callLLMContext(ctx, p, dialect.Prompt, original, 0.1)
 	if err != nil {
-		return "", err
+		return compactDSL(raw), err
 	}
 	candidate := compactDSL(raw)
 	if strings.TrimSpace(candidate) == "" {
@@ -36,6 +36,9 @@ func generateBabelCandidate(ctx context.Context, p Profile, dialect Dialect, ori
 	}{original, candidate})
 	raw, err = callLLMContext(ctx, p, dialect.Prompt+"\n\n"+outlineRewriteInstruction, string(data), 0.1)
 	if err != nil {
+		if strings.TrimSpace(raw) != "" {
+			candidate = compactDSL(raw)
+		}
 		return candidate, err
 	}
 	rewritten := compactDSL(raw)

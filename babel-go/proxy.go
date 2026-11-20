@@ -459,10 +459,8 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isStream, _ := payload["stream"].(bool)
-	if isStream && payload["stream_options"] == nil {
-		payload["stream_options"] = map[string]any{"include_usage": true}
-	}
-
+	// Preserve caller-selected streaming options. Compatible providers may reject
+	// optional fields; usage is recorded only when it appears in their response.
 	modifiedBody, _ := json.Marshal(payload)
 
 	upstreamBase := strings.TrimSpace(r.Header.Get("X-Upstream-BaseURL"))

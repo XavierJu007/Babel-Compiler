@@ -315,7 +315,9 @@ func callLLMContext(ctx context.Context, p Profile, sysPrompt, userPrompt string
 		return "", fmt.Errorf("解析响应失败: %s", string(bodyBytes))
 	}
 	if reason := result.Choices[0].FinishReason; reason != "" && reason != "stop" {
-		return "", fmt.Errorf("模型响应未完整结束: finish_reason=%s", reason)
+		// Preserve the returned text for inspection, while keeping the error
+		// authoritative. Readers and comparators must never accept partial JSON.
+		return result.Choices[0].Message.Content, fmt.Errorf("模型响应未完整结束: finish_reason=%s", reason)
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err

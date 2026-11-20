@@ -9,7 +9,8 @@ import (
 
 var quotedLiteralRegex = regexp.MustCompile(`"(?:\\[^\r\n]|[^"\\\r\n])*"|'(?:\\[^\r\n]|[^'\\\r\n])*'|“[^”\r\n]*”|‘[^’\r\n]*’|「[^」\r\n]*」|『[^』\r\n]*』`)
 var exactQuoteContext = regexp.MustCompile(`(?i)逐字|原样|不得改写|不可改写|不翻译|保留为|\b(?:verbatim|literal|exact(?:ly)?|do not translate|don't translate)\b`)
-var exactQuoteSuffix = regexp.MustCompile(`(?i)^\s*(?:(?:必须|需要|需|须|应|要|请)\s*)?(?:逐字|原样|不得改写|不可改写|不翻译)|^\s*(?:must\s+be\s+)?(?:kept\s+)?(?:verbatim|exact(?:ly)?)\b`)
+var optionalExactQuoteContext = regexp.MustCompile(`(?:无需|无须|不必|不用|不需要|不要求)\s*(?:(?:保持|保留)\s*)?(?:逐字|原样)(?:\s*保留(?:为)?)?`)
+var exactQuoteSuffix = regexp.MustCompile(`(?i)^\s*(?:(?:必须|需要|需|须|应|要|请)\s*)?(?:(?:保持|保留)\s*)?(?:逐字|原样|不得改写|不可改写|不翻译)|^\s*(?:must\s+be\s+)?(?:kept\s+)?(?:verbatim|exact(?:ly)?)\b`)
 var fixedQuoteContext = regexp.MustCompile(`(?i)(?:返回|回复|输出)(?:固定(?:字符串|文本|值)?|字符串|字面量|文本|值)?\s*(?:为|是|:|：)?\s*$|(?:枚举(?:值)?|状态码|错误码|字符串)\s*(?:为|是|包括|取值为|取|含|:|：)?\s*$|\b(?:return|reply|output|header|payload|label|status|enum|string)\s*(?:value\s*)?(?:is|as|to|=|:)?\s*$`)
 var quoteListSeparator = regexp.MustCompile(`(?i)^\s*(?:[,，、/|]|或|和|及|与|and|or)\s*$`)
 var fieldValueSuffix = regexp.MustCompile(`^\s*(?:写入|存入|赋值给)\s*[A-Za-z_]`)
@@ -88,22 +89,30 @@ func protectedQuotedLiterals(s string) []string {
 		if at := strings.IndexAny(suffix, "\n\r。！？!?；;，,."); at >= 0 {
 			suffix = suffix[:at]
 		}
-		before, after := strings.TrimSpace(s[:quote.start]), strings.TrimSpace(s[quote.end:])
+		before := strings.TrimSpace(s[:quote.start])
 		between := ""
+		sameLine := false
 		if i > 0 {
-			between = strings.TrimSpace(s[quotes[i-1].end:quote.start])
+			separator := s[quotes[i-1].end:quote.start]
+			between = strings.TrimSpace(separator)
+			sameLine = !strings.ContainsAny(separator, "\r\n")
 		}
 		asciiQuote := quote.raw[0] == '"' || quote.raw[0] == '\''
 		for containerIndex < len(containers) && quote.start >= containers[containerIndex][1] {
 			containerIndex++
 		}
 		inJSON := containerIndex < len(containers) && quote.start >= containers[containerIndex][0] && quote.end <= containers[containerIndex][1]
+		// A prose heading followed by ':' is not JSON. Actual containers above
+		// establish JSON string syntax, including multiline objects and arrays.
 		syntax := inJSON || asciiQuote && (strings.HasSuffix(before, "=") || strings.HasSuffix(before, "[") ||
-			strings.HasPrefix(after, ":") || between == ":" || previousSyntax && between == ",")
+			previousSyntax && sameLine && between == ",")
+		// An explicit waiver such as 无需逐字保留 is not a byte contract. Remove
+		// only that local phrase so a separate positive requirement still applies.
+		exactPrefix := optionalExactQuoteContext.ReplaceAllString(prefix, "")
 		exact := syntax || quote.value == "" || strings.Contains(quote.value, "\\") ||
-			exactQuoteContext.MatchString(prefix) || exactQuoteSuffix.MatchString(suffix)
+			exactQuoteContext.MatchString(exactPrefix) || exactQuoteSuffix.MatchString(suffix)
 		fixed := fixedQuoteContext.MatchString(prefix) || fieldValueSuffix.MatchString(suffix) ||
-			previousProtected && (between == "" || quoteListSeparator.MatchString(between))
+			previousProtected && sameLine && (between == "" || quoteListSeparator.MatchString(between))
 		if exact {
 			result = append(result, quote.raw)
 		} else if fixed {
