@@ -5,13 +5,16 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 )
 
-func main() {
-	initDiskCache()
-	_, domainLoadErr := reloadDomains()
+// Release builds set these with -ldflags. Source builds remain identifiable.
+var version = "dev"
+var commit = "unknown"
 
+func main() {
+	showVersion := flag.Bool("version", false, "显示版本、提交和构建平台后退出")
 	serveAddr := flag.String("serve", "", "指定 Web/API/代理服务地址 (留空则自动探测可用端口)")
 	profileName := flag.String("profile", "", "指定使用的已保存配置方案名称")
 	mode := flag.String("m", defaultDialectName, "已弃用，仅兼容旧内置名称；当前固定使用混合表达，无需指定")
@@ -31,6 +34,12 @@ func main() {
 	readerName := flag.String("reader-profile", "", "blind 阅读器的已保存方案（显式空值使用编译方案）")
 	saveCfg := flag.Bool("save-config", false, "保存当前参数为配置方案")
 	flag.Parse()
+	if *showVersion {
+		fmt.Printf("Babel %s (%s, %s/%s, %s)\n", version, commit, runtime.GOOS, runtime.GOARCH, runtime.Version())
+		return
+	}
+	initDiskCache()
+	_, domainLoadErr := reloadDomains()
 	var readerOverride *string
 	flag.Visit(func(f *flag.Flag) {
 		if f.Name == "reader-profile" {

@@ -25,7 +25,22 @@
 
 ## 快速开始
 
-需要 **Go 1.22+** 和一个 OpenAI Chat Completions 兼容的编译模型服务。
+到 **[Releases](https://github.com/XavierJu007/Babel-Compiler/releases/latest)** 下载对应系统的程序包，按下表选择文件后缀，别选 GitHub 自动生成的 **Source code**。程序已内嵌页面和海报，无需安装 Go，也不用下载仓库里的其他文件。
+
+| 系统 | 程序包后缀 |
+| --- | --- |
+| Windows | 普通 Intel/AMD 电脑：`windows_amd64.zip` · ARM 电脑：`windows_arm64.zip` |
+| macOS | Apple Silicon：`macos_arm64.tar.gz` · Intel：`macos_amd64.tar.gz` |
+| Linux | x86-64：`linux_amd64.tar.gz` · ARM64：`linux_arm64.tar.gz` |
+
+1. 解压程序包。**Windows：**双击 `babel.exe`，使用期间保持控制台窗口打开。**macOS/Linux：**在解压目录打开终端，运行 `./babel`。
+2. 程序自动选择 `127.0.0.1:8080–8099` 的可用端口并尝试打开浏览器；未自动打开时，访问终端显示的地址。
+3. 自备一个 OpenAI Chat Completions 兼容的模型服务，在「模型配置中心」保存请求 URL、API Key、模型名，即可粘贴文本编译；专业词典在「领域表达库」自建。
+
+**完整端点原样发送 POST**；只填主机或以 `/v1` 结尾的基址时兼容补全 `/chat/completions`。远程服务必须使用 HTTPS，HTTP 仅限本机环回。[地址与校验说明](docs/usage/validation.md)。
+
+<details>
+<summary>从源码构建（开发者，需要 Go 1.22+）</summary>
 
 ```bash
 git clone https://github.com/XavierJu007/Babel-Compiler.git
@@ -34,18 +49,18 @@ go build -o bin/babel ./babel-go
 ./bin/babel
 ```
 
-启动后自动选择 `127.0.0.1:8080–8099` 的可用端口并尝试打开浏览器。在「模型配置中心」保存请求 URL、API Key、模型名，即可粘贴文本编译；专业词典在「领域表达库」自建。
-
-**完整端点原样发送 POST**；只填主机或以 `/v1` 结尾的基址时兼容补全 `/chat/completions`。远程服务必须使用 HTTPS，HTTP 仅限本机环回。[地址与校验说明](docs/usage/validation.md)。
+</details>
 
 ## 命令行与 API
 
+在解压目录运行以下命令；Windows 将 `./babel` 换成 `.\babel.exe`。用 `./babel -version` 查看版本。
+
 ```bash
-./bin/babel -gate "你的提示词"
-./bin/babel -gate -q -f prompt.md > compiled.txt
+./babel -gate "你的提示词"
+./babel -gate -q -f prompt.md > compiled.txt
 ```
 
-用 `./bin/babel -serve 127.0.0.1:8080` 启动固定端口，另开终端调用 API：
+用 `./babel -serve 127.0.0.1:8080` 启动固定端口，另开终端调用 API：
 
 ```bash
 curl http://127.0.0.1:8080/api/compile \

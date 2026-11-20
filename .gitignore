@@ -35,6 +35,7 @@ go.work.sum
 
 # Project local additions
 bin/
+dist/
 babel-go/babel
 .babel_config.json
 babel.config.json

@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths: [VERSION]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: babel-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: stable
+          cache: true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+
+      - name: Read release version
+        shell: bash
+        run: |
+          version="$(cat VERSION)"
+          if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "::error::VERSION must contain vX.Y.Z or vX.Y.Z-suffix"
+            exit 1
+          fi
+          echo "BABEL_RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Test source and UI
+        run: |
+          go mod download
+          go mod verify
+          go test ./... -count=1
+          node --test babel-go/ui.test.cjs babel-go/ui-theme.test.cjs
+
+      - name: Build portable packages
+        run: go run ./cmd/babel-release -commit "$GITHUB_SHA"
+
+      - name: Verify packaged Linux executable
+        shell: bash
+        run: |
+          cd dist
+          sha256sum --check SHA256SUMS
+          cd ..
+          mkdir "$RUNNER_TEMP/babel-smoke"
+          tar -xzf "dist/babel_${BABEL_RELEASE_VERSION}_linux_amd64.tar.gz" -C "$RUNNER_TEMP/babel-smoke"
+          binary="$RUNNER_TEMP/babel-smoke/babel"
+          actual="$("$binary" -version)"
+          [[ "$actual" == "Babel $BABEL_RELEASE_VERSION ($GITHUB_SHA, linux/amd64, "* ]]
+          printf '%s\n' "$actual"
+          BABEL_TEST_BINARY="$binary" go test ./internal/evalrun -run '^TestReal' -count=1 -v
+
+      - name: Publish complete release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          # A fresh version never replaces an existing tag or release.
+          refs="$(gh api --paginate "repos/$GH_REPO/git/matching-refs/tags/$BABEL_RELEASE_VERSION" --jq '.[].ref')"
+          if printf '%s\n' "$refs" | grep -Fxq "refs/tags/$BABEL_RELEASE_VERSION"; then
+            echo "::error::Tag already exists; choose a new VERSION. Nothing was overwritten."
+            exit 1
+          fi
+          options=(--latest)
+          if [[ "$BABEL_RELEASE_VERSION" == *-* ]]; then
+            options=(--prerelease --latest=false)
+          fi
+          # gh keeps the release in draft until every supplied asset is uploaded.
+          gh release create "$BABEL_RELEASE_VERSION" dist/*.zip dist/*.tar.gz dist/SHA256SUMS \
+            --target "$GITHUB_SHA" --title "Babel $BABEL_RELEASE_VERSION" \
+            --notes-file .github/RELEASE_NOTES.md "${options[@]}"
