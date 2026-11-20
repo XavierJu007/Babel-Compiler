@@ -20,45 +20,71 @@ func TestPosterAssetEmbeddedAndServed(t *testing.T) {
 	server.Start()
 	defer server.Close()
 
-	for _, method := range []string{http.MethodGet, http.MethodHead} {
-		t.Run(method, func(t *testing.T) {
-			request, err := http.NewRequest(method, server.URL+"/assets/babel-poster.png", nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			request.Header.Set("Sec-Fetch-Site", "same-origin")
-			response, err := server.Client().Do(request)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer response.Body.Close()
-			body, err := io.ReadAll(response.Body)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "image/png" || response.ContentLength != int64(len(posterPNG)) {
-				t.Fatalf("unexpected asset response: status=%d headers=%v length=%d", response.StatusCode, response.Header, response.ContentLength)
-			}
-			if response.Header.Get("Content-Security-Policy") != localDataCSP || response.Header.Get("X-Content-Type-Options") != "nosniff" || response.Header.Get("X-Frame-Options") != "DENY" || response.Header.Get("Cache-Control") != "no-store" {
-				t.Fatalf("asset bypassed local response protections: %v", response.Header)
-			}
-			if method == http.MethodHead {
-				if len(body) != 0 {
-					t.Fatalf("HEAD returned %d body bytes", len(body))
+	assets := []struct {
+		name          string
+		path          string
+		data          []byte
+		width, height int
+	}{
+		{"poster", "/assets/babel-poster.png", posterPNG, 2172, 362},
+		{"6x1 alias", "/assets/babel-poster-6x1.png", posterPNG, 2172, 362},
+		{"4x1", "/assets/babel-poster-4x1.png", posterWidePNG, 2172, 543},
+	}
+	for _, asset := range assets {
+		for _, method := range []string{http.MethodGet, http.MethodHead} {
+			t.Run(asset.name+"/"+method, func(t *testing.T) {
+				request, err := http.NewRequest(method, server.URL+asset.path, nil)
+				if err != nil {
+					t.Fatal(err)
 				}
-				return
-			}
-			config, err := png.DecodeConfig(bytes.NewReader(body))
-			if err != nil || config.Width != 2172 || config.Height != 362 {
-				t.Fatalf("embedded artwork is invalid or unexpected: config=%+v err=%v", config, err)
-			}
-		})
+				request.Header.Set("Sec-Fetch-Site", "same-origin")
+				response, err := server.Client().Do(request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer response.Body.Close()
+				body, err := io.ReadAll(response.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "image/png" || response.ContentLength != int64(len(asset.data)) {
+					t.Fatalf("unexpected asset response: status=%d headers=%v length=%d", response.StatusCode, response.Header, response.ContentLength)
+				}
+				if response.Header.Get("Content-Security-Policy") != localDataCSP || response.Header.Get("X-Content-Type-Options") != "nosniff" || response.Header.Get("X-Frame-Options") != "DENY" || response.Header.Get("Cache-Control") != "no-store" {
+					t.Fatalf("asset bypassed local response protections: %v", response.Header)
+				}
+				if method == http.MethodHead {
+					if len(body) != 0 {
+						t.Fatalf("HEAD returned %d body bytes", len(body))
+					}
+					return
+				}
+				config, err := png.DecodeConfig(bytes.NewReader(body))
+				if err != nil || config.Width != asset.width || config.Height != asset.height {
+					t.Fatalf("embedded artwork is invalid or unexpected: config=%+v err=%v", config, err)
+				}
+			})
+		}
+	}
+}
+
+// 6:1 与主海报是同一份作品，别名必须复用同一段内嵌字节，不能重复占用二进制体积。
+func TestPosterAliasReusesEmbeddedBytes(t *testing.T) {
+	alias := posterAssets["/assets/babel-poster-6x1.png"]
+	if len(alias) == 0 || len(posterPNG) == 0 || &alias[0] != &posterPNG[0] {
+		t.Fatal("6x1 alias does not reuse the embedded 6:1 artwork")
+	}
+	if wide := posterAssets["/assets/babel-poster-4x1.png"]; len(wide) == 0 || &wide[0] == &posterPNG[0] {
+		t.Fatal("4x1 artwork unexpectedly shares the 6:1 bytes")
+	}
+	if got := posterAssetPaths(); len(got) != 3 {
+		t.Fatalf("unexpected asset allowlist: %v", got)
 	}
 }
 
 func TestPosterAssetDoesNotExposeOtherFiles(t *testing.T) {
 	handler := guardedLocalHandler(t)
-	for _, path := range []string{"/assets/", "/assets/index.html", "/assets/babel-poster.png/extra", "/assets/babel-poster-prompt.txt", "/babel-go/assets/babel-poster.png", "/docs/assets/babel-poster.png"} {
+	for _, path := range []string{"/assets/", "/assets/index.html", "/assets/babel-poster.png/extra", "/assets/babel-poster-prompt.txt", "/assets/babel-poster-8x1.png", "/assets/BABEL-POSTER.PNG", "/assets/babel-poster-4x1.png.bak", "/babel-go/assets/babel-poster.png", "/docs/assets/babel-poster.png"} {
 		t.Run(path, func(t *testing.T) {
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8080"+path, nil))
