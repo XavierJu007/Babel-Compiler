@@ -238,6 +238,78 @@ func translateMessageBlockContext(ctx context.Context, protocol, role, text stri
 	return res.Compiled, logID, origTok, compTok
 }
 
+// Only description strings are eligible for compilation. Schema keywords,
+// property names, enum values and all other protocol data keep their values.
+func compressSchemaNode(ctx context.Context, protocol, toolLabel string, node map[string]any, p Profile, dialect Dialect, domains []string, logIDs *[]string, estOrig, estComp *int) {
+	if desc, ok := node["description"].(string); ok {
+		comp, id, oTok, cTok := translateMessageBlockContext(ctx, protocol, toolLabel, desc, p, dialect, nil, domains)
+		node["description"] = comp
+		*estOrig += oTok
+		*estComp += cTok
+		if id != "" {
+			*logIDs = append(*logIDs, id)
+		}
+	}
+
+	if props, ok := node["properties"].(map[string]any); ok {
+		for propName, propVal := range props {
+			if propMap, ok := propVal.(map[string]any); ok {
+				compressSchemaNode(ctx, protocol, toolLabel+"."+propName, propMap, p, dialect, domains, logIDs, estOrig, estComp)
+			}
+		}
+	}
+	if items, ok := node["items"].(map[string]any); ok {
+		compressSchemaNode(ctx, protocol, toolLabel+"[]", items, p, dialect, domains, logIDs, estOrig, estComp)
+	}
+}
+
+func compressToolsArray(ctx context.Context, protocol string, tools []any, p Profile, dialect Dialect, domains []string, logIDs *[]string, estOrig, estComp *int) {
+	for _, item := range tools {
+		toolMap, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if fnMap, ok := toolMap["function"].(map[string]any); ok {
+			fnName, _ := fnMap["name"].(string)
+			if fnName == "" {
+				fnName = "unknown"
+			}
+			label := "tool:" + fnName
+			if desc, ok := fnMap["description"].(string); ok {
+				comp, id, oTok, cTok := translateMessageBlockContext(ctx, protocol, label, desc, p, dialect, nil, domains)
+				fnMap["description"] = comp
+				*estOrig += oTok
+				*estComp += cTok
+				if id != "" {
+					*logIDs = append(*logIDs, id)
+				}
+			}
+			if params, ok := fnMap["parameters"].(map[string]any); ok {
+				compressSchemaNode(ctx, protocol, label, params, p, dialect, domains, logIDs, estOrig, estComp)
+			}
+			continue
+		}
+
+		toolName, _ := toolMap["name"].(string)
+		if toolName == "" {
+			toolName = "unknown"
+		}
+		label := "tool:" + toolName
+		if desc, ok := toolMap["description"].(string); ok {
+			comp, id, oTok, cTok := translateMessageBlockContext(ctx, protocol, label, desc, p, dialect, nil, domains)
+			toolMap["description"] = comp
+			*estOrig += oTok
+			*estComp += cTok
+			if id != "" {
+				*logIDs = append(*logIDs, id)
+			}
+		}
+		if schema, ok := toolMap["input_schema"].(map[string]any); ok {
+			compressSchemaNode(ctx, protocol, label, schema, p, dialect, domains, logIDs, estOrig, estComp)
+		}
+	}
+}
+
 func extractUsageFromOpenAISSETail(tail string) int {
 	lines := strings.Split(tail, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -325,6 +397,19 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	upstreamBase := strings.TrimSpace(r.Header.Get("X-Upstream-BaseURL"))
+	if upstreamBase == "" {
+		upstreamBase = strings.TrimSpace(p.UpstreamURL)
+	}
+	// Validate the final destination before any generation or audit request.
+	targetURL := compilerRequestURL(p.BaseURL)
+	if upstreamBase != "" {
+		targetURL = buildOpenAICompletionsURL(upstreamBase)
+	}
+	if err := validateOutboundURL(targetURL); err != nil {
+		http.Error(w, fmt.Sprintf("上游地址无效: %v", err), http.StatusBadRequest)
+		return
+	}
 
 	var reqKeywords []string
 	requireJSON := isJSONResponseFormat(payload)
@@ -345,9 +430,9 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			role, _ := msgMap["role"].(string)
-			// Higher-priority instructions, assistant history and tool traffic are
-			// immutable proxy data. A compiler only receives user text blocks.
-			if role != "user" {
+			// Compile only the original system/user text slots. Developer policy,
+			// assistant history and tool results are outside this transform.
+			if role != "system" && role != "user" {
 				if contentStr, ok := msgMap["content"].(string); ok {
 					t := estimateTokensBPE(contentStr)
 					estOrigTotal += t
@@ -386,20 +471,14 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	}
 
+	if tools, ok := payload["tools"].([]any); ok {
+		compressToolsArray(r.Context(), "openai", tools, p, dialect, domains, &logIDs, &estOrigTotal, &estCompTotal)
+	}
+
 	isStream, _ := payload["stream"].(bool)
 	// Preserve caller-selected streaming options. Compatible providers may reject
 	// optional fields; usage is recorded only when it appears in their response.
 	modifiedBody, _ := json.Marshal(payload)
-
-	upstreamBase := strings.TrimSpace(r.Header.Get("X-Upstream-BaseURL"))
-	if upstreamBase == "" {
-		upstreamBase = strings.TrimSpace(p.UpstreamURL)
-	}
-	// compilerRequestURL 已补全基址，这里得到的是可直接 POST 的完整端点。
-	targetURL := compilerRequestURL(p.BaseURL)
-	if upstreamBase != "" {
-		targetURL = buildOpenAICompletionsURL(upstreamBase)
-	}
 
 	proxyReq, err := http.NewRequestWithContext(r.Context(), "POST", targetURL, bytes.NewBuffer(modifiedBody))
 	if err != nil {
@@ -517,6 +596,10 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	targetURL := buildAnthropicMessagesURL(upstreamBase)
+	if err := validateOutboundURL(targetURL); err != nil {
+		http.Error(w, fmt.Sprintf("上游地址无效: %v", err), http.StatusBadRequest)
+		return
+	}
 
 	var (
 		logIDs       []string
@@ -526,17 +609,25 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	switch sysVal := payload["system"].(type) {
 	case string:
-		tokens := estimateTokensBPE(sysVal)
-		estOrigTotal += tokens
-		estCompTotal += tokens
+		comp, id, oTok, cTok := translateMessageBlockContext(r.Context(), "anthropic", "system", sysVal, p, dialect, nil, domains)
+		payload["system"] = comp
+		estOrigTotal += oTok
+		estCompTotal += cTok
+		if id != "" {
+			logIDs = append(logIDs, id)
+		}
 	case []any:
 		for _, block := range sysVal {
 			if blockMap, ok := block.(map[string]any); ok {
 				if blockMap["type"] == "text" {
 					if txt, ok := blockMap["text"].(string); ok {
-						tokens := estimateTokensBPE(txt)
-						estOrigTotal += tokens
-						estCompTotal += tokens
+						comp, id, oTok, cTok := translateMessageBlockContext(r.Context(), "anthropic", "system", txt, p, dialect, nil, domains)
+						blockMap["text"] = comp
+						estOrigTotal += oTok
+						estCompTotal += cTok
+						if id != "" {
+							logIDs = append(logIDs, id)
+						}
 					}
 				}
 			}
@@ -586,6 +677,10 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+	}
+
+	if tools, ok := payload["tools"].([]any); ok {
+		compressToolsArray(r.Context(), "anthropic", tools, p, dialect, domains, &logIDs, &estOrigTotal, &estCompTotal)
 	}
 
 	isStream, _ := payload["stream"].(bool)

@@ -221,8 +221,20 @@ func TestDomainProxyForwardsOriginalProtocolBoundaries(t *testing.T) {
 			var expected map[string]any
 			json.Unmarshal(body, &expected)
 			expected["messages"].([]any)[0].(map[string]any)["content"] = candidate
-			// Only user text may change. Policies and tool contracts are outside
-			// the compiler's authority even if a fixture auditor would approve.
+			tool := expected["tools"].([]any)[0].(map[string]any)
+			var expectedSchema map[string]any
+			if protocol == "openai" {
+				function := tool["function"].(map[string]any)
+				function["description"] = candidate
+				expectedSchema = function["parameters"].(map[string]any)
+			} else {
+				expected["system"] = candidate
+				tool["description"] = candidate
+				expectedSchema = tool["input_schema"].(map[string]any)
+			}
+			expectedSchema["properties"].(map[string]any)["resource_id"].(map[string]any)["description"] = candidate
+			// Only accepted text fields change; roles, tool names, schema keywords
+			// and enum values keep their original values and structure.
 			r := httptest.NewRequest(http.MethodPost, route, strings.NewReader(string(body)))
 			r.Header.Set("X-Babel-Domains", "application-security")
 			r.Header.Set("Authorization", "Bearer consumer-key")

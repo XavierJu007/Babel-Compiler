@@ -242,6 +242,8 @@ func probeStatusHint(code int) string {
 func probeNetworkHint(err error) string {
 	msg := strings.ToLower(err.Error())
 	switch {
+	case strings.Contains(msg, "远程请求必须使用 https"):
+		return "远程服务请填写 HTTPS 请求地址；HTTP 仅用于本机环回服务，不会自动降级或跳过证书校验"
 	case strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline exceeded"):
 		return "连接超时：检查网络、代理设置，或确认请求 URL 的主机可达"
 	case strings.Contains(msg, "no such host"):

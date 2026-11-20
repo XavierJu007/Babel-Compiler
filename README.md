@@ -71,9 +71,9 @@ curl http://127.0.0.1:8080/api/compile \
 
 代理使用前，在模型配置中设置最终服务的基址 `upstream_url`，代理按协议构造转发路径。OpenAI 代理留空时原样复用编译请求 URL；Anthropic 代理须填写该基址或 `X-Upstream-BaseURL`。**配置中的模型用于编译，请求体中的 `model` 用于最终执行。**
 
-客户端连接 `/v1/chat/completions`（OpenAI，使用 `Authorization`）或 `/v1/messages`（Anthropic，使用 `x-api-key`），**必须携带最终服务的认证信息，代理不会借用编译 Key**。代理仅压缩 `user` 文本；`system`、`developer`、工具定义与工具结果保留原字段值。如需领域词典，用 `X-Babel-Domains` 传入名称。模型响应直接透传，不额外回译。
+客户端连接 `/v1/chat/completions`（OpenAI，使用 `Authorization`）或 `/v1/messages`（Anthropic，使用 `x-api-key`），**必须携带最终服务的认证信息，代理不会借用编译 Key**。代理压缩 `system`、`user` 和工具描述，仅替换对应文本；`developer`、工具结构与结果保留。如需领域词典，用 `X-Babel-Domains` 传入名称。模型响应直接透传，不额外回译。
 
-服务只允许环回监听，浏览器请求须同源，API 写入须使用 JSON。本机进程和所选模型服务属于信任边界；原文回退不等于清洗恶意提示词。更多用法：[领域表达库](docs/usage/domain-library.md) · [Token 计数](docs/usage/token-counting.md) · [验证与代理边界](docs/usage/validation.md) · [安全边界](docs/security/transparent-proxy-review.md)。
+服务只允许环回监听，浏览器请求须同源，API 写入须使用 JSON。远程上游必须使用 HTTPS，执行 TLS 1.2+ 与标准证书校验；HTTP 只允许本机环回。传输保护用于防中间人窃听与篡改，语义校验用于检查压缩等义，不审查原文内容。更多用法：[领域表达库](docs/usage/domain-library.md) · [Token 计数](docs/usage/token-counting.md) · [验证与代理边界](docs/usage/validation.md) · [安全边界](docs/security/transparent-proxy-review.md)。
 
 ## License
 
