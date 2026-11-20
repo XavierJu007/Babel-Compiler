@@ -49,7 +49,7 @@ func TestPosterAssetEmbeddedAndServed(t *testing.T) {
 				return
 			}
 			config, err := png.DecodeConfig(bytes.NewReader(body))
-			if err != nil || config.Width != 1774 || config.Height != 887 {
+			if err != nil || config.Width != 2172 || config.Height != 362 {
 				t.Fatalf("embedded artwork is invalid or unexpected: config=%+v err=%v", config, err)
 			}
 		})
