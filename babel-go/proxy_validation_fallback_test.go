@@ -35,7 +35,7 @@ func TestProxyHTTPKeepsOriginalAfterValidationFailure(t *testing.T) {
 					return
 				}
 				generations.Add(1)
-				if request.Messages[1].Content != failedCandidateSource {
+				if decodeCompilerInput(t, request.Messages[1].Content).Original != failedCandidateSource {
 					t.Error("compiler did not receive the original prompt")
 				}
 				writeModelContent(w, failedCandidateText)

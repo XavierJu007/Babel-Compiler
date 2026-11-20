@@ -45,7 +45,9 @@ func TestProxyPreservesJSONNumberLiterals(t *testing.T) {
 				t.Fatal(err)
 			}
 			response := httptest.NewRecorder()
-			newServerMux().ServeHTTP(response, httptest.NewRequest(http.MethodPost, route, strings.NewReader(payload)))
+			request := httptest.NewRequest(http.MethodPost, route, strings.NewReader(payload))
+			request.Header.Set("Authorization", "Bearer consumer-fixture")
+			newServerMux().ServeHTTP(response, request)
 			if response.Code != http.StatusOK {
 				t.Fatalf("status %d: %s", response.Code, response.Body.String())
 			}

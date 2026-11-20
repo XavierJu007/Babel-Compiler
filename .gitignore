@@ -37,6 +37,9 @@ go.work.sum
 bin/
 babel-go/babel
 .babel_config.json
+babel.config.json
+.babel_cache.json
+babel.cache.json
 .DS_Store
 .idea/
 .vscode/

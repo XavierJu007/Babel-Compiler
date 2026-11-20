@@ -44,11 +44,10 @@ func resolveCompileProfile(cfg Config, req CompileReq) (Profile, error) {
 		}
 	}
 	p := getActiveProfile(cfg, name)
-	if req.APIKey != "" && !strings.Contains(req.APIKey, "***") {
-		p.APIKey = req.APIKey
-	}
-	if req.BaseURL != "" {
-		p.BaseURL = req.BaseURL
+	var err error
+	p, err = applyCompilerCredentials(p, req.BaseURL, req.APIKey)
+	if err != nil {
+		return Profile{}, err
 	}
 	if req.Model != "" {
 		p.Model = req.Model

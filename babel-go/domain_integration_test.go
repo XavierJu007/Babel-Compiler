@@ -82,12 +82,12 @@ func TestCompileAPIComposesDomainsAndRefreshesCandidateIdentity(t *testing.T) {
 	}
 	save()
 	var calls atomic.Int32
-	prompts := make(chan string, 4)
+	prompts := make(chan compilerRequestBody, 4)
 	compiler := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body compilerRequestBody
 		json.NewDecoder(r.Body).Decode(&body)
 		calls.Add(1)
-		prompts <- body.Messages[0].Content
+		prompts <- body
 		writeModelContent(w, "检查用户访问资源的权限。")
 	}))
 	defer compiler.Close()
@@ -99,8 +99,9 @@ func TestCompileAPIComposesDomainsAndRefreshesCandidateIdentity(t *testing.T) {
 		t.Fatal("first candidate unexpectedly cached")
 	}
 	prompt := <-prompts
-	if !strings.Contains(prompt, `"公开表达":"资源访问权限"`) || !strings.Contains(prompt, commonCompilerRules) || strings.Contains(prompt, `"id":"access"`) {
-		t.Fatal("selected domain or public rules missing, or internal ID leaked")
+	input := decodeCompilerInput(t, prompt.Messages[1].Content)
+	if !strings.Contains(input.DomainGuidance, `"公开表达":"资源访问权限"`) || !strings.Contains(prompt.Messages[0].Content, commonCompilerRules) || strings.Contains(input.DomainGuidance, `"id":"access"`) || strings.Contains(prompt.Messages[0].Content, `"公开表达":"资源访问权限"`) {
+		t.Fatal("domain data/public rules boundary missing, or internal ID leaked")
 	}
 	sendDomainAPI(t, http.MethodPost, "/api/compile", req, http.StatusOK)
 	if calls.Load() != 1 {
@@ -113,7 +114,8 @@ func TestCompileAPIComposesDomainsAndRefreshesCandidateIdentity(t *testing.T) {
 	if calls.Load() != 2 {
 		t.Fatal("edited domain reused an obsolete candidate")
 	}
-	if !strings.Contains(<-prompts, "原文资源名称") {
+	updated := <-prompts
+	if !strings.Contains(decodeCompilerInput(t, updated.Messages[1].Content).DomainGuidance, "原文资源名称") {
 		t.Fatal("edited domain did not reach compiler")
 	}
 	req.Domains = []string{"does-not-exist"}
@@ -140,6 +142,7 @@ func TestProxyDomainHeaderIsValidatedForBothProtocols(t *testing.T) {
 			// be reported before any upstream call rather than silently ignored.
 			r := httptest.NewRequest(http.MethodPost, route, strings.NewReader(`{"model":"consumer","messages":[{"role":"user","content":"short"}]}`))
 			r.Header.Set(bad.header, bad.value)
+			r.Header.Set("Authorization", "Bearer consumer-fixture")
 			w := httptest.NewRecorder()
 			newServerMux().ServeHTTP(w, r)
 			if w.Code != http.StatusBadRequest {
@@ -172,7 +175,8 @@ func TestDomainProxyForwardsOriginalProtocolBoundaries(t *testing.T) {
 					writeModelContent(w, `{"pass":true,"missing":[]}`)
 					return
 				}
-				if !strings.Contains(body.Messages[0].Content, `"公开表达":"授权"`) {
+				input := decodeCompilerInput(t, body.Messages[1].Content)
+				if !strings.Contains(input.DomainGuidance, `"公开表达":"授权"`) || strings.Contains(body.Messages[0].Content, `"公开表达":"授权"`) {
 					t.Error("selected domain did not reach proxy compilation")
 				}
 				generations.Add(1)
@@ -217,18 +221,8 @@ func TestDomainProxyForwardsOriginalProtocolBoundaries(t *testing.T) {
 			var expected map[string]any
 			json.Unmarshal(body, &expected)
 			expected["messages"].([]any)[0].(map[string]any)["content"] = candidate
-			tool := expected["tools"].([]any)[0].(map[string]any)
-			var expectedSchema map[string]any
-			if protocol == "openai" {
-				function := tool["function"].(map[string]any)
-				function["description"] = candidate
-				expectedSchema = function["parameters"].(map[string]any)
-			} else {
-				expected["system"] = candidate
-				tool["description"] = candidate
-				expectedSchema = tool["input_schema"].(map[string]any)
-			}
-			expectedSchema["properties"].(map[string]any)["resource_id"].(map[string]any)["description"] = candidate
+			// Only user text may change. Policies and tool contracts are outside
+			// the compiler's authority even if a fixture auditor would approve.
 			r := httptest.NewRequest(http.MethodPost, route, strings.NewReader(string(body)))
 			r.Header.Set("X-Babel-Domains", "application-security")
 			r.Header.Set("Authorization", "Bearer consumer-key")

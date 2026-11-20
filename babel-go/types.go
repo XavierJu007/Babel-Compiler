@@ -30,6 +30,7 @@ type Dialect struct {
 	Name       string `json:"name"`
 	Label      string `json:"label"`
 	Prompt     string `json:"prompt"`
+	Guidance   string `json:"-"` // Untrusted domain data; never part of the system message.
 	PromptHash string `json:"prompt_hash"`
 	Source     string `json:"source"`
 	FilePath   string `json:"file_path"`

@@ -110,7 +110,8 @@ func TestBabelGraphCompileHTTPPreservesScopeAndLiteralGuards(t *testing.T) {
 						writeModelContent(w, `{"pass":true,"missing":[]}`)
 					default:
 						generations.Add(1)
-						if !strings.HasPrefix(body.Messages[0].Content, commonCompilerRules) || !strings.Contains(body.Messages[0].Content, mixedCompilerStyle) || body.Messages[1].Content != babelGraphSource {
+						input := decodeCompilerInput(t, body.Messages[1].Content)
+						if !strings.HasPrefix(body.Messages[0].Content, commonCompilerRules) || !strings.Contains(body.Messages[0].Content, mixedCompilerStyle) || input.Original != babelGraphSource || input.Candidate != "" {
 							t.Error("default compile API omitted the fixed graph strategy or changed source")
 						}
 						writeModelContent(w, candidate)

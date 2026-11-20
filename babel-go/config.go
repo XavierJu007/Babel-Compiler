@@ -66,6 +66,11 @@ func loadConfig() Config {
 			p.APIKey = saved.APIKey
 		}
 		if saved.BaseURL != "" {
+			// A legacy workspace config must not silently send an environment
+			// credential to a different service while migrating its old fields.
+			if saved.APIKey == "" && !sameCompilerCredentialOrigin(p.BaseURL, saved.BaseURL) {
+				p.APIKey = ""
+			}
 			p.BaseURL = saved.BaseURL
 		}
 		if saved.Model != "" {
@@ -178,7 +183,7 @@ func probeProfile(p Profile) ProbeResult {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+p.APIKey)
 
-	client := &http.Client{Timeout: probeTimeout}
+	client := newOutboundHTTPClient(probeTimeout)
 	start := time.Now()
 	resp, err := client.Do(req)
 	res.LatencyMS = time.Since(start).Milliseconds()

@@ -434,6 +434,7 @@ func TestCanceledProxyReleasesProbeWithoutChangingServiceHealth(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			request := httptest.NewRequest(http.MethodPost, route, strings.NewReader(string(body))).WithContext(ctx)
+			request.Header.Set("Authorization", "Bearer consumer-fixture")
 			response, done := httptest.NewRecorder(), make(chan struct{})
 			go func() { newServerMux().ServeHTTP(response, request); close(done) }()
 			waitCancellationSignal(t, started, "proxy audit")

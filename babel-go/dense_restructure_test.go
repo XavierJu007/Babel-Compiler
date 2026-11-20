@@ -39,14 +39,15 @@ func TestReportedRefundRewritesAndCachesOnlyTree(t *testing.T) {
 			writeModelContent(w, `{"pass":true,"missing":[]}`)
 		case strings.HasSuffix(system, outlineRewriteInstruction):
 			rewrites.Add(1)
-			var payload map[string]string
-			if json.Unmarshal([]byte(input), &payload) != nil || !reflect.DeepEqual(payload, map[string]string{"original": source, "candidate": reported}) {
+			payload := decodeCompilerInput(t, input)
+			if payload.Original != source || payload.Candidate != reported {
 				t.Error("rewrite lost the source or changed the user-reported draft")
 			}
 			writeModelContent(w, tree)
 		default:
 			generations.Add(1)
-			if input != source || !strings.Contains(system, mixedCompilerStyle) || !strings.Contains(system, mixedCompilerExamples) {
+			payload := decodeCompilerInput(t, input)
+			if payload.Original != source || payload.Candidate != "" || !strings.Contains(system, mixedCompilerStyle) || !strings.Contains(system, mixedCompilerExamples) {
 				t.Error("generation lost the original or the fixed tree preset")
 			}
 			writeModelContent(w, reported)

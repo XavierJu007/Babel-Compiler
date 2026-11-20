@@ -51,7 +51,7 @@ func TestProxyStreamingFallbackPreservesClientOptionsAndMessageBlocks(t *testing
 					return
 				}
 				generations.Add(1)
-				if request.Messages[1].Content != original {
+				if decodeCompilerInput(t, request.Messages[1].Content).Original != original {
 					t.Error("proxy compiled a nontext block or changed the source")
 				}
 				if test.failure == "generation" {

@@ -130,6 +130,7 @@ func TestOpenAIProxyDoesNotInventJSONInstruction(t *testing.T) {
 	t.Setenv("BABEL_UPSTREAM_URL", upstream.URL)
 	body, _ := json.Marshal(input)
 	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(string(body)))
+	r.Header.Set("Authorization", "Bearer consumer-fixture")
 	w := httptest.NewRecorder()
 	openAIProxyHandler(w, r)
 	if w.Code != http.StatusOK {

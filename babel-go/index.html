@@ -1867,30 +1867,17 @@
     document.getElementById('proxyEndpointAnthropic').textContent = `${window.location.origin}`;
 
     async function loadInitConfig() {
+        // Credentials live in the server-side profile, never browser backups.
+        // Remove the older plaintext copy without using it to restore settings.
+        try {
+            const backup = JSON.parse(localStorage.getItem(LOCAL_BACKUP_KEY) || 'null');
+            if (backup && typeof backup === 'object' && Object.prototype.hasOwnProperty.call(backup, 'api_key')) {
+                delete backup.api_key;
+                localStorage.setItem(LOCAL_BACKUP_KEY, JSON.stringify(backup));
+            }
+        } catch (e) {}
         try {
             serverConfig = await fetchJSON('/api/config');
-
-            const activeProf = serverConfig.profiles[serverConfig.active_profile];
-            const localBackup = JSON.parse(localStorage.getItem(LOCAL_BACKUP_KEY) || 'null');
-            if ((!activeProf || !activeProf.has_api_key) && localBackup && localBackup.api_key &&
-                (localBackup.profile_name || 'default') === serverConfig.active_profile) {
-                await fetchJSON('/api/config', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        action: 'save',
-                        profile_name: localBackup.profile_name || 'default',
-                        api_key: localBackup.api_key,
-                        base_url: localBackup.base_url,
-                        model: localBackup.model,
-                        upstream_url: localBackup.upstream_url || '',
-                        token_encoding: localBackup.token_encoding || 'estimate',
-                        validation_mode: localBackup.validation_mode || 'compare',
-                        reader_profile: localBackup.reader_profile || ''
-                    })
-                });
-                serverConfig = await fetchJSON('/api/config');
-            }
             renderProfileSelectors();
         } catch (e) {
             console.error('加载配置失败:', e);
@@ -2109,10 +2096,8 @@
             });
             invalidateCompileContext(true);
 
-            const prevBackup = JSON.parse(localStorage.getItem(LOCAL_BACKUP_KEY) || '{}');
             localStorage.setItem(LOCAL_BACKUP_KEY, JSON.stringify({
                 profile_name: profileName,
-                api_key: apiKey || (prevBackup.profile_name === profileName ? prevBackup.api_key || '' : ''),
                 base_url: baseUrl,
                 model: model,
                 upstream_url: upstreamUrl,
@@ -2677,7 +2662,7 @@
 
     async function clearLogs() {
         try {
-            await fetchJSON('/api/logs', { method: 'DELETE' });
+            await fetchJSON('/api/logs', { method: 'DELETE', headers: { 'Content-Type': 'application/json' } });
             await loadLogs();
         } catch (e) {
             const box = document.getElementById('logsError');

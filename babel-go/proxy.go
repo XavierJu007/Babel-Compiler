@@ -238,80 +238,6 @@ func translateMessageBlockContext(ctx context.Context, protocol, role, text stri
 	return res.Compiled, logID, origTok, compTok
 }
 
-func compressSchemaNode(ctx context.Context, protocol, toolLabel string, node map[string]any, p Profile, dialect Dialect, domains []string, logIDs *[]string, estOrig, estComp *int) {
-	if desc, ok := node["description"].(string); ok {
-		comp, id, oTok, cTok := translateMessageBlockContext(ctx, protocol, toolLabel, desc, p, dialect, nil, domains)
-		node["description"] = comp
-		*estOrig += oTok
-		*estComp += cTok
-		if id != "" {
-			*logIDs = append(*logIDs, id)
-		}
-	}
-
-	if props, ok := node["properties"].(map[string]any); ok {
-		for propName, propVal := range props {
-			if propMap, ok := propVal.(map[string]any); ok {
-				compressSchemaNode(ctx, protocol, toolLabel+"."+propName, propMap, p, dialect, domains, logIDs, estOrig, estComp)
-			}
-		}
-	}
-
-	if items, ok := node["items"].(map[string]any); ok {
-		compressSchemaNode(ctx, protocol, toolLabel+"[]", items, p, dialect, domains, logIDs, estOrig, estComp)
-	}
-}
-
-func compressToolsArray(ctx context.Context, protocol string, tools []any, p Profile, dialect Dialect, domains []string, logIDs *[]string, estOrig, estComp *int) {
-	for _, item := range tools {
-		toolMap, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-
-		if fnMap, ok := toolMap["function"].(map[string]any); ok {
-			fnName, _ := fnMap["name"].(string)
-			if fnName == "" {
-				fnName = "unknown"
-			}
-			label := "tool:" + fnName
-
-			if desc, ok := fnMap["description"].(string); ok {
-				comp, id, oTok, cTok := translateMessageBlockContext(ctx, protocol, label, desc, p, dialect, nil, domains)
-				fnMap["description"] = comp
-				*estOrig += oTok
-				*estComp += cTok
-				if id != "" {
-					*logIDs = append(*logIDs, id)
-				}
-			}
-			if params, ok := fnMap["parameters"].(map[string]any); ok {
-				compressSchemaNode(ctx, protocol, label, params, p, dialect, domains, logIDs, estOrig, estComp)
-			}
-			continue
-		}
-
-		toolName, _ := toolMap["name"].(string)
-		if toolName == "" {
-			toolName = "unknown"
-		}
-		label := "tool:" + toolName
-
-		if desc, ok := toolMap["description"].(string); ok {
-			comp, id, oTok, cTok := translateMessageBlockContext(ctx, protocol, label, desc, p, dialect, nil, domains)
-			toolMap["description"] = comp
-			*estOrig += oTok
-			*estComp += cTok
-			if id != "" {
-				*logIDs = append(*logIDs, id)
-			}
-		}
-		if schema, ok := toolMap["input_schema"].(map[string]any); ok {
-			compressSchemaNode(ctx, protocol, label, schema, p, dialect, domains, logIDs, estOrig, estComp)
-		}
-	}
-}
-
 func extractUsageFromOpenAISSETail(tail string) int {
 	lines := strings.Split(tail, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -382,6 +308,11 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "无效的 JSON 请求体", 400)
 		return
 	}
+	callerAuth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if callerAuth == "" {
+		http.Error(w, "代理请求必须携带最终服务的 Authorization；不会使用已保存的编译密钥", http.StatusUnauthorized)
+		return
+	}
 
 	cfg := loadConfig()
 	p, err := resolveProxyProfile(r, cfg)
@@ -414,7 +345,9 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			role, _ := msgMap["role"].(string)
-			if role != "system" && role != "user" {
+			// Higher-priority instructions, assistant history and tool traffic are
+			// immutable proxy data. A compiler only receives user text blocks.
+			if role != "user" {
 				if contentStr, ok := msgMap["content"].(string); ok {
 					t := estimateTokensBPE(contentStr)
 					estOrigTotal += t
@@ -453,11 +386,6 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	}
 
-	toolsList, hasTools := payload["tools"].([]any)
-	if hasTools && len(toolsList) > 0 {
-		compressToolsArray(r.Context(), "openai", toolsList, p, dialect, domains, &logIDs, &estOrigTotal, &estCompTotal)
-	}
-
 	isStream, _ := payload["stream"].(bool)
 	// Preserve caller-selected streaming options. Compatible providers may reject
 	// optional fields; usage is recorded only when it appears in their response.
@@ -480,19 +408,18 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	proxyReq.Header.Set("Content-Type", "application/json")
-	if auth := r.Header.Get("Authorization"); auth != "" {
-		proxyReq.Header.Set("Authorization", auth)
-	} else if p.APIKey != "" {
-		proxyReq.Header.Set("Authorization", "Bearer "+p.APIKey)
-	}
+	proxyReq.Header.Set("Authorization", callerAuth)
 
-	client := &http.Client{Timeout: 300 * time.Second}
+	client := newOutboundHTTPClient(300 * time.Second)
 	resp, err := client.Do(proxyReq)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("上游转发失败: %v", err), 502)
 		return
 	}
 	defer resp.Body.Close()
+	if rejectProxyRedirect(w, resp) {
+		return
+	}
 
 	for k, vals := range resp.Header {
 		if strings.EqualFold(k, "Content-Length") {
@@ -505,8 +432,10 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 
 	if !isStream {
-		respBytes, _ := io.ReadAll(resp.Body)
-		w.Write(respBytes)
+		respBytes, copyErr := forwardProxyResponseBody(w, resp.Body)
+		if copyErr != nil {
+			return
+		}
 
 		var nonStreamResp struct {
 			Usage struct {
@@ -561,6 +490,12 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "无效的 JSON 请求体", 400)
 		return
 	}
+	callerAPIKey := strings.TrimSpace(r.Header.Get("x-api-key"))
+	callerAuth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if callerAPIKey == "" && callerAuth == "" {
+		http.Error(w, "代理请求必须携带最终服务的 x-api-key 或 Authorization；不会使用已保存的编译密钥", http.StatusUnauthorized)
+		return
+	}
 
 	cfg := loadConfig()
 	p, err := resolveProxyProfile(r, cfg)
@@ -591,25 +526,17 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	switch sysVal := payload["system"].(type) {
 	case string:
-		comp, id, oTok, cTok := translateMessageBlockContext(r.Context(), "anthropic", "system", sysVal, p, dialect, nil, domains)
-		payload["system"] = comp
-		estOrigTotal += oTok
-		estCompTotal += cTok
-		if id != "" {
-			logIDs = append(logIDs, id)
-		}
+		tokens := estimateTokensBPE(sysVal)
+		estOrigTotal += tokens
+		estCompTotal += tokens
 	case []any:
 		for _, block := range sysVal {
 			if blockMap, ok := block.(map[string]any); ok {
 				if blockMap["type"] == "text" {
 					if txt, ok := blockMap["text"].(string); ok {
-						comp, id, oTok, cTok := translateMessageBlockContext(r.Context(), "anthropic", "system", txt, p, dialect, nil, domains)
-						blockMap["text"] = comp
-						estOrigTotal += oTok
-						estCompTotal += cTok
-						if id != "" {
-							logIDs = append(logIDs, id)
-						}
+						tokens := estimateTokensBPE(txt)
+						estOrigTotal += tokens
+						estCompTotal += tokens
 					}
 				}
 			}
@@ -661,11 +588,6 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	toolsList, hasTools := payload["tools"].([]any)
-	if hasTools && len(toolsList) > 0 {
-		compressToolsArray(r.Context(), "anthropic", toolsList, p, dialect, domains, &logIDs, &estOrigTotal, &estCompTotal)
-	}
-
 	isStream, _ := payload["stream"].(bool)
 	modifiedBody, _ := json.Marshal(payload)
 
@@ -676,12 +598,10 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	proxyReq.Header.Set("Content-Type", "application/json")
-	if apiKey := r.Header.Get("x-api-key"); apiKey != "" {
-		proxyReq.Header.Set("x-api-key", apiKey)
-	} else if auth := r.Header.Get("Authorization"); auth != "" {
-		proxyReq.Header.Set("Authorization", auth)
-	} else if p.APIKey != "" {
-		proxyReq.Header.Set("x-api-key", p.APIKey)
+	if callerAPIKey != "" {
+		proxyReq.Header.Set("x-api-key", callerAPIKey)
+	} else {
+		proxyReq.Header.Set("Authorization", callerAuth)
 	}
 
 	if ver := r.Header.Get("anthropic-version"); ver != "" {
@@ -693,13 +613,16 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 		proxyReq.Header.Set("anthropic-beta", beta)
 	}
 
-	client := &http.Client{Timeout: 300 * time.Second}
+	client := newOutboundHTTPClient(300 * time.Second)
 	resp, err := client.Do(proxyReq)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Anthropic 上游转发失败: %v", err), 502)
 		return
 	}
 	defer resp.Body.Close()
+	if rejectProxyRedirect(w, resp) {
+		return
+	}
 
 	for k, vals := range resp.Header {
 		if strings.EqualFold(k, "Content-Length") {
@@ -712,8 +635,10 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 
 	if !isStream {
-		respBytes, _ := io.ReadAll(resp.Body)
-		w.Write(respBytes)
+		respBytes, copyErr := forwardProxyResponseBody(w, resp.Body)
+		if copyErr != nil {
+			return
+		}
 
 		var nonStreamResp struct {
 			Usage struct {
@@ -754,4 +679,59 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 	if realTokens := extractUsageFromAnthropicSSE(headCapture); realTokens > 0 {
 		go applyUpstreamUsage(logIDs, estOrigTotal, estCompTotal, realTokens)
 	}
+}
+
+const maxProxyUsageCaptureBytes = 1 << 20
+
+type proxyUsageCapture struct {
+	data     []byte
+	exceeded bool
+}
+
+func (capture *proxyUsageCapture) Write(p []byte) (int, error) {
+	n := len(p)
+	if capture.exceeded {
+		return n, nil
+	}
+	if n > maxProxyUsageCaptureBytes-len(capture.data) {
+		capture.data = nil
+		capture.exceeded = true
+		return n, nil
+	}
+	needed := len(capture.data) + n
+	if needed > cap(capture.data) {
+		capacity := 2 * cap(capture.data)
+		if capacity < needed {
+			capacity = needed
+		}
+		if capacity > maxProxyUsageCaptureBytes {
+			capacity = maxProxyUsageCaptureBytes
+		}
+		grown := make([]byte, len(capture.data), capacity)
+		copy(grown, capture.data)
+		capture.data = grown
+	}
+	capture.data = append(capture.data, p...)
+	return n, nil
+}
+
+// Response bytes always flow to the caller; the optional usage copy is bounded.
+// Once a response exceeds the limit, discard its capture instead of truncating
+// the response or interpreting a partial JSON document as complete usage.
+func forwardProxyResponseBody(dst io.Writer, src io.Reader) ([]byte, error) {
+	capture := &proxyUsageCapture{}
+	if _, err := io.Copy(io.MultiWriter(dst, capture), src); err != nil {
+		return nil, err
+	}
+	return capture.data, nil
+}
+
+func rejectProxyRedirect(w http.ResponseWriter, resp *http.Response) bool {
+	if resp.StatusCode < 300 || resp.StatusCode >= 400 {
+		return false
+	}
+	// Relaying Location would let an auto-following SDK perform the same unsafe
+	// replay. Report the error without that header or the provider's response body.
+	http.Error(w, fmt.Sprintf("上游重定向已拒绝 (HTTP %d)，请直接配置最终请求地址", resp.StatusCode), http.StatusBadGateway)
+	return true
 }

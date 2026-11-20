@@ -608,7 +608,7 @@ function configFixture(overrides = {}) {
     }, token_encodings: ['estimate', 'cl100k_base', 'o200k_base'] };
 }
 
-test('blank profile keys preserve only a backup belonging to the same profile', async () => {
+test('profile saves never preserve credentials in browser backups', async () => {
     for (const profileName of ['compiler', 'fresh']) {
         const saved = configFixture();
         if (profileName === 'fresh') {
@@ -621,30 +621,50 @@ test('blank profile keys preserve only a backup belonging to the same profile', 
         storage.set('babel_dsl_backup_v2', JSON.stringify({ profile_name: 'compiler', api_key: 'fixture-old-key' }));
         await context.loadInitConfig();
         get('cfgProfileName').value = profileName;
-        get('cfgApiKey').value = '';
+        get('cfgApiKey').value = profileName === 'compiler' ? 'fixture-new-key' : '';
         await context.saveProfileConfig();
         const request = JSON.parse(requests[1].options.body);
         assert.equal(request.profile_name, profileName);
-        assert.equal(request.api_key, '');
+        assert.equal(request.api_key, profileName === 'compiler' ? 'fixture-new-key' : '');
         const backup = JSON.parse(storage.get('babel_dsl_backup_v2'));
         assert.equal(backup.profile_name, profileName);
-        assert.equal(backup.api_key, profileName === 'compiler' ? 'fixture-old-key' : '');
+        assert.equal(Object.hasOwn(backup, 'api_key'), false);
+        assert.doesNotMatch(storage.get('babel_dsl_backup_v2'), /fixture-(?:old|new)-key/);
         assert.equal(requests.length, 3, 'saving a new blank-key profile must not trigger backup key restoration');
         assert.equal(get('headerProfileSelect').value, profileName);
     }
 });
 
-test('a missing active-profile key cannot restore another profile backup or switch identity', async () => {
-    const config = configFixture();
-    config.active_profile = 'reader';
-    config.profiles.reader.has_api_key = false;
-    const { context, get, requests, storage } = setup([{ data: config }]);
-    storage.set('babel_dsl_backup_v2', JSON.stringify({ profile_name: 'compiler', api_key: 'fixture-old-key' }));
+test('legacy browser credentials are removed and cannot restore or redirect a profile', async () => {
+    for (const active of ['compiler', 'reader']) {
+        const config = configFixture();
+        config.active_profile = active;
+        config.profiles[active].has_api_key = false;
+        const { context, get, requests, storage } = setup([{ data: config }]);
+        storage.set('babel_dsl_backup_v2', JSON.stringify({
+            profile_name: 'compiler', api_key: 'fixture-old-key', base_url: 'https://untrusted.invalid'
+        }));
+        await context.loadInitConfig();
+        assert.equal(requests.length, 1, 'browser state must not write server configuration');
+        assert.equal(get('headerProfileSelect').value, active);
+        assert.match(get('headerModelBadge').textContent, /缺Key/);
+        assert.equal(Object.hasOwn(JSON.parse(storage.get('babel_dsl_backup_v2')), 'api_key'), false);
+    }
+});
+
+test('malformed browser backup cannot prevent loading server configuration', async () => {
+    const { context, get, requests, storage } = setup([{ data: configFixture() }]);
+    storage.set('babel_dsl_backup_v2', '{invalid');
     await context.loadInitConfig();
     assert.equal(requests.length, 1);
-    assert.equal(get('headerProfileSelect').value, 'reader');
-    assert.match(get('headerModelBadge').textContent, /缺Key/);
-    assert.equal(JSON.parse(storage.get('babel_dsl_backup_v2')).profile_name, 'compiler');
+    assert.equal(get('headerProfileSelect').value, 'compiler');
+});
+
+test('clearing logs uses the protected JSON request boundary', async () => {
+    const { context, requests } = setup([{ data: { status: 'cleared' } }, { data: { logs: [] } }]);
+    await context.clearLogs();
+    assert.equal(requests[0].options.method, 'DELETE');
+    assert.equal(requests[0].options.headers['Content-Type'], 'application/json');
 });
 
 test('connection tests use the same default profile name as saving a blank-name form', async () => {

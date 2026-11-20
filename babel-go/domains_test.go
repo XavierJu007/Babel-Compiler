@@ -50,10 +50,13 @@ func TestDomainCompositionKeepsCommonRulesAndRelevantEntries(t *testing.T) {
 	if !strings.HasPrefix(composed.Prompt, commonCompilerRules) {
 		t.Fatal("common rules missing from composed prompt")
 	}
-	if !strings.Contains(composed.Prompt, `"公开表达":"授权"`) {
+	if !strings.Contains(composed.Guidance, `"公开表达":"授权"`) {
 		t.Fatal("matching authorization expression not selected")
 	}
-	if strings.Contains(composed.Prompt, "Idempotency-Key") || strings.Contains(composed.Prompt, `"id":`) {
+	if strings.Contains(composed.Prompt, `"公开表达":"授权"`) {
+		t.Fatal("untrusted domain data leaked into the system policy")
+	}
+	if strings.Contains(composed.Guidance, "Idempotency-Key") || strings.Contains(composed.Guidance, `"id":`) {
 		t.Fatal("unselected domains or internal identifiers leaked into guidance")
 	}
 	if composed.PromptHash == getDialect("standard").PromptHash {
@@ -63,7 +66,7 @@ func TestDomainCompositionKeepsCommonRulesAndRelevantEntries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(unrelated.Prompt, "【相关领域表达资料") {
+	if unrelated.Guidance != "" {
 		t.Fatal("unrelated entries should not be injected")
 	}
 }

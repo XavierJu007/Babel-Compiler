@@ -36,7 +36,7 @@ go build -o bin/babel ./babel-go
 ./bin/babel
 ```
 
-直接启动后，程序从 `127.0.0.1:8080–8099` 选择可用端口并尝试打开浏览器。在「模型配置中心」保存请求 URL、API Key 和模型名，然后粘贴文本编译。**完整端点按填写值原样发送 POST**（路径、末尾斜杠、查询参数都保留）；只填到主机或以 `/v1` 结尾的基址会自动补 `/chat/completions`。配置字段仍叫 `base_url`。
+直接启动后，程序从 `127.0.0.1:8080–8099` 选择可用端口并尝试打开浏览器。在「模型配置中心」保存请求 URL、API Key 和模型名，然后粘贴文本编译。**完整端点按填写值原样发送 POST**（路径、末尾斜杠、查询参数都保留）；只填到主机或以 `/v1` 结尾的基址会自动补 `/chat/completions`。更换服务协议、主机或端口时须重新填写对应 Key；出站请求不跟随重定向。
 
 专业词典在「领域表达库」新建，也可将内置示例「复制为新词典」后修改、保存，再选中使用。目标计数默认是估算；确认消费模型编码后，可使用 `cl100k_base` / `o200k_base` 精确文本计数。
 
@@ -71,9 +71,9 @@ curl http://127.0.0.1:8080/api/compile \
 
 代理使用前，在模型配置中设置最终服务的基址 `upstream_url`，代理按协议构造转发路径。OpenAI 代理留空时原样复用编译请求 URL；Anthropic 代理须填写该基址或 `X-Upstream-BaseURL`。**配置中的模型用于编译，请求体中的 `model` 用于最终执行。**
 
-客户端可连接 `/v1/chat/completions`（OpenAI，使用 `Authorization`）或 `/v1/messages`（Anthropic，使用 `x-api-key`），携带最终服务的认证信息。最终上游须支持所用协议；如需领域词典，用 `X-Babel-Domains` 传入逗号分隔的名称。代理不会额外翻译模型响应，原任务要求的回答语言和格式应保留在提示词中。
+客户端连接 `/v1/chat/completions`（OpenAI，使用 `Authorization`）或 `/v1/messages`（Anthropic，使用 `x-api-key`），**必须携带最终服务的认证信息，代理不会借用编译 Key**。代理仅压缩 `user` 文本；`system`、`developer`、工具定义与工具结果保留原字段值。如需领域词典，用 `X-Babel-Domains` 传入名称。模型响应直接透传，不额外回译。
 
-当前服务默认面向本机使用。更多用法：[领域表达库](docs/usage/domain-library.md) · [Token 计数](docs/usage/token-counting.md) · [验证模式](docs/usage/validation.md)。
+服务只允许环回监听，浏览器请求须同源，API 写入须使用 JSON。本机进程和所选模型服务属于信任边界；原文回退不等于清洗恶意提示词。更多用法：[领域表达库](docs/usage/domain-library.md) · [Token 计数](docs/usage/token-counting.md) · [验证与代理边界](docs/usage/validation.md) · [安全边界](docs/security/transparent-proxy-review.md)。
 
 ## License
 

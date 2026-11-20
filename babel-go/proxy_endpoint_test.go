@@ -55,6 +55,7 @@ func TestOpenAIProxyCompletesV1CompilerBase(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"consumer","messages":[]}`))
+	request.Header.Set("Authorization", "Bearer consumer-fixture")
 	response := httptest.NewRecorder()
 	newServerMux().ServeHTTP(response, request)
 	if response.Code != http.StatusOK || calls.Load() != 1 {
@@ -84,12 +85,14 @@ func TestAnthropicProxyRequiresExplicitUpstreamBeforeModelWork(t *testing.T) {
 	}
 	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(
 		`{"model":"consumer","max_tokens":10,"messages":[{"role":"user","content":"Please review this entire technical specification and retain every condition and all exceptions."}]}`))
+	request.Header.Set("x-api-key", "consumer-fixture")
 	response := httptest.NewRecorder()
 	newServerMux().ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "upstream_url") || calls.Load() != 0 {
 		t.Fatalf("missing upstream started model work or guessed a route: status=%d calls=%d", response.Code, calls.Load())
 	}
 	request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"consumer","messages":[]}`))
+	request.Header.Set("x-api-key", "consumer-fixture")
 	request.Header.Set("X-Upstream-BaseURL", provider.URL+"/v1")
 	response = httptest.NewRecorder()
 	newServerMux().ServeHTTP(response, request)

@@ -147,6 +147,7 @@ func TestProxyExecutionHeadersAreValidatedBeforeForwarding(t *testing.T) {
 			for name, value := range headers {
 				r.Header.Set(name, value)
 			}
+			r.Header.Set("Authorization", "Bearer consumer-fixture")
 			w := httptest.NewRecorder()
 			newServerMux().ServeHTTP(w, r)
 			if w.Code != http.StatusBadRequest {
@@ -208,6 +209,7 @@ func TestProxyHeadersSelectBlindReaderAndTokenEncoding(t *testing.T) {
 			encoded, _ := json.Marshal(map[string]any{"model": "consumer", "max_tokens": 64, "messages": []map[string]string{{"role": "user", "content": source}}})
 			r := httptest.NewRequest(http.MethodPost, route, strings.NewReader(string(encoded)))
 			r.Header.Set("X-Babel-Validation-Mode", "blind")
+			r.Header.Set("Authorization", "Bearer consumer-fixture")
 			r.Header.Set("X-Babel-Reader-Profile", "reader")
 			r.Header.Set("X-Babel-Token-Encoding", "o200k_base")
 			w := httptest.NewRecorder()

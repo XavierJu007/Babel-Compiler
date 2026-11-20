@@ -72,7 +72,9 @@ func TestProxyKeepsOriginalWhenTokenCountingFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
-	newServerMux().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(string(body))))
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(string(body)))
+	request.Header.Set("Authorization", "Bearer consumer-fixture")
+	newServerMux().ServeHTTP(response, request)
 	if response.Code != http.StatusOK || response.Body.String() != upstreamResponse {
 		t.Fatalf("counting failure interrupted upstream passthrough: %d %s", response.Code, response.Body.String())
 	}

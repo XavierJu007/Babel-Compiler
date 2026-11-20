@@ -62,12 +62,12 @@ func main() {
 		}
 		p := cfg.Profiles[name]
 		p.Name = name
-		if *apiKey != "" {
-			p.APIKey = *apiKey
+		updated, err := applyCompilerCredentials(p, *baseURL, *apiKey)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[Error] 保存失败: %v\n", err)
+			os.Exit(1)
 		}
-		if *baseURL != "" {
-			p.BaseURL = *baseURL
-		}
+		p = updated
 		if *model != "" {
 			p.Model = *model
 		}

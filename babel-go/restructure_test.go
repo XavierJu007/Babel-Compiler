@@ -38,14 +38,14 @@ func TestOutlineRewriteCachesOnlyFinalCandidateAndRevalidates(t *testing.T) {
 			writeModelContent(w, `{"pass":true,"missing":[]}`)
 		case strings.HasSuffix(system, outlineRewriteInstruction):
 			rewrites.Add(1)
-			var payload map[string]string
-			if json.Unmarshal([]byte(input), &payload) != nil || !reflect.DeepEqual(payload, map[string]string{"original": outlineSource, "candidate": outlineDraft}) {
+			payload := decodeCompilerInput(t, input)
+			if payload.Original != outlineSource || payload.Candidate != outlineDraft {
 				t.Error("rewrite lost original or changed its untrusted draft")
 			}
 			writeModelContent(w, outlineGraph)
 		default:
 			generations.Add(1)
-			if input != outlineSource {
+			if payload := decodeCompilerInput(t, input); payload.Original != outlineSource || payload.Candidate != "" {
 				t.Error("initial compilation lost original")
 			}
 			writeModelContent(w, outlineDraft)

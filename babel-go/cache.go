@@ -12,7 +12,7 @@ import (
 
 var cachePersistMutex sync.Mutex
 
-const candidateCacheVersion = "candidate-v2"
+const candidateCacheVersion = "candidate-v3"
 
 func cacheFilePath() string {
 	localCache := "babel.cache.json"
@@ -94,19 +94,27 @@ func saveDiskCache() {
 
 func makeCacheKey(dialect Dialect, p Profile, text string) string {
 	p = effectiveCompilerProfile(p)
-	// Hash the full composed prompt as well as its version identifier. Do not
-	// trim source text: whitespace can be part of a protected literal.
+	// Domain guidance is untrusted user-message data, but still affects the
+	// generated candidate. Credentials can route the same endpoint/model to
+	// different tenants, so isolate both persisted candidates and singleflight.
+	// Only irreversible digests enter the identity; never persist a raw key.
+	// Do not trim source text: whitespace can be part of a protected literal.
 	promptHash := sha256.Sum256([]byte(dialect.Prompt))
+	guidanceHash := sha256.Sum256([]byte(dialect.Guidance))
+	credentialHash := sha256.Sum256([]byte(p.APIKey))
 	identity := struct {
-		Version       string
-		Endpoint      string
-		Model         string
-		Dialect       string
-		PromptVersion string
-		PromptSHA256  string
-		Text          string
-	}{candidateCacheVersion, compilerRequestURL(p.BaseURL), p.Model,
-		dialect.Name, dialect.PromptHash, hex.EncodeToString(promptHash[:]), text}
+		Version          string
+		Endpoint         string
+		Model            string
+		Dialect          string
+		PromptVersion    string
+		PromptSHA256     string
+		GuidanceSHA256   string
+		CredentialSHA256 string
+		Text             string
+	}{Version: candidateCacheVersion, Endpoint: compilerRequestURL(p.BaseURL), Model: p.Model,
+		Dialect: dialect.Name, PromptVersion: dialect.PromptHash, PromptSHA256: hex.EncodeToString(promptHash[:]),
+		GuidanceSHA256: hex.EncodeToString(guidanceHash[:]), CredentialSHA256: hex.EncodeToString(credentialHash[:]), Text: text}
 	raw, _ := json.Marshal(identity)
 	h := sha256.Sum256(raw)
 	return hex.EncodeToString(h[:])

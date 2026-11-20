@@ -172,8 +172,10 @@ func (fixture *servicePipelineFixture) serveModel(w http.ResponseWriter, r *http
 	answer := serviceCandidate
 	switch model {
 	case "compiler-fixture":
-		if !strings.Contains(input, "certificate expired") {
-			reject("compiler did not receive the selected source")
+		payload, err := DecodeRecord([]byte(input))
+		_, guideIsData := payload["domain_guidance"].(string)
+		if err != nil || len(payload) != 2 || !guideIsData || !strings.Contains(textValue(payload["original"]), "certificate expired") {
+			reject("compiler did not receive source and domain reference as structured user data")
 			return
 		}
 	case "reader-fixture":

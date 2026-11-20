@@ -18,11 +18,17 @@ func TestCandidateCacheIdentityIncludesProviderPromptAndExactSource(t *testing.T
 	changedPrompt.Prompt = "another public policy"
 	changedVersion := dialect
 	changedVersion.PromptHash = "next-version"
+	changedGuidance := dialect
+	changedGuidance.Guidance = `{"公开表达":"untrusted reference"}`
+	changedCredential := profile
+	changedCredential.APIKey = "other-credential"
 	for name, key := range map[string]string{
 		"provider":          makeCacheKey(dialect, changedProfile, text),
 		"model":             makeCacheKey(dialect, changedModel, text),
 		"full prompt":       makeCacheKey(changedPrompt, profile, text),
 		"prompt version":    makeCacheKey(changedVersion, profile, text),
+		"domain data":       makeCacheKey(changedGuidance, profile, text),
+		"credential":        makeCacheKey(dialect, changedCredential, text),
 		"source whitespace": makeCacheKey(dialect, profile, "a literal"),
 	} {
 		if key == baseline {
@@ -55,8 +61,8 @@ func TestCandidateCacheIdentityIncludesProviderPromptAndExactSource(t *testing.T
 	}
 	rotatedKey := profile
 	rotatedKey.APIKey = "do-not-store-secret"
-	if makeCacheKey(dialect, rotatedKey, text) != baseline {
-		t.Fatal("API key should not be part of the persisted cache identity")
+	if makeCacheKey(dialect, rotatedKey, text) == baseline {
+		t.Fatal("different credentials must not share candidates or in-flight generation")
 	}
 }
 

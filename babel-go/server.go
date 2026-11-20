@@ -32,7 +32,11 @@ func openBrowser(url string) {
 
 func bindAvailableListener(preferredAddr string) (net.Listener, string, error) {
 	if preferredAddr != "" {
-		ln, err := net.Listen("tcp", preferredAddr)
+		host, port, err := loopbackListenAddress(preferredAddr)
+		if err != nil {
+			return nil, preferredAddr, err
+		}
+		ln, err := net.Listen("tcp", net.JoinHostPort(host, port))
 		if err != nil {
 			return nil, preferredAddr, err
 		}
@@ -50,6 +54,15 @@ func bindAvailableListener(preferredAddr string) (net.Listener, string, error) {
 func newServerMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(w, indexHTML)
 	})
@@ -164,12 +177,13 @@ func newServerMux() *http.ServeMux {
 			default:
 				existing := cfg.Profiles[name]
 				existing.Name = name
-				if req.APIKey != "" && !strings.Contains(req.APIKey, "***") {
-					existing.APIKey = req.APIKey
+				updated, err := applyCompilerCredentials(existing, req.BaseURL, req.APIKey)
+				if err != nil {
+					w.WriteHeader(http.StatusBadRequest)
+					json.NewEncoder(w).Encode(map[string]string{"detail": err.Error()})
+					return
 				}
-				if req.BaseURL != "" {
-					existing.BaseURL = req.BaseURL
-				}
+				existing = updated
 				if req.Model != "" {
 					existing.Model = req.Model
 				}
@@ -245,12 +259,13 @@ func newServerMux() *http.ServeMux {
 		}
 
 		// 表单值优先于已存配置：允许在保存前先验证一份新的 Key / 地址 / 模型。
-		if key := strings.TrimSpace(req.APIKey); key != "" && !strings.Contains(key, "***") {
-			prof.APIKey = key
+		updated, err := applyCompilerCredentials(prof, req.BaseURL, req.APIKey)
+		if err != nil {
+			json.NewEncoder(w).Encode(ProbeResult{OK: false, Detail: err.Error(),
+				Hint: "更换请求地址时，请重新输入该地址对应的 API Key"})
+			return
 		}
-		if base := strings.TrimSpace(req.BaseURL); base != "" {
-			prof.BaseURL = base
-		}
+		prof = updated
 		if model := strings.TrimSpace(req.Model); model != "" {
 			prof.Model = model
 		}
@@ -350,9 +365,14 @@ func newServerMux() *http.ServeMux {
 }
 
 func startServer(preferredAddr string, autoOpen bool) {
-	mux := newServerMux()
 	ln, actualAddr, err := bindAvailableListener(preferredAddr)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "[Error] 启动失败: %v\n", err)
+		os.Exit(1)
+	}
+	handler, err := newServerHandler(actualAddr)
+	if err != nil {
+		_ = ln.Close()
 		fmt.Fprintf(os.Stderr, "[Error] 启动失败: %v\n", err)
 		os.Exit(1)
 	}
@@ -371,7 +391,7 @@ func startServer(preferredAddr string, autoOpen bool) {
 		openBrowser(webURL)
 	}
 
-	if err := http.Serve(ln, mux); err != nil {
+	if err := http.Serve(ln, handler); err != nil {
 		fmt.Fprintf(os.Stderr, "[Error] 服务异常退出: %v\n", err)
 		os.Exit(1)
 	}
