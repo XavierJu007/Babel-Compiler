@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -24,12 +26,133 @@ func TestInheritedOutlineTitlesRecognizesCopiedHeadings(t *testing.T) {
 	}
 	for _, candidate := range []string{
 		"资格: 状态∈可受理状态\n审批: 金额→对应审批人\n顺序: 校验→执行→留痕",
-		"├1 受理资格判定\n│ 状态∈可受理状态\n╰2 金额分级与审批链\n  金额→审批人",
-		"一、受理资格判定: 状态∈可受理状态\n二、金额分级与审批链: 金额→审批人",
+		"退款\n├许可: 状态∈可受理状态\n╰顺序: 金额→审批人→执行→留痕",
+		"受理资格判定→金额分级与审批链→执行流程",
 	} {
 		if got := inheritedOutlineTitles(chinese, candidate); got != nil {
 			t.Errorf("compact relation/tree incorrectly treated as a copied outline: %q: %v", candidate, got)
 		}
+	}
+	for _, candidate := range []string{
+		"├1 受理资格判定\n│ 状态∈可受理状态\n╰2 金额分级与审批链\n  金额→审批人",
+		"一、受理资格判定: 状态∈可受理状态\n二、金额分级与审批链: 金额→审批人",
+	} {
+		if got := inheritedOutlineTitles(chinese, candidate); len(got) < 2 {
+			t.Errorf("decorating copied sections bypassed restructuring: %q: %v", candidate, got)
+		}
+	}
+}
+
+func TestInheritedOutlineTitlesRecognizesFormattingOnlyChanges(t *testing.T) {
+	const source = "1. Eligibility\nAn eligibility rule.\n2. Approval chain\nAn approval rule."
+	want := []string{"Eligibility", "Approval chain"}
+	for name, candidate := range map[string]string{
+		"no numbering":        "Eligibility\nShort rule.\nApproval chain\nShort rule.",
+		"trailing colons":     "Eligibility:\nShort rule.\nApproval chain：\nShort rule.",
+		"Markdown headings":   "## Eligibility\nShort rule.\n## Approval chain\nShort rule.",
+		"Markdown emphasis":   "**Eligibility:**\nShort rule.\n**Approval chain**:\nShort rule.",
+		"cosmetic tree":       "├─ Eligibility:\n│ role: reviewer\n╰─ Approval chain:\n  amount→approver",
+		"shallow indentation": "  Eligibility:\n  role: reviewer\n  Approval chain:\n  amount→approver",
+		"inline relations":    "Eligibility: state∈eligible\nApproval chain: amount→approver",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := inheritedOutlineTitles(source, candidate); !reflect.DeepEqual(got, want) {
+				t.Fatalf("formatting hid the copied sections: got %v; want %v", got, want)
+			}
+		})
+	}
+	const escapedSource = "1\\. Eligibility\nAn eligibility rule.\n2\\. Approval chain\nAn approval rule."
+	if got := inheritedOutlineTitles(escapedSource, "Eligibility:\nShort rule.\nApproval chain:\nShort rule."); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Markdown-escaped source headings were not recognized: %v", got)
+	}
+	for name, candidate := range map[string]string{
+		"code":       "```text\nEligibility:\nApproval chain:\n```",
+		"quotation":  "「\nEligibility:\nApproval chain:\n」",
+		"blockquote": "> Eligibility:\n> Approval chain:",
+		"indented":   "    Eligibility:\n    Approval chain:",
+		"one title":  "Eligibility:\nThe approval path is attached to each eligibility branch.",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := inheritedOutlineTitles(source, candidate); got != nil {
+				t.Fatalf("protected or noninherited title was rejected: %v", got)
+			}
+		})
+	}
+}
+
+func TestReportedRefundOutlineStillNeedsRestructuring(t *testing.T) {
+	source, reorganized := refundSOPFixture(t)
+	reported, err := os.ReadFile(filepath.Join("..", "docs", "examples", "refund-sop.reported.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := inheritedOutlineTitles(source, string(reported)); len(got) < 2 {
+		t.Fatalf("reported six-section rewrite escaped shape checks: %v", got)
+	}
+	if got := inheritedOutlineTitles(source, reorganized); got != nil {
+		t.Fatalf("reorganized relations were mistaken for copied sections: %v", got)
+	}
+}
+
+func TestBabelStructureIssuesRequiresTreeForExpandedSections(t *testing.T) {
+	const source = "1. Eligibility\nAn eligibility rule.\n2. Approval chain\nAn approval rule."
+	const treeIssue = "多分支正文未组织为树：需至少两个带正文的树分支（├ / └ / ╰）"
+	const copiedIssue = "候选仍复刻原章节标题: Eligibility、Approval chain"
+	for name, candidate := range map[string]string{
+		"renamed flat relations":   "Inputs: state=ready\nSequence: amount→approver",
+		"renamed plain paragraphs": "Inputs\nAn input rule.\nSequence\nAn approval rule.",
+		"single candidate chain":   "eligibility→approval→execution",
+		"only one branch":          "Task\n├state=ready\napprover: supervisor",
+		"empty decoration":         "Task\n├──\n└──",
+		"mentioned characters":     "Use markers ├ and └ for branches.",
+		"fenced branches":          "```text\n├state=ready\n└amount→approver\n```",
+		"quoted branches":          "「\n├state=ready\n└amount→approver\n」",
+		"blockquote branches":      "> ├state=ready\n> └amount→approver",
+		"one unquoted branch":      "├state=ready\n`└amount→approver`",
+		"candidate format claim":   "Output format: flat\nInputs: state=ready\nSequence: amount→approver",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := babelStructureIssues(source, candidate); !reflect.DeepEqual(got, []string{treeIssue}) {
+				t.Fatalf("flat candidate bypassed the tree contract: %v", got)
+			}
+		})
+	}
+	if got := babelStructureIssues(source, "Eligibility:\nShort rule.\nApproval chain:\nShort rule."); !reflect.DeepEqual(got, []string{copiedIssue, treeIssue}) {
+		t.Fatalf("copied flat chapters did not report both structure problems: %v", got)
+	}
+	if got := babelStructureIssues(source, "├Eligibility\n│ state=ready\n└Approval chain\n  amount→approver"); !reflect.DeepEqual(got, []string{copiedIssue}) {
+		t.Fatalf("tree decoration hid the original chapters: %v", got)
+	}
+	if got := babelStructureIssues(source, "Output format: tree\n├Eligibility\n│ state=ready\n└Approval chain\n  amount→approver"); !reflect.DeepEqual(got, []string{copiedIssue}) {
+		t.Fatalf("candidate invented a format exemption for copied chapters: %v", got)
+	}
+	for _, candidate := range []string{
+		"Task\n├state=ready→may proceed\n└amount→approver",
+		"Task\n├conditions\n│ ╰state=ready\n╰amount→approver",
+		"States\n├「READY」\n╰「DONE」",
+	} {
+		if got := babelStructureIssues(source, candidate); got != nil {
+			t.Fatalf("visible reorganized tree rejected: %v", got)
+		}
+	}
+}
+
+func TestBabelStructureIssuesKeepsSourceExemptions(t *testing.T) {
+	const expanded = "1. Eligibility\nAn eligibility rule.\n2. Approval chain\nAn approval rule."
+	for name, original := range map[string]string{
+		"single relation":     "An approved request may execute.",
+		"single section":      "1. Eligibility\nAn eligibility rule.",
+		"compact sections":    "1. Eligibility\nstate=ready\n2. Approval chain\namount→approver",
+		"explicit format":     "Output format:\n" + expanded,
+		"referenced sections": expanded + "\nSee section 2.",
+		"source code":         "```text\n" + expanded + "\n```",
+		"source quotation":    "「\n" + expanded + "\n」",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := babelStructureIssues(original, "Inputs: state=ready\nSequence: amount→approver"); got != nil {
+				t.Fatalf("tree requirement overrode an exempt source: %v", got)
+			}
+		})
 	}
 }
 
@@ -96,6 +219,17 @@ func TestStructuralNumberSpansOnlyCoverSequentialLayoutLabels(t *testing.T) {
 	const headings = "# 1. Eligibility\n# 2. Approval chain"
 	if got := structuralNumberSpans(headings); len(got) != 2 {
 		t.Fatalf("Markdown numbered headings not recognized: %v", got)
+	}
+	const escaped = "1\\. Retain logs for 180 days.\n2\\. Retry at most 3 times."
+	if got := structuralNumberSpans(escaped); len(got) != 2 {
+		t.Fatalf("Markdown-escaped sequential labels not recognized: %v", got)
+	}
+	var businessValues []string
+	for _, number := range numberOccurrences(escaped) {
+		businessValues = append(businessValues, number.Value)
+	}
+	if !reflect.DeepEqual(businessValues, []string{"180", "3"}) {
+		t.Fatalf("escaped list labels became business numbers or body values disappeared: %v", businessValues)
 	}
 }
 

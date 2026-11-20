@@ -86,6 +86,57 @@ func reverseNumberOperator(op string) string {
 	}
 }
 
+// Inspect only whether a public negation may still cover this number. Do not
+// invert operators or try to prove Boolean equivalence. Balanced, completed
+// negations before an unrelated comparison do not hide that comparison.
+func numberNegationUncertain(prefix string) bool {
+	localStart := len(prefix) - len(localClausePrefix(prefix))
+	for offset := 0; offset < len(prefix); {
+		relative := strings.IndexRune(prefix[offset:], '¬')
+		if relative < 0 {
+			break
+		}
+		start := offset + relative
+		offset = start + len("¬")
+		tail := strings.TrimLeftFunc(prefix[offset:], unicode.IsSpace)
+		if tail == "" {
+			return true
+		}
+		first, _ := utf8.DecodeRuneInString(tail)
+		if !strings.ContainsRune("(（[{", first) {
+			if start >= localStart {
+				return true // Ungrouped negation has an uncertain local scope.
+			}
+			continue
+		}
+		var closers []rune
+		for _, r := range tail {
+			switch r {
+			case '(':
+				closers = append(closers, ')')
+			case '（':
+				closers = append(closers, '）')
+			case '[':
+				closers = append(closers, ']')
+			case '{':
+				closers = append(closers, '}')
+			case ')', '）', ']', '}':
+				if len(closers) == 0 || closers[len(closers)-1] != r {
+					return true // Malformed grouping still requires interpretation.
+				}
+				closers = closers[:len(closers)-1]
+			}
+			if len(closers) == 0 {
+				break
+			}
+		}
+		if len(closers) > 0 {
+			return true // The number is inside a possibly multiline negation.
+		}
+	}
+	return false
+}
+
 func adjacentNumberOperator(before, after string) string {
 	left, right := "", ""
 	scopePrefix := before
@@ -100,9 +151,10 @@ func adjacentNumberOperator(before, after string) string {
 	// Negation can change a comparison's meaning or scope. This lexer does not
 	// prove what "not less than" / "cannot exceed" means; leave such clauses to
 	// model comparison instead of treating an inner operator as the whole claim.
-	if boundary := strings.LastIndexAny(scopePrefix, ",，;；。.!！?？\n\r"); boundary >= 0 {
-		scopePrefix = scopePrefix[boundary+1:]
+	if numberNegationUncertain(scopePrefix) {
+		return "" // Do not compare an inner operator as if its negation were absent.
 	}
+	scopePrefix = localClausePrefix(scopePrefix)
 	for _, marker := range constraintMarkerRegex.FindAllString(scopePrefix, -1) {
 		switch constraintKind(marker) {
 		case "prohibition", "factual_negation", "negative_recommendation", "exemption", "ambiguous":
@@ -410,7 +462,10 @@ func formatStats(orig, comp string) (int, int, int, int, string) {
 // model; a local non-failure never proves that a constraint was preserved.
 var constraintMarkerRegex = regexp.MustCompile(`(?i)\b(?:must\s+not|shall\s+not|should\s+not|may\s+not|not\s+required\s+to|must|shall|should|may|cannot|never|not|no)\b|不得不|不能不|不允许|不可以|禁止|不得|严禁|绝不|不能|不可|无需|不必|必须|务必|应当|须|建议|允许|可以|仅可|才可|尚未|未经|未曾|未|不`)
 
-type constraintClause struct{ Kind, Body, Marker string }
+type constraintClause struct {
+	Kind, Body, Marker, Scope string
+	ScopeKnown                bool
+}
 
 func constraintKind(marker string) string {
 	m := strings.ToLower(strings.Join(strings.Fields(marker), " "))
@@ -448,6 +503,40 @@ func normalizeClause(s string) string {
 	return strings.Trim(out.String(), "，,。.;；、&∧ ")
 }
 
+func localClausePrefix(s string) string {
+	if boundary := strings.LastIndexAny(s, ",，;；。.!！?？\n\r"); boundary >= 0 {
+		_, size := utf8.DecodeRuneInString(s[boundary:])
+		return s[boundary+size:]
+	}
+	return s
+}
+
+func localModalScope(s string, position int) (string, bool) {
+	prefix := s[:position]
+	lineStart := strings.LastIndexAny(prefix, "\n\r") + 1
+	linePrefix := prefix[lineStart:]
+	scopeKnown := true
+	if linePrefix != "" {
+		first, _ := utf8.DecodeRuneInString(linePrefix)
+		if unicode.IsSpace(first) || first >= '─' && first <= '╿' {
+			scopeKnown = false // Indentation/tree branches may inherit a parent.
+		}
+	}
+	if lineStart > 0 {
+		previous := strings.TrimSpace(prefix[:lineStart])
+		if strings.HasSuffix(previous, ":") || strings.HasSuffix(previous, "：") {
+			scopeKnown = false
+		}
+	}
+	// Keep preceding comma-separated conditions and actors. Treating every
+	// comma as a fresh scope confuses different amount tiers with the same act.
+	if boundary := strings.LastIndexAny(prefix, ";；。!！?？\n\r"); boundary >= 0 {
+		_, width := utf8.DecodeRuneInString(prefix[boundary:])
+		prefix = prefix[boundary+width:]
+	}
+	return normalizeClause(strings.TrimRight(strings.TrimSpace(prefix), "→⇒ ")), scopeKnown
+}
+
 func constraintClauses(s string) []constraintClause {
 	matches := constraintMarkerRegex.FindAllStringIndex(s, -1)
 	var clauses []constraintClause
@@ -466,7 +555,12 @@ func constraintClauses(s string) []constraintClause {
 		}
 		body = normalizeClause(body)
 		if body != "" {
-			clauses = append(clauses, constraintClause{constraintKind(s[loc[0]:loc[1]]), body, s[loc[0]:loc[1]]})
+			// A matching action under a different local condition is not a proven
+			// conflict. Mixed-language rewrites may express the original action
+			// elsewhere; semantic comparison must decide these scoped cases.
+			scope, known := localModalScope(s, loc[0])
+			clauses = append(clauses, constraintClause{Kind: constraintKind(s[loc[0]:loc[1]]),
+				Body: body, Marker: s[loc[0]:loc[1]], Scope: scope, ScopeKnown: known})
 		}
 	}
 	return clauses
@@ -687,12 +781,12 @@ func checkDeterministicInvariants(orig, comp string, requiredKeywords []string) 
 
 	candidateClauses := constraintClauses(comp)
 	for _, original := range constraintClauses(orig) {
-		if original.Kind == "ambiguous" {
+		if original.Kind == "ambiguous" || !original.ScopeKnown {
 			continue
 		}
 		compatible, conflict := false, false
 		for _, candidate := range candidateClauses {
-			if candidate.Body != original.Body || candidate.Kind == "ambiguous" {
+			if candidate.Body != original.Body || candidate.Kind == "ambiguous" || !candidate.ScopeKnown || candidate.Scope != original.Scope {
 				continue
 			}
 			if candidate.Kind == original.Kind {
@@ -951,7 +1045,7 @@ func doCompileContext(ctx context.Context, req CompileReq) (CompileResp, error) 
 		if !hit || cached.Compiled == "" {
 			return CompileResp{}, false
 		}
-		if len(inheritedOutlineTitles(req.Text, cached.Compiled)) > 0 {
+		if len(babelStructureIssues(req.Text, cached.Compiled)) > 0 {
 			return CompileResp{}, false
 		}
 		out := CompileResp{Compiled: cached.Compiled, Dialect: dialect.Name, CacheHit: true}

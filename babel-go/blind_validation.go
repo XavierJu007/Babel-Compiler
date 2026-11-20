@@ -58,7 +58,7 @@ const blindReaderPrompt = `你是独立文本阅读器。用户消息仅包含 c
 文本可以是紧凑关系式、短语或树形结构，不要求完整句子。标题、缩进、括号及相邻关系所明确表达的共享主体、条件和范围可以继承到对应子项；这是读取文本已有上下文，不是补全遗漏。按公共含义理解符号与常用缩写，不将清单分隔误读为逻辑或，不把必要条件读成自动执行。作用域不清时仍须报告歧义。
 entities 只列出文本实际出现的名称。每条 relation 的 evidence 必须是 candidate 中逐字存在、足以支持该关系的连续摘录；引用共享上下文时摘录须从所需上层标题或条件覆盖至当前子项，可包含中间行，不能只引用脱离作用域的叶子。禁止捏造引文。主体、对象、范围在文本及其结构中均未明示时可用空字符串，不可自行补齐。relation 必须是非空的动作或关系描述。
 modality 只可为 fact、obligation、prohibition、permission、recommendation、negative_recommendation、exemption、capability、uncertain、unknown。区分禁止、义务、许可、建议、能力与事实。negated 只表示事实或命题本身的否定，禁止由 prohibition 表示，不能把“允许”读成“必须”，也不能把“尚未”读成“禁止”。
-quantities 中 value、unit、comparison 均保留 evidence 中的原始字面量；value 包含原有正负号和百分号。没有单位或比较词时用空字符串，applies_to 说明数值约束哪一对象。没有数值时用 []。
+quantities 中 value、unit、comparison 均保留 evidence 中的原始字面量；value 包含原有正负号和百分号。¬括号内的比较保留原比较词，并在negated、conditions/scope中保留否定及括号作用域，不改写成引文未出现的反向比较词；否定范围不明则报告歧义。没有单位或比较词时用空字符串，applies_to 说明数值约束哪一对象。没有数值时用 []。
 无法独立确定的指代、代号、关系、条件范围、模态或缺失上下文，必须列入 ambiguities；明确表达的概率或不确定事实仍可如实提取为 uncertain，不必仅因其不确定而拒读。禁止用猜测消除歧义。
 只输出一个严格 JSON 对象，所有层级所有字段均必填，不要 null、代码围栏或其他文字。数组可为空。schema_version 必须是整数 1：
 {"schema_version":1,"entities":["文本中的名称"],"relations":[{"subject":"主体或空字符串","relation":"动作或关系","object":"对象或空字符串","conditions":[],"scope":"范围或空字符串","modality":"fact","negated":false,"quantities":[{"value":"原始数值","unit":"原始单位或空字符串","comparison":"原始比较词或空字符串","applies_to":"约束对象"}],"evidence":"逐字摘录"}],"ambiguities":[]}`
@@ -335,7 +335,15 @@ func checkBlindReadingGrounding(reading BlindReading, candidate string) []string
 		}
 		compatible, conflict := false, false
 		for _, clause := range constraintClauses(relation.Evidence) {
-			if clause.Body != action || clause.Kind == "ambiguous" || !unambiguousBlindMarker(clause.Marker) {
+			if clause.Body != action || clause.Kind == "ambiguous" || !clause.ScopeKnown || !unambiguousBlindMarker(clause.Marker) {
+				continue
+			}
+			// A continuous evidence span may contain multiple conditional branches.
+			// This lexer cannot align a clause with the reader's inherited scope;
+			// only an unscoped action (optionally prefixed by its literal subject)
+			// is safe to compare here. The comparator must judge scoped readings.
+			if len(relation.Conditions) > 0 || relation.Scope != "" ||
+				clause.Scope != "" && clause.Scope != normalizeClause(relation.Subject) {
 				continue
 			}
 			// An explicit negative statement supports negation; its surrounding

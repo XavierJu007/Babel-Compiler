@@ -61,7 +61,18 @@ func canonicalPublicSymbol(symbol DomainSymbol) (DomainSymbol, error) {
 	if !exists {
 		return DomainSymbol{}, fmt.Errorf("符号 %q 不在公共符号目录中，不能作为自定义代号使用", name)
 	}
-	if strings.TrimSpace(symbol.Meaning) != meaning {
+	// Older official arrow descriptions required redundant relation labels.
+	// Accept only those exact published descriptions, then canonicalize them on
+	// load/save; this is not permission to redefine other symbols or meanings.
+	legacyMeaning := ""
+	switch name {
+	case "→":
+		legacyMeaning = "在明确标注的关系中表示方向；不能省略其关系类型"
+	case "->":
+		legacyMeaning = "在明确标注的关系中表示方向的ASCII写法；不能省略其关系类型"
+	}
+	provided := strings.TrimSpace(symbol.Meaning)
+	if provided != meaning && (legacyMeaning == "" || provided != legacyMeaning) {
 		return DomainSymbol{}, fmt.Errorf("符号 %q 的含义必须为公共目录中的 %q；业务语境请填写 use_when 或 preserve", name, meaning)
 	}
 	return DomainSymbol{Symbol: name, Meaning: meaning}, nil

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -21,7 +22,7 @@ func TestPublicSymbolCatalogPreservesBuiltinsAndReturnsCopy(t *testing.T) {
 		}
 		found[symbol.Symbol] = symbol.Meaning
 	}
-	for _, name := range []string{"∧", "∨", "⇒", "⇔", "¬", "∈", "∉", "⊆", "∅", "→", ">=", "<", "<=", ">", "==", "!=", "&&", "||", "!", "∀", "∃", "∩", "∪", "≤", "≥"} {
+	for _, name := range []string{"∵", "∧", "∨", "⇒", "⇔", "¬", "∈", "∉", "⊆", "∅", "→", ">=", "<", "<=", ">", "==", "!=", "&&", "||", "!", "∀", "∃", "∩", "∪", "≤", "≥"} {
 		if found[name] == "" {
 			t.Errorf("required public symbol missing: %s", name)
 		}
@@ -47,6 +48,8 @@ func TestPrivateAndRedefinedSymbolsAreRejected(t *testing.T) {
 		{Symbol: "π@", Meaning: "当前执行人"},
 		{Symbol: "∧", Meaning: "删除订单"},
 		{Symbol: "∈", Meaning: "左侧操作必须先于右侧操作"},
+		{Symbol: "∵", Meaning: "只要左侧发生就必须执行右侧动作"},
+		{Symbol: "→", Meaning: "许可自动提升为义务"},
 	} {
 		t.Run(symbol.Symbol, func(t *testing.T) {
 			pack := symbolTestPack("review-symbols", []DomainSymbol{symbol})
@@ -62,6 +65,59 @@ func TestPrivateAndRedefinedSymbolsAreRejected(t *testing.T) {
 				t.Fatalf("save did not reject symbol before filesystem dispatch: %v", err)
 			}
 		})
+	}
+}
+
+func TestQuickInsertSymbolsAreAvailableToDomainEditor(t *testing.T) {
+	html, err := os.ReadFile("index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	matches := regexp.MustCompile(`insertOperator\('([^']+)'\)`).FindAllStringSubmatch(string(html), -1)
+	if len(matches) == 0 {
+		t.Fatal("no quick-insert symbol controls found")
+	}
+	for _, match := range matches {
+		if publicSymbolCatalog.meanings[match[1]] == "" {
+			t.Errorf("quick-insert symbol %q is unavailable in the domain editor", match[1])
+		}
+	}
+}
+
+func TestLegacyOfficialArrowMeaningsNormalizeOnLoadAndSave(t *testing.T) {
+	isolateDomainIntegration(t)
+	for i, symbol := range []DomainSymbol{
+		{Symbol: "→", Meaning: "在明确标注的关系中表示方向；不能省略其关系类型"},
+		{Symbol: "->", Meaning: "在明确标注的关系中表示方向的ASCII写法；不能省略其关系类型"},
+	} {
+		name := []string{"legacy-arrow", "legacy-ascii-arrow"}[i]
+		pack := symbolTestPack(name, []DomainSymbol{symbol})
+		raw, err := json.Marshal(pack)
+		if err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := parseDomainJSON(raw)
+		if err != nil {
+			t.Fatalf("previously valid official symbol failed to load: %v", err)
+		}
+		want := publicSymbolCatalog.meanings[symbol.Symbol]
+		if loaded.Entries[0].Symbols[0].Meaning != want {
+			t.Fatalf("legacy meaning was not normalized on load: %+v", loaded.Entries[0].Symbols[0])
+		}
+		if err := saveDomain(pack, "global"); err != nil {
+			t.Fatal(err)
+		}
+		written, err := os.ReadFile(filepath.Join(globalDomainsDir(), name+".json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var saved DomainPack
+		if err := json.Unmarshal(written, &saved); err != nil {
+			t.Fatal(err)
+		}
+		if saved.Entries[0].Symbols[0].Meaning != want {
+			t.Fatalf("legacy meaning was not normalized on save: %+v", saved.Entries[0].Symbols[0])
+		}
 	}
 }
 
@@ -110,7 +166,7 @@ func TestConflictingSymbolOverrideCannotEnterComposition(t *testing.T) {
 
 func TestDomainCanCombineCatalogSymbols(t *testing.T) {
 	pack := symbolTestPack("review-combination", nil)
-	for _, name := range []string{"∀", "∈", "∧", ">=", "≤", "∩", "∪"} {
+	for _, name := range []string{"∵", "∀", "∈", "∧", ">=", "≤", "∩", "∪"} {
 		pack.Entries[0].Symbols = append(pack.Entries[0].Symbols, DomainSymbol{Symbol: name, Meaning: publicSymbolCatalog.meanings[name]})
 	}
 	if err := validateDomainPack(pack); err != nil {

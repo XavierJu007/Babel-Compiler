@@ -15,7 +15,7 @@ import (
 
 const outlineSource = "你是值班助理，负责执行发布。\n一、备份要求\n先备份配置，备份成功后才可部署。\n二、发布要求\n发布前须经负责人批准；发布失败须回滚。\n三、记录要求\n每步记录结果，记录保留180天。"
 const outlineDraft = "一、备份要求\n备份成功后才可部署。\n二、发布要求\n负责人批准后发布；失败须回滚。\n三、记录要求\n每步留痕，保留180天。"
-const outlineGraph = "值班助理→执行发布; 部署仅当备份配置已成功∧负责人已批准; 发布失败→须回滚; ∀步记录结果,保留180天"
+const outlineGraph = "role:值班助理→执行发布\n├部署仅当备份配置已成功∧负责人已批准\n│ └发布失败→须回滚\n└∀步记录结果,保留180天"
 
 func TestOutlineRewriteCachesOnlyFinalCandidateAndRevalidates(t *testing.T) {
 	isolateDomainIntegration(t)

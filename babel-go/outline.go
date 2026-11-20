@@ -11,7 +11,9 @@ import (
 
 // These are deliberately narrow layout recognizers, not a Markdown parser or
 // a density score. Uncertain text keeps its numbers and reaches semantic review.
-var outlineLabelRE = regexp.MustCompile(`^([ ]{0,3})(?:#{1,6}[ \t]+)?([0-9]{1,3}|[一二三四五六七八九十百零〇]+)([.)、．])([ \t]*)(.+)$`)
+var outlineLabelRE = regexp.MustCompile(`^([ ]{0,3})(?:#{1,6}[ \t]+)?([0-9]{1,3}|[一二三四五六七八九十百零〇]+)(\\?[.)、．])([ \t]*)(.+)$`)
+var outlineMarkdownHeadingRE = regexp.MustCompile(`^#{1,6}[ \t]+`)
+var outlineTreeNumberRE = regexp.MustCompile(`^(?:[0-9]{1,3}|[一二三四五六七八九十百零〇]+)[ \t]+(.+)$`)
 var outlineFenceRE = regexp.MustCompile("(?m)^ {0,3}(`{3,}|~{3,})[^\\r\\n]*")
 var outlineReferenceRE = regexp.MustCompile(`(?i)\b(?:step|section|chapter|item|rule|clause|paragraph|point)\s+(?:no\.?\s*)?[0-9]+|第\s*[0-9一二三四五六七八九十百零〇]+\s*(?:步|章|节|条|项|段|句|部分)|(?:步骤|章节|条款)\s*[0-9一二三四五六七八九十百零〇]+|(?:参见|详见|见)\s*[(（]?[0-9一二三四五六七八九十百零〇]+[.、)）]|\b(?:see|refer\s+to)\s+[(#]?[0-9]+(?:[.)]|$)`)
 var outlinePreserveRE = regexp.MustCompile(`(?i)(?:原样保留|保留原|保持原|维持原|沿用原|必须保留|须保留|保留全部|保留所有).{0,12}(?:编号|序号|章节|提纲)|(?:不要|不得|禁止)(?:修改|改变|更改|删除|重排).{0,12}(?:编号|序号|章节)|(?:输出|回答|返回)(?:的)?(?:格式|模板|结构)\s*[:：]|(?:按|按照)(?:以下|下面|原有|指定).{0,12}(?:格式|模板).{0,8}(?:输出|回答|返回)|\b(?:preserve|retain|keep)\s+(?:the\s+)?(?:original\s+)?(?:numbering|numbers|section\s+numbers|outline)|\b(?:output|response|return)\s+(?:format|template|schema)\s*:`)
@@ -25,27 +27,80 @@ type numberedOutlineLine struct {
 	number     int // Zero for Chinese labels; only Arabic labels feed numeric guards.
 }
 
-// inheritedOutlineTitles detects copied standalone numbered headings. It does
-// not reject numbered relation trees, prose lists, or an explicit output form.
-func inheritedOutlineTitles(original, candidate string) []string {
-	if outlineLabelsProtected(original) || outlineLabelsProtected(candidate) {
+// Multi-section prose has a fixed tree-format contract. This checks visible
+// organization only; semantic validation must still assess the relationships.
+func babelStructureIssues(original, candidate string) []string {
+	if outlineLabelsProtected(original) || outlineHasOnlyRelationBody(original) || len(outlineSourceTitles(original)) < 2 {
 		return nil
 	}
-	originalTitles := make(map[string]bool)
-	for _, line := range numberedOutlineLines(original) {
-		if title := standaloneOutlineTitle(line.body); title != "" {
-			originalTitles[title] = true
+	var issues []string
+	if titles := inheritedOutlineTitles(original, candidate); len(titles) > 0 {
+		issues = append(issues, "候选仍复刻原章节标题: "+strings.Join(titles, "、"))
+	}
+	if treeBranchCount(candidate) < 2 {
+		issues = append(issues, "多分支正文未组织为树：需至少两个带正文的树分支（├ / └ / ╰）")
+	}
+	return issues
+}
+
+func outlineSourceTitles(text string) map[string]bool {
+	titles := make(map[string]bool)
+	for _, line := range numberedOutlineLines(text) {
+		if title := standaloneOutlineTitle(outlineHeadingLabel(line.body)); title != "" {
+			titles[title] = true
 		}
 	}
+	return titles
+}
+
+func treeBranchCount(text string) int {
+	mask := outlineLiteralMask(text)
+	count, offset := 0, 0
+	for _, raw := range strings.Split(text, "\n") {
+		line := strings.TrimLeftFunc(raw, func(r rune) bool {
+			return unicode.IsSpace(r) || r == '│' || r == '┃'
+		})
+		if line != "" {
+			branch, width := utf8.DecodeRuneInString(line)
+			start := offset + len(raw) - len(line)
+			if (branch == '├' || branch == '└' || branch == '╰') && !mask[start] {
+				body := strings.TrimLeftFunc(line[width:], func(r rune) bool {
+					return unicode.IsSpace(r) || r >= '─' && r <= '╿'
+				})
+				if body != "" {
+					count++
+				}
+			}
+		}
+		offset += len(raw) + 1
+	}
+	return count
+}
+
+// inheritedOutlineTitles detects reuse of the source's chapter organization.
+// Removing numbering or decorating the same headings does not reorganize it.
+func inheritedOutlineTitles(original, candidate string) []string {
+	if outlineLabelsProtected(original) {
+		return nil
+	}
+	originalTitles := outlineSourceTitles(original)
 	if len(originalTitles) < 2 || outlineHasOnlyRelationBody(original) {
 		return nil
 	}
+	mask := outlineLiteralMask(candidate)
+	plain := []byte(candidate)
+	for i, protected := range mask {
+		if protected && plain[i] != '\n' && plain[i] != '\r' {
+			plain[i] = ' '
+		}
+	}
 	var copied []string
 	seen := make(map[string]bool)
-	for _, line := range numberedOutlineLines(candidate) {
-		title := standaloneOutlineTitle(line.body)
+	for _, line := range strings.Split(string(plain), "\n") {
+		body := candidateOutlineHeading(line)
+		title := standaloneOutlineTitle(body)
 		if title != "" && originalTitles[title] && !seen[title] {
-			copied = append(copied, strings.TrimSpace(line.body))
+			copied = append(copied, body)
 			seen[title] = true
 		}
 	}
@@ -55,9 +110,55 @@ func inheritedOutlineTitles(original, candidate string) []string {
 	return copied
 }
 
-// A numbered grouping is already suitable when every substantive body line
-// visibly expresses a relation or a simple label:value. This exemption is
-// intentionally all-or-nothing, not a symbol-count or compression threshold.
+// Match only a known source heading at the start of a candidate line. Tree
+// strokes, Markdown styling and inline label:value bodies can disguise the
+// same parallel chapters; their presence alone is not a restructuring signal.
+func candidateOutlineHeading(raw string) string {
+	line := strings.TrimSpace(raw)
+	withoutTree := strings.TrimLeftFunc(line, func(r rune) bool {
+		return unicode.IsSpace(r) || r >= '─' && r <= '╿'
+	})
+	hasTree := withoutTree != line
+	if !hasTree && (strings.HasPrefix(raw, "    ") || strings.HasPrefix(raw, "\t")) {
+		return "" // Preserve ordinary indented code.
+	}
+	line = withoutTree
+	if len(line) >= 2 && strings.ContainsRune("-*+", rune(line[0])) && (line[1] == ' ' || line[1] == '\t') {
+		line = strings.TrimSpace(line[2:])
+	}
+	line = outlineMarkdownHeadingRE.ReplaceAllString(line, "")
+	if parts := outlineLabelRE.FindStringSubmatch(line); len(parts) != 0 {
+		line = parts[5]
+	} else if hasTree {
+		if parts := outlineTreeNumberRE.FindStringSubmatch(line); len(parts) != 0 {
+			line = parts[1]
+		}
+	}
+	line = outlineHeadingLabel(line)
+	if colon := strings.IndexAny(line, ":："); colon >= 0 {
+		line = line[:colon]
+	}
+	return outlineHeadingLabel(line)
+}
+
+func outlineHeadingLabel(body string) string {
+	for {
+		trimmed := strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(body), ":"), "："))
+		for _, marker := range []string{"**", "__"} {
+			if len(trimmed) >= 2*len(marker) && strings.HasPrefix(trimmed, marker) && strings.HasSuffix(trimmed, marker) {
+				trimmed = strings.TrimSpace(trimmed[len(marker) : len(trimmed)-len(marker)])
+			}
+		}
+		if trimmed == body {
+			return body
+		}
+		body = trimmed
+	}
+}
+
+// An already compact source need not be restructured when every substantive
+// body line expresses a relation or a simple label:value. This exemption is
+// for the source, not decoration added to copied candidate chapters.
 func outlineHasOnlyRelationBody(text string) bool {
 	mask := outlineLiteralMask(text)
 	plain := []byte(text)
@@ -141,7 +242,7 @@ func numberedOutlineLines(text string) []numberedOutlineLine {
 		line := strings.TrimSuffix(text[offset:end], "\r")
 		if loc := outlineLabelRE.FindStringSubmatchIndex(line); loc != nil {
 			label := line[loc[4]:loc[5]]
-			punctuation := line[loc[6]:loc[7]]
+			punctuation := strings.TrimPrefix(line[loc[6]:loc[7]], "\\")
 			space := line[loc[8]:loc[9]]
 			body := strings.TrimSpace(line[loc[10]:loc[11]])
 			number, _ := strconv.Atoi(label)
