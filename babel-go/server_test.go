@@ -21,6 +21,7 @@ func TestCompileAPIReportsValidationFailures(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			isolateProxyState(t)
+			const candidate = "Summarize the specification for the engineering team."
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var req struct {
 					Messages []struct {
@@ -28,7 +29,7 @@ func TestCompileAPIReportsValidationFailures(t *testing.T) {
 					} `json:"messages"`
 				}
 				json.NewDecoder(r.Body).Decode(&req)
-				content := "Summarize the specification for the engineering team."
+				content := candidate
 				if len(req.Messages) > 0 && req.Messages[0].Content == verifyGatePrompt {
 					content = tc.audit
 					if tc.upstreamStatus != 200 {
@@ -52,6 +53,7 @@ func TestCompileAPIReportsValidationFailures(t *testing.T) {
 			var response struct {
 				Validation ValidationResult `json:"validation"`
 				Compiled   string           `json:"compiled"`
+				Detail     string           `json:"detail"`
 			}
 			if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
 				t.Fatal(err)
@@ -59,8 +61,11 @@ func TestCompileAPIReportsValidationFailures(t *testing.T) {
 			if response.Validation.Status != tc.status {
 				t.Fatalf("validation %q; want %q", response.Validation.Status, tc.status)
 			}
-			if tc.wantStatus != http.StatusOK && response.Compiled != "" {
-				t.Fatal("strict failure exposed a usable candidate")
+			if response.Compiled != candidate {
+				t.Fatal("response lost the current candidate needed for inspection")
+			}
+			if tc.wantStatus != http.StatusOK && (response.Detail == "" || len(response.Validation.Issues) == 0) {
+				t.Fatal("rejected candidate lost its failure detail")
 			}
 		})
 	}

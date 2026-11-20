@@ -89,7 +89,7 @@ function setup(responses = []) {
     });
     vm.runInContext(app, context);
     get('rawInput').value = '禁止删除订单；金额 > 50 元时审批。';
-    for (const id of ['statsBadge', 'cacheBadge', 'auditBox', 'invariantCapsules', 'logsError']) {
+    for (const id of ['candidateBadge', 'statsBadge', 'cacheBadge', 'auditBox', 'invariantCapsules', 'logsError']) {
         get(id).className = 'hidden';
     }
     return { context, get, requests, storage };
@@ -135,7 +135,7 @@ test('a reported pass identifies its method and all token savings remain estimat
     assert.equal(get('copyBtn').disabled, false);
 });
 
-test('starting a new request clears prior success; HTTP 422 stays failed and empty', async () => {
+test('starting a new request clears prior success; HTTP 422 shows a failed candidate for inspection and copying', async () => {
     let resolve;
     const delayed = new Promise(done => { resolve = done; });
     const { context, get } = setup([{ data: result() }, () => delayed]);
@@ -147,13 +147,69 @@ test('starting a new request clears prior success; HTTP 422 stays failed and emp
     assert.equal(get('statsBadge').classList.contains('hidden'), true);
     assert.equal(get('cacheBadge').classList.contains('hidden'), true);
     assert.equal(get('invariantCapsules').dataset.validationStatus, undefined);
-    resolve({ status: 422, data: { detail: '候选未通过',
-        validation: validation('failed', 'local_checks', ['缺失订单字段']) } });
+    const candidate = '  订单状态→待确认\n';
+    resolve({ status: 422, data: result({ compiled: candidate, cache_hit: false, detail: '候选未通过',
+        validation: validation('failed', 'local_checks', ['缺失订单字段']) }) });
     await pending;
-    assert.equal(get('dslOutput').value, '');
+    assert.equal(get('dslOutput').value, candidate);
+    assert.equal(get('dslOutput').dataset.candidateStatus, 'failed');
+    assert.equal(get('copyBtn').disabled, false);
+    assert.equal(get('copyBtn').textContent, '复制未通过候选');
+    assert.match(get('candidateBadge').textContent, /未通过候选.*仅供检查/);
+    assert.equal(get('candidateBadge').classList.contains('inv-pill-fail'), true);
+    assert.match(get('statsBadge').textContent, /估算 100→70/);
+    assert.equal(get('statsBadge').classList.contains('hidden'), false);
+    assert.equal(get('cacheBadge').classList.contains('hidden'), true);
     assert.equal(get('invariantCapsules').dataset.validationStatus, 'failed');
     assert.match(get('auditBox').textContent, /缺失订单字段/);
     assert.equal(get('auditBox').classList.contains('is-passed'), false);
+    let resetLabel, copied;
+    context.setTimeout = callback => { resetLabel = callback; };
+    context.navigator.clipboard.writeText = async text => { copied = text; };
+    await context.copyResult();
+    assert.equal(copied, candidate);
+    assert.equal(get('copyBtn').textContent, '已复制候选 ✓');
+    assert.equal(get('invariantCapsules').dataset.validationStatus, 'failed');
+    assert.equal(get('candidateBadge').classList.contains('inv-pill-fail'), true);
+    resetLabel();
+    assert.equal(get('copyBtn').textContent, '复制未通过候选');
+});
+
+test('audit service errors retain the current candidate and diagnostics without presenting acceptance', async () => {
+    const candidate = '<script>alert("candidate")</script>\n金额>50→审批';
+    const { context, get } = setup([{ status: 502, data: result({ compiled: candidate, cache_hit: false,
+        detail: '审计服务不可用', validation: validation('error', 'llm_compare', ['上游超时']) }) }]);
+    get('verifyCheck').checked = true;
+    await context.runCompile();
+    assert.equal(get('dslOutput').value, candidate);
+    assert.equal(get('dslOutput').dataset.candidateStatus, 'error');
+    assert.equal(get('copyBtn').textContent, '复制未验收候选');
+    assert.equal(get('copyBtn').disabled, false);
+    assert.match(get('candidateBadge').textContent, /未验收候选.*仅供检查/);
+    assert.equal(get('candidateBadge').classList.contains('inv-pill-fail'), true);
+    assert.equal(get('invariantCapsules').dataset.validationStatus, 'error');
+    assert.match(get('auditBox').textContent, /上游超时/);
+    assert.match(get('auditBox').textContent, /审计服务不可用/);
+    assert.equal(get('auditBox').classList.contains('is-passed'), false);
+    assert.match(get('statsBadge').textContent, /估算 100→70/);
+});
+
+test('error responses cannot manufacture acceptance or display absent or invalid token counts', async () => {
+    for (const stats of [undefined, null, {}, { original_tokens: 100, compiled_tokens: -1 },
+        { original_tokens: '100', compiled_tokens: 70 }, { original_tokens: 100.5, compiled_tokens: 70 },
+        { original_tokens: 0, compiled_tokens: 0, measurement_kind: '', measurement_scope: '',
+            measurement_encoding: '', measurement_source: '', measurement_version: '', compression_ratio: '' }]) {
+        const { context, get } = setup([{ status: 502, data: result({ compiled: '当前未验收候选', stats,
+            detail: '请求异常但错误地携带通过状态', validation: validation('passed') }) }]);
+        get('verifyCheck').checked = true;
+        await context.runCompile();
+        assert.equal(get('dslOutput').value, '当前未验收候选');
+        assert.equal(get('copyBtn').disabled, false);
+        assert.equal(get('invariantCapsules').dataset.validationStatus, 'error');
+        assert.equal(get('invariantCapsules').children.some(e => e.className === 'inv-pill-ok'), false);
+        assert.equal(get('statsBadge').classList.contains('hidden'), true);
+        assert.doesNotMatch(get('statsBadge').textContent, /→|减少|增加/);
+    }
 });
 
 test('HTTP 502 and non-JSON errors cannot retain successful validation', async () => {
@@ -165,31 +221,66 @@ test('HTTP 502 and non-JSON errors cannot retain successful validation', async (
     assert.equal(get('invariantCapsules').dataset.validationStatus, 'error');
     assert.match(get('auditBox').textContent, /上游超时/);
     assert.equal(get('dslOutput').value, '');
+    assert.equal(get('copyBtn').disabled, true);
+    assert.equal(get('candidateBadge').classList.contains('hidden'), true);
+    assert.equal(get('statsBadge').classList.contains('hidden'), true);
     await context.runCompile();
     assert.equal(get('invariantCapsules').dataset.validationStatus, 'error');
     assert.match(get('auditBox').textContent, /HTTP 502/);
+    assert.equal(get('dslOutput').value, '');
+    assert.equal(get('copyBtn').disabled, true);
+});
+
+test('errors without a valid current candidate clear a preceding failed candidate and its copy state', async () => {
+    for (const compiled of [undefined, null, '', '   \n', 123]) {
+        const { context, get } = setup([
+            { status: 422, data: result({ compiled: '上一轮失败候选',
+                validation: validation('failed', 'local_checks', ['上一轮缺失字段']) }) },
+            { status: 422, data: { compiled, detail: '本次生成未返回候选',
+                validation: validation('failed', 'local_checks', ['本次没有候选']) } }
+        ]);
+        get('verifyCheck').checked = true;
+        await context.runCompile();
+        assert.equal(get('dslOutput').value, '上一轮失败候选');
+        await context.runCompile();
+        assert.equal(get('dslOutput').value, '');
+        assert.equal(get('dslOutput').dataset.candidateStatus, undefined);
+        assert.equal(get('copyBtn').disabled, true);
+        assert.equal(get('candidateBadge').classList.contains('hidden'), true);
+        assert.equal(get('statsBadge').classList.contains('hidden'), true);
+        assert.equal(get('cacheBadge').classList.contains('hidden'), true);
+        assert.equal(get('invariantCapsules').dataset.validationStatus, 'failed');
+        assert.match(get('auditBox').textContent, /本次没有候选/);
+        assert.doesNotMatch(get('auditBox').textContent, /上一轮/);
+    }
 });
 
 test('editing the source clears the previous candidate, counts, validation and copy state', async () => {
-    const { context, get } = setup([{ data: result() }]);
-    get('verifyCheck').checked = true;
-    await context.runCompile();
-    assert.equal(get('invariantCapsules').dataset.validationStatus, 'passed');
-    get('rawInput').value = '允许删除订单，不需要审批。';
-    context.updateInputCount();
-    assert.equal(get('dslOutput').value, '');
-    assert.equal(get('statsBadge').classList.contains('hidden'), true);
-    assert.equal(get('cacheBadge').classList.contains('hidden'), true);
-    assert.equal(get('copyBtn').disabled, true);
-    assert.equal(get('invariantCapsules').dataset.validationStatus, 'not_run');
-    assert.match(get('auditBox').textContent, /原文已更改，请重新编译/);
+    for (const response of [{ data: result() }, { status: 422, data: result({
+        validation: validation('failed', 'local_checks', ['缺少字段']) }) }]) {
+        const { context, get } = setup([response]);
+        get('verifyCheck').checked = true;
+        await context.runCompile();
+        assert.equal(get('dslOutput').value, result().compiled);
+        assert.equal(get('copyBtn').disabled, false);
+        get('rawInput').value = '允许删除订单，不需要审批。';
+        context.updateInputCount();
+        assert.equal(get('dslOutput').value, '');
+        assert.equal(get('dslOutput').dataset.candidateStatus, undefined);
+        assert.equal(get('candidateBadge').classList.contains('hidden'), true);
+        assert.equal(get('statsBadge').classList.contains('hidden'), true);
+        assert.equal(get('cacheBadge').classList.contains('hidden'), true);
+        assert.equal(get('copyBtn').disabled, true);
+        assert.equal(get('invariantCapsules').dataset.validationStatus, 'not_run');
+        assert.match(get('auditBox').textContent, /原文已更改，请重新编译/);
+    }
 });
 
 test('responses and errors for an edited source cannot become the current result', async () => {
     for (const response of [
         { data: result() },
-        { status: 422, data: { detail: '旧原文校验失败', validation: validation('failed', 'local_checks', ['旧原文缺失字段']) } },
-        { status: 502, data: { detail: '旧请求超时', validation: validation('error', 'llm_compare', ['旧请求异常']) } }
+        { status: 422, data: result({ compiled: '旧原文候选', detail: '旧原文校验失败', validation: validation('failed', 'local_checks', ['旧原文缺失字段']) }) },
+        { status: 502, data: result({ compiled: '旧原文候选', detail: '旧请求超时', validation: validation('error', 'llm_compare', ['旧请求异常']) }) }
     ]) {
         let resolve;
         const delayed = new Promise(done => { resolve = done; });
@@ -210,6 +301,47 @@ test('responses and errors for an edited source cannot become the current result
         assert.doesNotMatch(get('auditBox').textContent, /旧原文|旧请求/);
         assert.equal(get('runBtn').disabled, false);
         assert.equal(get('forceBtn').disabled, false);
+    }
+});
+
+test('a late error candidate cannot overwrite a newer request or restore its buttons early', async () => {
+    for (const changedSource of [false, true]) {
+        for (const oldFinishesFirst of [false, true]) {
+            let resolveOld, resolveNew;
+            const oldResponse = new Promise(resolve => { resolveOld = resolve; });
+            const newResponse = new Promise(resolve => { resolveNew = resolve; });
+            const { context, get } = setup([() => oldResponse, () => newResponse]);
+            get('verifyCheck').checked = true;
+            const oldRequest = context.runCompile();
+            if (changedSource) {
+                get('rawInput').value = '新的原文';
+                context.updateInputCount();
+            }
+            const newRequest = context.runCompile();
+            const oldError = { status: 422, data: result({ compiled: '旧请求的失败候选', detail: '旧请求拒绝',
+                validation: validation('failed', 'local_checks', ['旧请求缺少规则']) }) };
+            if (oldFinishesFirst) {
+                resolveOld(oldError);
+                await oldRequest;
+                assert.equal(get('dslOutput').value, '');
+                assert.equal(get('runBtn').disabled, true);
+                assert.equal(get('forceBtn').disabled, true);
+                assert.equal(get('invariantCapsules').dataset.validationStatus, undefined);
+            }
+            resolveNew({ data: result({ compiled: '当前请求的候选' }) });
+            await newRequest;
+            if (!oldFinishesFirst) {
+                resolveOld(oldError);
+                await oldRequest;
+            }
+            assert.equal(get('dslOutput').value, '当前请求的候选');
+            assert.equal(get('copyBtn').disabled, false);
+            assert.equal(get('copyBtn').textContent, '复制结果');
+            assert.equal(get('invariantCapsules').dataset.validationStatus, 'passed');
+            assert.doesNotMatch(get('auditBox').textContent, /旧请求|已更改/);
+            assert.equal(get('runBtn').disabled, false);
+            assert.equal(get('forceBtn').disabled, false);
+        }
     }
 });
 
@@ -244,7 +376,8 @@ test('changed compile options and domains invalidate completed and in-flight res
             context.updateCompileOptionsHint();
             assert.equal(get('invariantCapsules').dataset.validationStatus, 'not_run', name);
             if (inFlight) {
-                resolve({ data: result({ validation: blindValidation() }) });
+                resolve({ status: 422, data: result({ compiled: '旧设置的失败候选',
+                    validation: validation('failed', 'local_checks', ['旧设置下未通过']) }) });
                 await pending;
             }
             assert.equal(JSON.parse(requests[2].options.body).profile, 'compiler');
@@ -274,8 +407,8 @@ test('profile switching pins each compile request and ignores a late old-profile
     get('verifyCheck').checked = true;
     const compiling = context.runCompile();
     const switching = context.quickSwitchProfile('reader');
-    resolveCompile({ status: 502, data: { detail: '旧方案超时',
-        validation: validation('error', 'llm_compare', ['旧方案异常']) } });
+    resolveCompile({ status: 502, data: result({ compiled: '旧方案候选', detail: '旧方案超时',
+        validation: validation('error', 'llm_compare', ['旧方案异常']) }) });
     await compiling;
     assert.equal(JSON.parse(requests[1].options.body).profile, 'compiler');
     assert.equal(get('dslOutput').value, '');
@@ -332,6 +465,7 @@ test('clipboard denial or absence preserves and selects the result for manual co
 
 test('a late clipboard result or timer cannot relabel a newer compile result', async () => {
     const { context, get } = setup([{ data: result() }, { data: result({ compiled: '新候选' }) }]);
+    get('verifyCheck').checked = true;
     await context.runCompile();
     let resolve;
     context.navigator.clipboard.writeText = () => new Promise(done => { resolve = done; });
@@ -353,18 +487,22 @@ test('a late clipboard result or timer cannot relabel a newer compile result', a
     assert.equal(get('copyBtn').textContent, '新操作');
 });
 
-test('strict mode rejects incomplete, malformed, and contradictory validation', async () => {
+test('strict mode preserves candidates with incomplete, malformed, and contradictory validation as unaccepted', async () => {
     const { context, get } = setup([
+        { data: result({ validation: undefined }) },
         { data: result({ validation: validation('passed', 'local_checks') }) },
         { data: result({ validation: validation('passed', 'none') }) },
         { data: result({ validation: validation('passed', 'llm_compare', ['missing constraint']) }) }
     ]);
     get('verifyCheck').checked = true;
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 4; i++) {
         await context.runCompile();
-        assert.equal(get('dslOutput').value, '');
-        assert.equal(get('copyBtn').disabled, true);
+        assert.equal(get('dslOutput').value, result().compiled);
+        assert.equal(get('copyBtn').disabled, false);
+        assert.equal(get('copyBtn').textContent, '复制未验收候选');
+        assert.match(get('candidateBadge').textContent, /未验收候选.*仅供检查/);
         assert.notEqual(get('invariantCapsules').dataset.validationStatus, 'passed');
+        assert.equal(get('auditBox').classList.contains('is-passed'), false);
     }
 });
 
@@ -372,6 +510,8 @@ test('non-strict failed candidates remain visibly failed even when numbers and n
     const { context, get } = setup([{ data: result({ compiled: '50 !',
         validation: validation('failed', 'llm_compare', ['丢失删除禁止项']) }) }]);
     await context.runCompile();
+    assert.equal(get('dslOutput').value, '50 !');
+    assert.equal(get('copyBtn').textContent, '复制未通过候选');
     assert.equal(get('invariantCapsules').dataset.validationStatus, 'failed');
     assert.equal(get('invariantCapsules').children.some(e => e.className === 'inv-pill-ok'), false);
     assert.match(get('auditBox').textContent, /丢失删除禁止项/);
@@ -602,8 +742,9 @@ test('strict blind validation requires the correct method and both completed sta
     get('validationModeSelect').value = 'blind';
     for (let i = 0; i < 5; i++) {
         await context.runCompile();
-        assert.equal(get('dslOutput').value, '');
-        assert.equal(get('copyBtn').disabled, true);
+        assert.equal(get('dslOutput').value, result().compiled);
+        assert.equal(get('copyBtn').disabled, false);
+        assert.equal(get('copyBtn').textContent, '复制未验收候选');
         assert.notEqual(get('invariantCapsules').dataset.validationStatus, 'passed');
     }
 });
@@ -626,8 +767,9 @@ test('blind pass requires all three stages with the current policies and exact s
     get('validationModeSelect').value = 'blind';
     for (const tc of cases) {
         await context.runCompile();
-        assert.equal(get('dslOutput').value, '', tc.name);
-        assert.equal(get('copyBtn').disabled, true, tc.name);
+        assert.equal(get('dslOutput').value, result().compiled, tc.name);
+        assert.equal(get('copyBtn').disabled, false, tc.name);
+        assert.equal(get('copyBtn').textContent, '复制未验收候选', tc.name);
         assert.equal(get('invariantCapsules').dataset.validationStatus, 'error', tc.name);
         assert.equal(get('auditBox').classList.contains('is-passed'), false, tc.name);
     }
@@ -648,7 +790,8 @@ test('blind pass displays stage models with reading folded, and cannot pass comp
     assert.ok(!details.open);
     get('validationModeSelect').value = 'compare';
     await context.runCompile();
-    assert.equal(get('dslOutput').value, '');
+    assert.equal(get('dslOutput').value, result().compiled);
+    assert.equal(get('copyBtn').textContent, '复制未验收候选');
     assert.notEqual(get('invariantCapsules').dataset.validationStatus, 'passed');
 });
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,7 +24,7 @@ const verifyGatePrompt = `你是编译候选的语义对照审阅器。用户消
 1. 主体、动作、对象、条件、例外、作用域、先后次序、量词与不确定性；
 2. 所有业务数值、比较符、单位及它们绑定的字段；出现相同数字不等于保留相同约束。未被引用的纯章节/列表编号可省，实际执行顺序仍须保留；被引用步骤号、代码/引文内的编号和指定输出格式不能丢；
 3. 分别检查每条禁止、义务、许可和事实否定。禁止不得变成尚未，允许不得变成必须；单个 ! 或 ¬ 不能证明全部约束都保留；
-4. 技术字面量、参数名、枚举、路径、代码和 Payload，禁止自动修正；
+4. 技术字面量、参数名、枚举、路径、代码、Payload、实际JSON字符串及明确要求原样的文本，禁止自动修正；普通自然语言条件或说明不会仅因加了引号就变成逐字契约，可以等义压成关系式或去掉装饰性空格/引号，但固定返回值不能改名，条件和作用域不得改变；
 5. 不新增需要私有词表才能读懂的代号，保留原有变量和公共术语。候选须包含理解其关系所需的上下文。
 候选可以是高密度关系式、短语或树形结构；不要求完整句子或与原文逐句同序。按候选自身的标题、缩进、括号及相邻关系读取共享主体、谓词和作用域；这些明确写出的上下文不属于信息缺失。公共符号、常用缩写、混合语言、紧凑枚举与省略虚词本身不是失败原因；仅用于组织段落的编号也不是新增业务数值。仍须核实分支、全称/存在、并行/顺序、必要/充分及模态；不能从原文替候选补齐含糊或缺失的关系，也不能用符号数量代替完整性判断。
 这次对照不是形式证明，也不是只见候选的独立阅读实验。无法确认时返回 false。
@@ -469,9 +470,8 @@ func constraintClauses(s string) []constraintClause {
 	return clauses
 }
 
-// Only explicit delimiters and recognizable technical tokens are hard guards.
-// Ordinary words, unmarked commands and ambiguous paths still need model review.
-var quotedLiteralRegex = regexp.MustCompile(`"(?:\\[^\r\n]|[^"\\\r\n])*"|'(?:\\[^\r\n]|[^'\\\r\n])*'|“[^”\r\n]*”|‘[^’\r\n]*’|「[^」\r\n]*」|『[^』\r\n]*』`)
+// Code and recognizable technical tokens are hard guards. Ordinary quoted
+// descriptions, unmarked commands and ambiguous paths still need model review.
 var codeDelimiterRegex = regexp.MustCompile("`+|~{3,}")
 var technicalTokenRegex = regexp.MustCompile("(?:[A-Za-z][A-Za-z0-9+.-]*://|[A-Za-z]:[\\\\/]|\\.\\.?/|~/|/)[A-Za-z0-9._~!$&*+,;=:@%/?#\\\\-]+|[A-Za-z0-9_.-]+(?:[\\\\/][A-Za-z0-9_.-]+)*[\\\\/][A-Za-z0-9_.-]+\\.[A-Za-z0-9_-]+|[A-Za-z_][A-Za-z0-9_]*")
 
@@ -618,19 +618,8 @@ func checkLiteralInvariants(orig, comp string) []string {
 		}
 		failures = append(failures, fmt.Sprintf("未保留技术字面量: %q", string(display)))
 	}
-	for offset := 0; offset < len(orig); {
-		loc := quotedLiteralRegex.FindStringIndex(orig[offset:])
-		if loc == nil {
-			break
-		}
-		start, end := offset+loc[0], offset+loc[1]
-		literal := orig[start:end]
-		offset = end
-		if literal[0] == '\'' && (start > 0 && isASCIIIdentifier(orig[start-1]) || end < len(orig) && isASCIIIdentifier(orig[end])) {
-			offset = start + 1 // Rescan: an apostrophe may precede a real quote.
-			continue           // English contractions and possessives are not quoted strings.
-		}
-		if !strings.Contains(comp, literal) {
+	for _, literal := range protectedQuotedLiterals(orig) {
+		if !containsLiteral(comp, literal) {
 			reportMissing(literal)
 		}
 	}
@@ -983,11 +972,12 @@ func doCompileContext(ctx context.Context, req CompileReq) (CompileResp, error) 
 			}
 		}
 		compiled, err := generateBabelCandidate(generationContext, p, dialect, req.Text)
+		out := CompileResp{Compiled: compiled, Dialect: dialect.Name}
 		if err != nil {
-			return CompileResp{}, err
+			return out, err
 		}
 		if err := generationContext.Err(); err != nil {
-			return CompileResp{}, err
+			return out, err
 		}
 		if !req.NoCache {
 			now := time.Now()
@@ -998,7 +988,6 @@ func doCompileContext(ctx context.Context, req CompileReq) (CompileResp, error) 
 			cacheMutex.Unlock()
 			saveDiskCache()
 		}
-		out := CompileResp{Compiled: compiled, Dialect: dialect.Name}
 		return out, nil
 	}
 
@@ -1011,7 +1000,20 @@ func doCompileContext(ctx context.Context, req CompileReq) (CompileResp, error) 
 		out.CacheHit = out.CacheHit || shared
 	}
 	if err != nil {
-		return CompileResp{}, err
+		if out.Compiled != "" {
+			// Keep the latest draft inspectable without validating, adopting or
+			// caching a generation that failed its structural correction.
+			out.Validation = newValidation("error", "none", err.Error())
+			var validationErr *ValidationError
+			if errors.As(err, &validationErr) {
+				out.Validation = validationErr.Validation
+			}
+			out.Audit = validationSummary(out.Validation)
+			// Measurement is best-effort on an already failed result. If it is
+			// unavailable, leave its metadata empty rather than invent a count.
+			_ = fillCompileStats(&out, req.Text, p.TokenEncoding)
+		}
+		return out, err
 	}
 	// Only generation is shared. Every request satisfies its own current gate,
 	// including cache hits and followers of a non-verifying request.

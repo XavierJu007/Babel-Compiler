@@ -30,14 +30,25 @@ func refundSOPFixture(t *testing.T) (string, string) {
 func TestRefundSOPRelationFixture(t *testing.T) {
 	source, candidate := refundSOPFixture(t)
 	// These explicit fixture checks document facts that a lexical gate alone
-	// cannot prove, including the exact quoted states and input oddity.
+	// cannot prove, including fixed return values, labels and the input oddity.
 	for _, literal := range []string{
-		"「已支付未发货」", "「已签收未超过 7 天」", "「满 3 件 8 折」",
 		"「处理中」", "「余额不足」", "「账户异常」", "「合规」",
 		"「流程瑕疵」", "「资金风险」", "「待确认」", "09:00", "SOP", "SKU", "å",
 	} {
 		if !strings.Contains(source, literal) || !strings.Contains(candidate, literal) {
 			t.Errorf("source/candidate fixture lost literal %q", literal)
+		}
+	}
+	// These are quoted business descriptions, not machine strings. Exercise a
+	// real relation rewrite instead of hiding overprotection by copying them.
+	for _, phrase := range []string{"「已签收未超过 7 天」", "「满 3 件 8 折」"} {
+		if !strings.Contains(source, phrase) || strings.Contains(candidate, phrase) {
+			t.Fatalf("fixture no longer exercises quoted description compression: %q", phrase)
+		}
+	}
+	for _, relation := range []string{"(已支付∧未发货)∨(签收后≤7天∧商品未拆封)", "(参与(满3件8折)∧已拆单)"} {
+		if !strings.Contains(candidate, relation) {
+			t.Errorf("fixture lost the scoped relation rewrite %q", relation)
 		}
 	}
 	if issues := checkDeterministicInvariants(source, candidate, nil); len(issues) != 0 {

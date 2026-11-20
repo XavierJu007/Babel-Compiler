@@ -276,6 +276,14 @@ func newServerMux() *http.ServeMux {
 		if err != nil {
 			status := 400
 			body := map[string]any{"detail": err.Error()}
+			if res.Compiled != "" {
+				// A rejected draft is useful for inspection. HTTP status and the
+				// failed/error validation remain authoritative for adoption.
+				body["compiled"], body["dialect"] = res.Compiled, res.Dialect
+				body["cache_hit"], body["stats"] = res.CacheHit, res.Stats
+				body["validation"] = newValidation("error", "none", err.Error())
+				status = http.StatusBadGateway
+			}
 			var validationErr *ValidationError
 			if errors.As(err, &validationErr) {
 				body["validation"] = validationErr.Validation

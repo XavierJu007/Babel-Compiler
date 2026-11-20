@@ -28,7 +28,7 @@ func generateBabelCandidate(ctx context.Context, p Profile, dialect Dialect, ori
 		return candidate, nil
 	}
 	if err := ctx.Err(); err != nil {
-		return "", err
+		return candidate, err
 	}
 	data, _ := json.Marshal(struct {
 		Original  string `json:"original"`
@@ -36,14 +36,15 @@ func generateBabelCandidate(ctx context.Context, p Profile, dialect Dialect, ori
 	}{original, candidate})
 	raw, err = callLLMContext(ctx, p, dialect.Prompt+"\n\n"+outlineRewriteInstruction, string(data), 0.1)
 	if err != nil {
-		return "", err
+		return candidate, err
 	}
-	candidate = compactDSL(raw)
-	if strings.TrimSpace(candidate) == "" {
-		return "", fmt.Errorf("重组服务返回空候选")
+	rewritten := compactDSL(raw)
+	if strings.TrimSpace(rewritten) == "" {
+		return candidate, fmt.Errorf("重组服务返回空候选")
 	}
+	candidate = rewritten
 	if len(inheritedOutlineTitles(original, candidate)) > 0 {
-		return "", &ValidationError{Validation: newValidation("failed", "local_checks",
+		return candidate, &ValidationError{Validation: newValidation("failed", "local_checks",
 			"表达结构未达标：候选仍复刻原文编号提纲；已尝试重组 1 次，未作为巴别语接受。")}
 	}
 	return candidate, nil

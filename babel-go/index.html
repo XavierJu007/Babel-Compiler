@@ -456,6 +456,9 @@
         }
         .code-area::placeholder { color: var(--text-muted); }
         .code-area.output { color: #6ee7b7; }
+        .code-area.output[data-candidate-status="failed"],
+        .code-area.output[data-candidate-status="error"] { color: #fda4af; }
+        .code-area.output[data-candidate-status="not_run"] { color: #fde68a; }
 
         .stat-pill {
             font-family: var(--font-mono);
@@ -866,7 +869,7 @@
                     <span id="inputCharCount" class="char-counter">0 chars</span>
                 </div>
                 <div class="pane-actions">
-                    <label class="checkbox-label" title="由后端执行本地检查及所选校验；未通过或校验异常时不返回候选。通过不代表完整语义证明。">
+                    <label class="checkbox-label" title="由后端执行本地检查及所选校验；未通过或异常时保留候选供检查，透明代理回退原文。通过不代表完整语义证明。">
                         <input id="verifyCheck" type="checkbox" checked onchange="updateCompileOptionsHint()"> 严格校验
                     </label>
                     <button id="runBtn" type="button" class="btn btn-primary" onclick="runCompile(false)">编译 ⚡</button>
@@ -880,6 +883,7 @@
             <div class="pane-header">
                 <div class="pane-title-group">
                     <span class="pane-label emerald">OUTPUT // 高密度巴别语</span>
+                    <span id="candidateBadge" class="inv-pill-neutral hidden" role="status" aria-live="polite"></span>
                     <span id="statsBadge" class="stat-pill hidden"></span>
                     <span id="cacheBadge" class="cache-pill hidden">CACHE HIT</span>
                 </div>
@@ -1307,6 +1311,7 @@
             const error = new Error(typeof data?.detail === 'string' ? data.detail : `请求失败 (HTTP ${res.status})`);
             error.status = res.status;
             error.validation = data?.validation;
+            error.data = data;
             throw error;
         }
         return data;
@@ -2235,6 +2240,7 @@
     }
 
     let copyResultSequence = 0;
+    let compileRequestSequence = 0;
     let lastCompileContext = null;
     let compileContextRevision = 0;
 
@@ -2256,7 +2262,8 @@
         }
     }
 
-    function compileRequestIsCurrent(text, context) {
+    function compileRequestIsCurrent(text, context, sequence) {
+        if (sequence !== compileRequestSequence) return false;
         if (document.getElementById('rawInput').value !== text) {
             markCompileInputChanged();
             return false;
@@ -2271,10 +2278,11 @@
     function resetCompileResult() {
         copyResultSequence++;
         document.getElementById('dslOutput').value = '';
+        delete document.getElementById('dslOutput').dataset.candidateStatus;
         const copyBtn = document.getElementById('copyBtn');
         copyBtn.disabled = true;
         copyBtn.textContent = '复制结果';
-        for (const id of ['statsBadge', 'cacheBadge', 'invariantCapsules', 'auditBox']) {
+        for (const id of ['candidateBadge', 'statsBadge', 'cacheBadge', 'invariantCapsules', 'auditBox']) {
             const el = document.getElementById(id);
             el.classList.add('hidden');
             if (id !== 'cacheBadge') el.textContent = '';
@@ -2292,7 +2300,7 @@
     function formatTokenMeasurement(stats) {
         if (!stats || !Number.isSafeInteger(stats.original_tokens) || stats.original_tokens < 0 ||
             !Number.isSafeInteger(stats.compiled_tokens) || stats.compiled_tokens < 0) {
-            return { text: 'Token 未计量', title: '后端未提供有效的 Token 计量。' };
+            return { available: false, text: 'Token 未计量', title: '后端未提供有效的 Token 计量。' };
         }
         const original = stats.original_tokens;
         const compiled = stats.compiled_tokens;
@@ -2306,9 +2314,38 @@
         const change = original > 0 && (estimated || exact) ? `（${estimated ? '估算' : ''}${compiled <= original ? '减少' : '增加'} ${Math.abs((1 - compiled / original) * 100).toFixed(1)}%）` : '';
         const provenance = exact ? ` · ${stats.measurement_source} ${stats.measurement_version}` : '';
         return {
+            available: estimated || exact,
             text: `${scope} Token ${kind} ${original}→${compiled}${change}${provenance}`,
             title: `范围：${stats.measurement_scope || '未提供'}；编码：${stats.measurement_encoding || '未提供'}；来源：${stats.measurement_source || '未提供'}；版本：${stats.measurement_version || '未提供'}。所选编码只计算文本本体，不代表模型整次请求的实际用量或账单节省。`
         };
+    }
+
+    function copyResultLabel() {
+        const status = document.getElementById('dslOutput').dataset.candidateStatus;
+        return status === 'failed' ? '复制未通过候选' :
+            ['error', 'not_run'].includes(status) ? '复制未验收候选' : '复制结果';
+    }
+
+    function renderCompileCandidate(data, validation) {
+        if (typeof data?.compiled !== 'string' || !data.compiled.trim()) return;
+        const output = document.getElementById('dslOutput');
+        output.value = data.compiled;
+        output.dataset.candidateStatus = validation.status;
+        const copyBtn = document.getElementById('copyBtn');
+        copyBtn.disabled = false;
+        copyBtn.textContent = copyResultLabel();
+
+        const candidateBadge = document.getElementById('candidateBadge');
+        candidateBadge.textContent = validation.status === 'failed' ? '未通过候选 · 仅供检查' : '未验收候选 · 仅供检查';
+        candidateBadge.className = validation.status === 'passed' ? 'hidden' :
+            ['failed', 'error'].includes(validation.status) ? 'inv-pill-fail' : 'stat-pill';
+
+        const badge = document.getElementById('statsBadge');
+        const measurement = formatTokenMeasurement(data.stats);
+        badge.textContent = measurement.available ? measurement.text : '';
+        badge.title = measurement.available ? measurement.title : '';
+        badge.classList.toggle('hidden', !measurement.available);
+        document.getElementById('cacheBadge').classList.toggle('hidden', data.cache_hit !== true);
     }
 
     function formatProxyMeasurement(item) {
@@ -2399,6 +2436,7 @@
     async function runCompile(noCache = false) {
         const text = document.getElementById('rawInput').value;
         if (!text.trim()) return;
+        const requestSequence = ++compileRequestSequence;
         const btn = document.getElementById('runBtn');
         const forceBtn = document.getElementById('forceBtn');
         resetCompileResult();
@@ -2430,48 +2468,43 @@
                 })
             });
 
-            if (!compileRequestIsCurrent(text, requestContext)) return;
+            if (!compileRequestIsCurrent(text, requestContext, requestSequence)) return;
             if (typeof data?.compiled !== 'string' || !data.compiled.trim()) {
                 throw new Error('后端未返回有效的编译文本。');
             }
             const validation = normalizeValidation(data.validation);
             const expectedMethod = options.validation_mode === 'blind' ? 'blind_read' : 'llm_compare';
             if (strictGate && (validation.status !== 'passed' || validation.method !== expectedMethod)) {
-                const error = new Error(`所选 ${options.validation_mode} 严格校验未完成，本次候选未显示。`);
+                const error = new Error(`所选 ${options.validation_mode} 严格校验未通过验收，候选仅供检查。`);
                 error.validation = validation;
+                error.data = data;
                 throw error;
             }
-            document.getElementById('dslOutput').value = data.compiled;
-            document.getElementById('copyBtn').disabled = false;
-            renderValidation(!strictGate && !['failed', 'error'].includes(validation.status) ? {
+            const displayedValidation = !strictGate && !['failed', 'error'].includes(validation.status) ? {
                 status: 'not_run', method: 'none', policy_version: 'semantic-gate-v2',
                 issues: ['本次未开启严格校验，未执行模型验收。']
-            } : validation);
-
-            const badge = document.getElementById('statsBadge');
-            const measurement = formatTokenMeasurement(data.stats);
-            badge.textContent = measurement.text;
-            badge.title = measurement.title;
-            badge.classList.remove('hidden');
-
-            const cacheBadge = document.getElementById('cacheBadge');
-            cacheBadge.classList.toggle('hidden', !data.cache_hit);
+            } : validation;
+            renderCompileCandidate(data, displayedValidation);
+            renderValidation(displayedValidation);
 
         } catch (err) {
-            if (!compileRequestIsCurrent(text, requestContext)) return;
+            if (!compileRequestIsCurrent(text, requestContext, requestSequence)) return;
             resetCompileResult();
             const reported = normalizeValidation(err.validation);
             const validation = ['failed', 'error'].includes(reported.status) ? reported : {
                 status: err.status === 422 ? 'failed' : 'error',
                 method: 'none', policy_version: 'semantic-gate-v2', issues: reported.issues || []
             };
+            renderCompileCandidate(err.data, validation);
             renderValidation(validation, err.message || '编译请求失败，请重试。');
             if ((err.message || '').includes('API Key')) toggleConfigModal(true);
         } finally {
-            btn.textContent = '编译 ⚡';
-            btn.disabled = false;
-            forceBtn.disabled = false;
-            isOverdrive = false;
+            if (requestSequence === compileRequestSequence) {
+                btn.textContent = '编译 ⚡';
+                btn.disabled = false;
+                forceBtn.disabled = false;
+                isOverdrive = false;
+            }
         }
     }
 
@@ -2486,9 +2519,9 @@
             if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
             await navigator.clipboard.writeText(out.value);
             if (sequence !== copyResultSequence) return;
-            btn.textContent = '已复制 ✓';
+            btn.textContent = ['failed', 'error', 'not_run'].includes(out.dataset.candidateStatus) ? '已复制候选 ✓' : '已复制 ✓';
             setTimeout(() => {
-                if (sequence === copyResultSequence) btn.textContent = '复制结果';
+                if (sequence === copyResultSequence) btn.textContent = copyResultLabel();
             }, 1500);
         } catch (err) {
             if (sequence !== copyResultSequence) return;
