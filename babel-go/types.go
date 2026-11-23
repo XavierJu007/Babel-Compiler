@@ -57,6 +57,7 @@ type CompileReq struct {
 	APIKey           string   `json:"api_key,omitempty"`
 	BaseURL          string   `json:"base_url,omitempty"` // Exact POST URL override; never an inferred route.
 	Model            string   `json:"model,omitempty"`
+	ParallelChunks   bool     `json:"parallel_chunks,omitempty"`
 	TokenEncoding    string   `json:"token_encoding,omitempty"`
 	ValidationMode   string   `json:"validation_mode,omitempty"`
 	ReaderProfile    *string  `json:"reader_profile,omitempty"`

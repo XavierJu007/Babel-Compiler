@@ -407,6 +407,7 @@ func newServerMux() *http.ServeMux {
 		})
 	})
 
+	mux.HandleFunc("/api/compile/stream", compileStreamHandler)
 	mux.HandleFunc("/v1/chat/completions", openAIProxyHandler)
 	mux.HandleFunc("/v1/messages", anthropicProxyHandler)
 

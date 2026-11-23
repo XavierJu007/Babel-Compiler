@@ -1144,10 +1144,16 @@ func doCompileContext(ctx context.Context, req CompileReq) (CompileResp, error) 
 				return out, nil
 			}
 		}
-		compiled, err := generateBabelCandidate(generationContext, p, dialect, req.Text)
+		var compiled string
+		var genErr error
+		if shouldCompileInChunks(req) {
+			compiled, genErr = generateBabelCandidateParallel(generationContext, p, dialect, req.Text)
+		} else {
+			compiled, genErr = generateBabelCandidate(generationContext, p, dialect, req.Text)
+		}
 		out := CompileResp{Compiled: compiled, Dialect: dialect.Name}
-		if err != nil {
-			return out, err
+		if genErr != nil {
+			return out, genErr
 		}
 		if err := generationContext.Err(); err != nil {
 			return out, err
