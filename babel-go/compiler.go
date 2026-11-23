@@ -1041,16 +1041,22 @@ func doCompileContext(ctx context.Context, req CompileReq) (CompileResp, error) 
 	}
 	cacheKey := makeCacheKey(dialect, p, req.Text)
 	readCandidate := func() (CompileResp, bool) {
-		cacheMutex.Lock()
+		now := time.Now().Unix()
+		cacheMutex.RLock()
 		cached, hit := diskCache[cacheKey]
-		if hit && cached.Compiled != "" {
-			cached.LastAccess = time.Now().Unix()
-			cached.Audit = "" // old audit strings are never validation evidence
-			diskCache[cacheKey] = cached
-		}
-		cacheMutex.Unlock()
+		cacheMutex.RUnlock()
 		if !hit || cached.Compiled == "" {
 			return CompileResp{}, false
+		}
+		// 热路径只读；LastAccess 每 30s 刷新一次即可满足 LRU 精度，避免每次命中都抢写锁。
+		if cached.Audit != "" || now-cached.LastAccess >= 30 {
+			cacheMutex.Lock()
+			if current, ok := diskCache[cacheKey]; ok && current.Compiled != "" {
+				current.LastAccess = now
+				current.Audit = "" // old audit strings are never validation evidence
+				diskCache[cacheKey] = current
+			}
+			cacheMutex.Unlock()
 		}
 		if len(babelStructureIssues(req.Text, cached.Compiled)) > 0 {
 			return CompileResp{}, false
@@ -1089,7 +1095,7 @@ func doCompileContext(ctx context.Context, req CompileReq) (CompileResp, error) 
 				CreatedAt: now.Format(time.RFC3339), LastAccess: now.Unix()}
 			evictCacheIfNeededLocked()
 			cacheMutex.Unlock()
-			saveDiskCache()
+			scheduleDiskCacheSave()
 		}
 		return out, nil
 	}

@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -138,6 +141,14 @@ func newCircuitBreaker(threshold int, cooldown time.Duration) *CircuitBreaker {
 func (cb *CircuitBreaker) Allow() bool {
 	allowed, _ := cb.Acquire()
 	return allowed
+}
+
+// IsOpen 只读快判：熔断器正处于冷却窗口内、会直接拒绝请求时返回 true。
+// 它不占用半开探针，因此可以在排队/建连之前提前短路。
+func (cb *CircuitBreaker) IsOpen() bool {
+	cb.mu.RLock()
+	defer cb.mu.RUnlock()
+	return cb.failures >= cb.threshold && time.Since(cb.openedAt) < cb.cooldown
 }
 
 func (cb *CircuitBreaker) Acquire() (bool, uint64) {
@@ -284,9 +295,88 @@ func (g *flightGroup) Do(ctx context.Context, key string, fn func(context.Contex
 	}
 }
 
+// ==================== 全局编译并发信号量 ====================
+
+// compileSemaphore 限制同时进行「编译 + 审计」的文本块数量。
+// 队列满或等待超时的调用方会退回原文，而不是无限排队拖垮上游配额。
+type compileSemaphore struct {
+	slots chan struct{}
+}
+
+func newCompileSemaphore(limit int) *compileSemaphore {
+	if limit <= 0 {
+		limit = 16
+	}
+	return &compileSemaphore{slots: make(chan struct{}, limit)}
+}
+
+// Acquire 在 queueTimeout 内尝试获取一个槽位，或直到 ctx 结束。
+// 返回 (release, acquired, canceled)：canceled 表示被调用方取消，acquired=false
+// 且 canceled=false 表示队列超时，调用方应保留原文继续。
+func (s *compileSemaphore) Acquire(ctx context.Context, queueTimeout time.Duration) (func(), bool, bool) {
+	if ctx.Err() != nil {
+		return nil, false, true
+	}
+	if s == nil || cap(s.slots) == 0 {
+		return func() {}, true, false
+	}
+	select {
+	case s.slots <- struct{}{}:
+		return s.releaseFunc(), true, false
+	default:
+	}
+	if queueTimeout <= 0 {
+		return nil, false, false
+	}
+	timer := time.NewTimer(queueTimeout)
+	defer timer.Stop()
+	select {
+	case s.slots <- struct{}{}:
+		return s.releaseFunc(), true, false
+	case <-ctx.Done():
+		return nil, false, true
+	case <-timer.C:
+		return nil, false, false
+	}
+}
+
+func (s *compileSemaphore) releaseFunc() func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			<-s.slots
+		})
+	}
+}
+
+func (s *compileSemaphore) Status() map[string]int {
+	if s == nil {
+		return map[string]int{"in_flight": 0, "limit": 0}
+	}
+	return map[string]int{"in_flight": len(s.slots), "limit": cap(s.slots)}
+}
+
+// envPositiveInt 读取正整数环境变量；未设置或非法时回退默认值。
+func envPositiveInt(name string, fallback int) int {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return fallback
+	}
+	return n
+}
+
 const (
 	maxCacheEntries = 2000
-	maxLogs         = 50
+	// 高并发网关下 50 条会把一次多块编译的日志互相挤掉，保留 500 条便于回溯。
+	maxLogs = 500
+
+	defaultProxyMaxConcurrency   = 16
+	defaultProxyBlockConcurrency = 8
+	defaultProxyQueueTimeoutMS   = 5000
 )
 
 var (
@@ -295,6 +385,10 @@ var (
 	compileFlight flightGroup
 
 	compilerCB = newCircuitBreaker(3, 60*time.Second)
+
+	proxyCompileSem          = newCompileSemaphore(envPositiveInt("BABEL_PROXY_MAX_CONCURRENCY", defaultProxyMaxConcurrency))
+	proxyBlockConcurrency    = envPositiveInt("BABEL_PROXY_BLOCK_CONCURRENCY", defaultProxyBlockConcurrency)
+	proxyCompileQueueTimeout = time.Duration(envPositiveInt("BABEL_PROXY_QUEUE_TIMEOUT_MS", defaultProxyQueueTimeoutMS)) * time.Millisecond
 
 	redactMutex      sync.RWMutex
 	logRedactEnabled = true

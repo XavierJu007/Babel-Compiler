@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -9,9 +10,12 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"runtime"
 	"sort"
 	"strings"
+	"syscall"
+	"time"
 )
 
 //go:embed index.html
@@ -134,6 +138,10 @@ func newServerMux() *http.ServeMux {
 				json.NewEncoder(w).Encode(map[string]string{"detail": "无效请求"})
 				return
 			}
+
+			// 序列化整个读-改-写：并发保存/切换不同方案时不会互相覆盖。
+			configMutationMutex.Lock()
+			defer configMutationMutex.Unlock()
 
 			cfg := loadConfig()
 			name := strings.TrimSpace(req.ProfileName)
@@ -357,6 +365,7 @@ func newServerMux() *http.ServeMux {
 		json.NewEncoder(w).Encode(map[string]any{
 			"redact_enabled": isLogRedactEnabled(),
 			"circuit":        compilerCB.Status(),
+			"concurrency":    proxyCompileSem.Status(),
 			"logs":           list,
 		})
 	})
@@ -380,12 +389,25 @@ func startServer(preferredAddr string, autoOpen bool) {
 		os.Exit(1)
 	}
 
+	// 服务端模式才启用异步落盘；退出前会强制刷盘，不丢缓存。
+	stopCacheFlusher := startAsyncCacheFlusher(500 * time.Millisecond)
+	defer stopCacheFlusher()
+
+	srv := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 15 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1 MiB；WriteTimeout 留空以支持长 SSE 流。
+	}
+
 	webURL := "http://" + actualAddr
 	fmt.Printf("[+] Babel-DSL 服务已就绪:\n")
 	fmt.Printf("    - 配置文件:       %s\n", configPath())
 	fmt.Printf("    - 表达策略:       mixed（高密度巴别语 / 关系·条件·约束）\n")
 	fmt.Printf("    - 领域表达目录:   %s (支持 ./domains 覆盖)\n", globalDomainsDir())
-	fmt.Printf("    - LRU 缓存池:     %s (上限 %d 条)\n", cacheFilePath(), maxCacheEntries)
+	fmt.Printf("    - LRU 缓存池:     %s (上限 %d 条，异步防抖落盘)\n", cacheFilePath(), maxCacheEntries)
+	fmt.Printf("    - 代理并发控制:   全局上限 %d / 单请求块并发 %d / 队列超时 %v\n",
+		proxyCompileSem.Status()["limit"], proxyBlockConcurrency, proxyCompileQueueTimeout)
 	fmt.Printf("    - Web 控制台:     %s\n", webURL)
 	fmt.Printf("    - OpenAI 代理:    %s/v1/chat/completions\n", webURL)
 	fmt.Printf("    - Anthropic 代理: %s/v1/messages\n", webURL)
@@ -394,8 +416,25 @@ func startServer(preferredAddr string, autoOpen bool) {
 		openBrowser(webURL)
 	}
 
-	if err := http.Serve(ln, handler); err != nil {
-		fmt.Fprintf(os.Stderr, "[Error] 服务异常退出: %v\n", err)
-		os.Exit(1)
+	sigCtx, stopSig := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSig()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.Serve(ln)
+	}()
+
+	select {
+	case err := <-errCh:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			fmt.Fprintf(os.Stderr, "[Error] 服务异常退出: %v\n", err)
+			os.Exit(1)
+		}
+	case <-sigCtx.Done():
+		// 停止接收新连接，给在途请求（含 SSE）15s 收尾时间，再强制刷缓存。
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+		<-errCh
 	}
 }

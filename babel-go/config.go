@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -44,12 +45,56 @@ func defaultProfile() Profile {
 	}
 }
 
-func loadConfig() Config {
+// ==================== 配置内存缓存 ====================
+//
+// 每个代理请求都会读取配置。缓存按「绝对路径 + 文件元信息 + 环境变量指纹」
+// 校验，外部改写（测试里的 os.WriteFile、手工编辑、t.Setenv）仍能立即生效。
+
+var (
+	configMutex sync.RWMutex
+	// configMutationMutex 串行化 /api/config 的读-改-写，避免并发保存丢更新。
+	configMutationMutex sync.Mutex
+	configCache         struct {
+		valid    bool
+		absPath  string
+		exists   bool
+		fileInfo os.FileInfo
+		modTime  time.Time
+		size     int64
+		envKey   string
+		cfg      Config
+	}
+)
+
+func configEnvFingerprint() string {
+	return strings.Join([]string{
+		os.Getenv("BABEL_BASE_URL"),
+		os.Getenv("BABEL_MODEL"),
+		os.Getenv("BABEL_API_KEY"),
+		os.Getenv("BABEL_UPSTREAM_URL"),
+		os.Getenv("BABEL_TOKEN_ENCODING"),
+		os.Getenv("BABEL_VALIDATION_MODE"),
+	}, "\x00")
+}
+
+// cloneConfig 让调用方拿到可自由修改的副本，Profiles map 不会被共享。
+func cloneConfig(cfg Config) Config {
+	cloned := cfg
+	if cfg.Profiles != nil {
+		cloned.Profiles = make(map[string]Profile, len(cfg.Profiles))
+		for k, v := range cfg.Profiles {
+			cloned.Profiles[k] = v
+		}
+	}
+	return cloned
+}
+
+func loadConfigFromDisk(path string) Config {
 	cfg := Config{
 		ActiveProfile: "default",
 		Profiles:      map[string]Profile{"default": defaultProfile()},
 	}
-	data, err := os.ReadFile(configPath())
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return cfg
 	}
@@ -92,6 +137,60 @@ func loadConfig() Config {
 	return cfg
 }
 
+func configCacheFreshLocked(absPath, envKey string, fi os.FileInfo, statErr error) bool {
+	if !configCache.valid || configCache.absPath != absPath || configCache.envKey != envKey {
+		return false
+	}
+	if statErr != nil {
+		return !configCache.exists
+	}
+	return configCache.exists && configCache.fileInfo != nil &&
+		os.SameFile(fi, configCache.fileInfo) &&
+		fi.ModTime().Equal(configCache.modTime) && fi.Size() == configCache.size
+}
+
+func loadConfig() Config {
+	path := configPath()
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		absPath = path
+	}
+	envKey := configEnvFingerprint()
+
+	configMutex.RLock()
+	fi, statErr := os.Stat(absPath)
+	if configCacheFreshLocked(absPath, envKey, fi, statErr) {
+		cached := cloneConfig(configCache.cfg)
+		configMutex.RUnlock()
+		return cached
+	}
+	configMutex.RUnlock()
+
+	configMutex.Lock()
+	defer configMutex.Unlock()
+
+	fi, statErr = os.Stat(absPath)
+	if configCacheFreshLocked(absPath, envKey, fi, statErr) {
+		return cloneConfig(configCache.cfg)
+	}
+
+	cfg := loadConfigFromDisk(absPath)
+	configCache.valid = true
+	configCache.absPath = absPath
+	configCache.envKey = envKey
+	configCache.exists = statErr == nil
+	configCache.fileInfo = fi
+	if statErr == nil {
+		configCache.modTime = fi.ModTime()
+		configCache.size = fi.Size()
+	} else {
+		configCache.modTime = time.Time{}
+		configCache.size = 0
+	}
+	configCache.cfg = cloneConfig(cfg)
+	return cfg
+}
+
 func getActiveProfile(cfg Config, overrideName string) Profile {
 	name := cfg.ActiveProfile
 	if overrideName != "" {
@@ -118,7 +217,34 @@ func writeConfigFile(cfg Config) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(configPath(), data, 0600)
+
+	configMutex.Lock()
+	defer configMutex.Unlock()
+
+	path := configPath()
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	// 临时文件 + Rename：并发读者不会看到写了一半的 JSON。
+	f, err := os.CreateTemp(dir, ".babel-config-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	configCache.valid = false
+	return nil
 }
 
 func maskKey(k string) string {

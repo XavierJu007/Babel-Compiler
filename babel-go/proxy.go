@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -50,10 +51,12 @@ func appendProxyLog(entry ProxyLog) {
 
 	logsMutex.Lock()
 	defer logsMutex.Unlock()
-	proxyLogs = append([]ProxyLog{entry}, proxyLogs...)
-	if len(proxyLogs) > maxLogs {
-		proxyLogs = proxyLogs[:maxLogs]
+	// 原地移位：单次追加不分配新切片，避免高并发下反复复制整段日志。
+	if len(proxyLogs) < maxLogs {
+		proxyLogs = append(proxyLogs, ProxyLog{})
 	}
+	copy(proxyLogs[1:], proxyLogs[:len(proxyLogs)-1])
+	proxyLogs[0] = entry
 }
 
 func applyUpstreamUsage(logIDs []string, estOrigTotal, estCompTotal, realPromptTokens int) {
@@ -154,6 +157,29 @@ func translateMessageBlockContext(ctx context.Context, protocol, role, text stri
 		return text, "", origTok, origTok
 	}
 
+	// 熔断窗口内直接短路：既不排队占槽位，也不额外记录失败。
+	if compilerCB.IsOpen() {
+		return text, "", origTok, origTok
+	}
+
+	// 全局并发闸门：队列超时说明编译侧忙不过来，退回原文而不是拖住上游请求。
+	releaseSem, acquired, canceled := proxyCompileSem.Acquire(ctx, proxyCompileQueueTimeout)
+	if canceled {
+		return text, "", origTok, origTok
+	}
+	if !acquired {
+		logID := fmt.Sprintf("%d-%d", time.Now().UnixNano(), proxyLogSequence.Add(1))
+		appendProxyLog(ProxyLog{
+			ID: logID, Timestamp: time.Now().Format("15:04:05"),
+			Protocol: protocol, Dialect: dialect.Name, Domains: domains, Role: role,
+			Original: text, Compiled: text,
+			Decision: "kept_original",
+			Reason:   "编译并发队列繁忙，已保留原文",
+		})
+		return text, logID, origTok, origTok
+	}
+	defer releaseSem()
+
 	allowed, probeID := compilerCB.Acquire()
 	if !allowed {
 		return text, "", origTok, origTok
@@ -238,32 +264,58 @@ func translateMessageBlockContext(ctx context.Context, protocol, role, text stri
 	return res.Compiled, logID, origTok, compTok
 }
 
+// proxyTextBlock 是一个待编译文本槽位。apply 在全部并发结果就绪后才执行，
+// 因此所有对请求 payload 的写入都发生在同一 goroutine，不存在并发写 map。
+type proxyTextBlock struct {
+	role        string
+	text        string
+	reqKeywords []string
+	apply       func(string)
+}
+
+type proxyBlockResult struct {
+	compiled string
+	logID    string
+	origTok  int
+	compTok  int
+}
+
+// appendProxyTextBlock 只把够长的文本加入编译队列；短文本按原文计入统计。
+func appendProxyTextBlock(blocks *[]proxyTextBlock, role, text string, reqKeywords []string, apply func(string), estOrig, estComp *int) {
+	if len([]rune(strings.TrimSpace(text))) < 35 {
+		t := estimateTokensBPE(text)
+		*estOrig += t
+		*estComp += t
+		return
+	}
+	*blocks = append(*blocks, proxyTextBlock{
+		role:        role,
+		text:        text,
+		reqKeywords: reqKeywords,
+		apply:       apply,
+	})
+}
+
 // Only description strings are eligible for compilation. Schema keywords,
 // property names, enum values and all other protocol data keep their values.
-func compressSchemaNode(ctx context.Context, protocol, toolLabel string, node map[string]any, p Profile, dialect Dialect, domains []string, logIDs *[]string, estOrig, estComp *int) {
+func collectSchemaBlocks(toolLabel string, node map[string]any, blocks *[]proxyTextBlock, estOrig, estComp *int) {
 	if desc, ok := node["description"].(string); ok {
-		comp, id, oTok, cTok := translateMessageBlockContext(ctx, protocol, toolLabel, desc, p, dialect, nil, domains)
-		node["description"] = comp
-		*estOrig += oTok
-		*estComp += cTok
-		if id != "" {
-			*logIDs = append(*logIDs, id)
-		}
+		target := node
+		appendProxyTextBlock(blocks, toolLabel, desc, nil, func(v string) { target["description"] = v }, estOrig, estComp)
 	}
-
 	if props, ok := node["properties"].(map[string]any); ok {
 		for propName, propVal := range props {
 			if propMap, ok := propVal.(map[string]any); ok {
-				compressSchemaNode(ctx, protocol, toolLabel+"."+propName, propMap, p, dialect, domains, logIDs, estOrig, estComp)
+				collectSchemaBlocks(toolLabel+"."+propName, propMap, blocks, estOrig, estComp)
 			}
 		}
 	}
 	if items, ok := node["items"].(map[string]any); ok {
-		compressSchemaNode(ctx, protocol, toolLabel+"[]", items, p, dialect, domains, logIDs, estOrig, estComp)
+		collectSchemaBlocks(toolLabel+"[]", items, blocks, estOrig, estComp)
 	}
 }
 
-func compressToolsArray(ctx context.Context, protocol string, tools []any, p Profile, dialect Dialect, domains []string, logIDs *[]string, estOrig, estComp *int) {
+func collectToolsBlocks(tools []any, blocks *[]proxyTextBlock, estOrig, estComp *int) {
 	for _, item := range tools {
 		toolMap, ok := item.(map[string]any)
 		if !ok {
@@ -276,16 +328,11 @@ func compressToolsArray(ctx context.Context, protocol string, tools []any, p Pro
 			}
 			label := "tool:" + fnName
 			if desc, ok := fnMap["description"].(string); ok {
-				comp, id, oTok, cTok := translateMessageBlockContext(ctx, protocol, label, desc, p, dialect, nil, domains)
-				fnMap["description"] = comp
-				*estOrig += oTok
-				*estComp += cTok
-				if id != "" {
-					*logIDs = append(*logIDs, id)
-				}
+				target := fnMap
+				appendProxyTextBlock(blocks, label, desc, nil, func(v string) { target["description"] = v }, estOrig, estComp)
 			}
 			if params, ok := fnMap["parameters"].(map[string]any); ok {
-				compressSchemaNode(ctx, protocol, label, params, p, dialect, domains, logIDs, estOrig, estComp)
+				collectSchemaBlocks(label, params, blocks, estOrig, estComp)
 			}
 			continue
 		}
@@ -296,16 +343,60 @@ func compressToolsArray(ctx context.Context, protocol string, tools []any, p Pro
 		}
 		label := "tool:" + toolName
 		if desc, ok := toolMap["description"].(string); ok {
-			comp, id, oTok, cTok := translateMessageBlockContext(ctx, protocol, label, desc, p, dialect, nil, domains)
-			toolMap["description"] = comp
-			*estOrig += oTok
-			*estComp += cTok
-			if id != "" {
-				*logIDs = append(*logIDs, id)
-			}
+			target := toolMap
+			appendProxyTextBlock(blocks, label, desc, nil, func(v string) { target["description"] = v }, estOrig, estComp)
 		}
 		if schema, ok := toolMap["input_schema"].(map[string]any); ok {
-			compressSchemaNode(ctx, protocol, label, schema, p, dialect, domains, logIDs, estOrig, estComp)
+			collectSchemaBlocks(label, schema, blocks, estOrig, estComp)
+		}
+	}
+}
+
+// compileProxyBlocks 把一次请求里的文本块做有界并行编译，然后按原顺序写回。
+// 写回与统计累加都发生在 wg.Wait() 之后，保证 payload 无并发写、结果可复现。
+func compileProxyBlocks(ctx context.Context, protocol string, blocks []proxyTextBlock, p Profile, dialect Dialect, domains []string, logIDs *[]string, estOrig, estComp *int) {
+	if len(blocks) == 0 {
+		return
+	}
+	results := make([]proxyBlockResult, len(blocks))
+	if len(blocks) == 1 {
+		b := blocks[0]
+		comp, id, oTok, cTok := translateMessageBlockContext(ctx, protocol, b.role, b.text, p, dialect, b.reqKeywords, domains)
+		results[0] = proxyBlockResult{compiled: comp, logID: id, origTok: oTok, compTok: cTok}
+	} else {
+		workers := proxyBlockConcurrency
+		if workers <= 0 {
+			workers = 1
+		}
+		if workers > len(blocks) {
+			workers = len(blocks)
+		}
+		var nextIdx atomic.Int64
+		var wg sync.WaitGroup
+		wg.Add(workers)
+		for w := 0; w < workers; w++ {
+			go func() {
+				defer wg.Done()
+				for {
+					idx := int(nextIdx.Add(1) - 1)
+					if idx >= len(blocks) {
+						return
+					}
+					b := blocks[idx]
+					comp, id, oTok, cTok := translateMessageBlockContext(ctx, protocol, b.role, b.text, p, dialect, b.reqKeywords, domains)
+					results[idx] = proxyBlockResult{compiled: comp, logID: id, origTok: oTok, compTok: cTok}
+				}
+			}()
+		}
+		wg.Wait()
+	}
+	for i, b := range blocks {
+		r := results[i]
+		b.apply(r.compiled)
+		*estOrig += r.origTok
+		*estComp += r.compTok
+		if r.logID != "" {
+			*logIDs = append(*logIDs, r.logID)
 		}
 	}
 }
@@ -421,6 +512,7 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 		logIDs       []string
 		estOrigTotal int
 		estCompTotal int
+		blocks       []proxyTextBlock
 	)
 
 	if msgs, ok := payload["messages"].([]any); ok {
@@ -443,25 +535,15 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 			switch content := msgMap["content"].(type) {
 			case string:
-				comp, id, oTok, cTok := translateMessageBlockContext(r.Context(), "openai", role, content, p, dialect, reqKeywords, domains)
-				msgMap["content"] = comp
-				estOrigTotal += oTok
-				estCompTotal += cTok
-				if id != "" {
-					logIDs = append(logIDs, id)
-				}
+				target := msgMap
+				appendProxyTextBlock(&blocks, role, content, reqKeywords, func(v string) { target["content"] = v }, &estOrigTotal, &estCompTotal)
 			case []any:
 				for _, part := range content {
 					if partMap, ok := part.(map[string]any); ok {
 						if partMap["type"] == "text" {
 							if txt, ok := partMap["text"].(string); ok {
-								comp, id, oTok, cTok := translateMessageBlockContext(r.Context(), "openai", role, txt, p, dialect, reqKeywords, domains)
-								partMap["text"] = comp
-								estOrigTotal += oTok
-								estCompTotal += cTok
-								if id != "" {
-									logIDs = append(logIDs, id)
-								}
+								target := partMap
+								appendProxyTextBlock(&blocks, role, txt, reqKeywords, func(v string) { target["text"] = v }, &estOrigTotal, &estCompTotal)
 							}
 						}
 					}
@@ -472,7 +554,12 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if tools, ok := payload["tools"].([]any); ok {
-		compressToolsArray(r.Context(), "openai", tools, p, dialect, domains, &logIDs, &estOrigTotal, &estCompTotal)
+		collectToolsBlocks(tools, &blocks, &estOrigTotal, &estCompTotal)
+	}
+
+	compileProxyBlocks(r.Context(), "openai", blocks, p, dialect, domains, &logIDs, &estOrigTotal, &estCompTotal)
+	if r.Context().Err() != nil {
+		return
 	}
 
 	isStream, _ := payload["stream"].(bool)
@@ -529,18 +616,27 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	flusher, canFlush := w.(http.Flusher)
 	buf := make([]byte, 4096)
-	var tailRing string
+	// 固定容量尾部缓冲：只保留最后 4KB 用于解析 usage，流式转发本身零拼接。
+	tailBuf := make([]byte, 0, 8192)
 	for {
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
 			chunk := buf[:n]
-			w.Write(chunk)
+			if _, writeErr := w.Write(chunk); writeErr != nil {
+				return
+			}
 			if canFlush {
 				flusher.Flush()
 			}
-			tailRing += string(chunk)
-			if len(tailRing) > 4096 {
-				tailRing = tailRing[len(tailRing)-4096:]
+			if len(chunk) >= 4096 {
+				tailBuf = append(tailBuf[:0], chunk[len(chunk)-4096:]...)
+			} else {
+				tailBuf = append(tailBuf, chunk...)
+				if len(tailBuf) > 4096 {
+					excess := len(tailBuf) - 4096
+					copy(tailBuf, tailBuf[excess:])
+					tailBuf = tailBuf[:4096]
+				}
 			}
 		}
 		if readErr != nil {
@@ -548,7 +644,7 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if realTokens := extractUsageFromOpenAISSETail(tailRing); realTokens > 0 {
+	if realTokens := extractUsageFromOpenAISSETail(string(tailBuf)); realTokens > 0 {
 		go applyUpstreamUsage(logIDs, estOrigTotal, estCompTotal, realTokens)
 	}
 }
@@ -605,29 +701,20 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 		logIDs       []string
 		estOrigTotal int
 		estCompTotal int
+		blocks       []proxyTextBlock
 	)
 
 	switch sysVal := payload["system"].(type) {
 	case string:
-		comp, id, oTok, cTok := translateMessageBlockContext(r.Context(), "anthropic", "system", sysVal, p, dialect, nil, domains)
-		payload["system"] = comp
-		estOrigTotal += oTok
-		estCompTotal += cTok
-		if id != "" {
-			logIDs = append(logIDs, id)
-		}
+		target := payload
+		appendProxyTextBlock(&blocks, "system", sysVal, nil, func(v string) { target["system"] = v }, &estOrigTotal, &estCompTotal)
 	case []any:
 		for _, block := range sysVal {
 			if blockMap, ok := block.(map[string]any); ok {
 				if blockMap["type"] == "text" {
 					if txt, ok := blockMap["text"].(string); ok {
-						comp, id, oTok, cTok := translateMessageBlockContext(r.Context(), "anthropic", "system", txt, p, dialect, nil, domains)
-						blockMap["text"] = comp
-						estOrigTotal += oTok
-						estCompTotal += cTok
-						if id != "" {
-							logIDs = append(logIDs, id)
-						}
+						target := blockMap
+						appendProxyTextBlock(&blocks, "system", txt, nil, func(v string) { target["text"] = v }, &estOrigTotal, &estCompTotal)
 					}
 				}
 			}
@@ -652,25 +739,15 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 			switch content := msgMap["content"].(type) {
 			case string:
-				comp, id, oTok, cTok := translateMessageBlockContext(r.Context(), "anthropic", "user", content, p, dialect, nil, domains)
-				msgMap["content"] = comp
-				estOrigTotal += oTok
-				estCompTotal += cTok
-				if id != "" {
-					logIDs = append(logIDs, id)
-				}
+				target := msgMap
+				appendProxyTextBlock(&blocks, "user", content, nil, func(v string) { target["content"] = v }, &estOrigTotal, &estCompTotal)
 			case []any:
 				for _, part := range content {
 					if partMap, ok := part.(map[string]any); ok {
 						if partMap["type"] == "text" {
 							if txt, ok := partMap["text"].(string); ok {
-								comp, id, oTok, cTok := translateMessageBlockContext(r.Context(), "anthropic", "user", txt, p, dialect, nil, domains)
-								partMap["text"] = comp
-								estOrigTotal += oTok
-								estCompTotal += cTok
-								if id != "" {
-									logIDs = append(logIDs, id)
-								}
+								target := partMap
+								appendProxyTextBlock(&blocks, "user", txt, nil, func(v string) { target["text"] = v }, &estOrigTotal, &estCompTotal)
 							}
 						}
 					}
@@ -680,7 +757,12 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if tools, ok := payload["tools"].([]any); ok {
-		compressToolsArray(r.Context(), "anthropic", tools, p, dialect, domains, &logIDs, &estOrigTotal, &estCompTotal)
+		collectToolsBlocks(tools, &blocks, &estOrigTotal, &estCompTotal)
+	}
+
+	compileProxyBlocks(r.Context(), "anthropic", blocks, p, dialect, domains, &logIDs, &estOrigTotal, &estCompTotal)
+	if r.Context().Err() != nil {
+		return
 	}
 
 	isStream, _ := payload["stream"].(bool)
@@ -753,17 +835,24 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	flusher, canFlush := w.(http.Flusher)
 	buf := make([]byte, 4096)
-	var headCapture string
+	// message_start（含 usage）出现在流首部，固定 8KB 头部缓冲即可覆盖。
+	headBuf := make([]byte, 0, 8192)
 	for {
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
 			chunk := buf[:n]
-			w.Write(chunk)
+			if _, writeErr := w.Write(chunk); writeErr != nil {
+				return
+			}
 			if canFlush {
 				flusher.Flush()
 			}
-			if len(headCapture) < 8192 {
-				headCapture += string(chunk)
+			if rem := 8192 - len(headBuf); rem > 0 {
+				if len(chunk) > rem {
+					headBuf = append(headBuf, chunk[:rem]...)
+				} else {
+					headBuf = append(headBuf, chunk...)
+				}
 			}
 		}
 		if readErr != nil {
@@ -771,7 +860,7 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if realTokens := extractUsageFromAnthropicSSE(headCapture); realTokens > 0 {
+	if realTokens := extractUsageFromAnthropicSSE(string(headBuf)); realTokens > 0 {
 		go applyUpstreamUsage(logIDs, estOrigTotal, estCompTotal, realTokens)
 	}
 }

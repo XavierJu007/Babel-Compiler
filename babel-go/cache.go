@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 var cachePersistMutex sync.Mutex
@@ -68,28 +69,151 @@ func saveDiskCache() {
 	// not truncate each other's JSON or let an older snapshot win a later write.
 	cachePersistMutex.Lock()
 	defer cachePersistMutex.Unlock()
+
 	cacheMutex.Lock()
 	evictCacheIfNeededLocked()
-	data, err := json.MarshalIndent(diskCache, "", "  ")
+	snapshot := make(map[string]CacheEntry, len(diskCache))
+	for k, v := range diskCache {
+		snapshot[k] = v
+	}
 	cacheMutex.Unlock()
+
+	// Marshal outside cacheMutex so large snapshots never stall concurrent readers.
+	data, err := json.MarshalIndent(snapshot, "", "  ")
 	if err != nil {
 		return
 	}
 	path := cacheFilePath()
-	f, err := os.CreateTemp(filepath.Dir(path), ".babel-cache-*")
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return
+	}
+	f, err := os.CreateTemp(dir, ".babel-cache-*")
 	if err != nil {
 		return
 	}
 	tmp := f.Name()
 	defer os.Remove(tmp)
 	if _, err := f.Write(data); err != nil {
-		f.Close()
+		_ = f.Close()
 		return
 	}
 	if err := f.Close(); err != nil {
 		return
 	}
 	_ = os.Rename(tmp, path)
+}
+
+var (
+	cacheFlushMu      sync.Mutex
+	cacheFlushActive  bool
+	cacheFlushTrigger chan struct{}
+	cacheFlushStop    chan struct{}
+	cacheFlushDone    chan struct{}
+)
+
+// startAsyncCacheFlusher 在服务端模式把突发的缓存写入合并成一次落盘；
+// 返回的 stop 函数会先停掉定时器再把未落盘的内容同步刷下去。
+// 未启动时 scheduleDiskCacheSave 自动退回同步写盘，CLI 与单测行为不变。
+func startAsyncCacheFlusher(debounce time.Duration) func() {
+	if debounce <= 0 {
+		debounce = 500 * time.Millisecond
+	}
+	cacheFlushMu.Lock()
+	if cacheFlushActive {
+		cacheFlushMu.Unlock()
+		return func() {}
+	}
+	trigger := make(chan struct{}, 1)
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	cacheFlushTrigger = trigger
+	cacheFlushStop = stop
+	cacheFlushDone = done
+	cacheFlushActive = true
+	cacheFlushMu.Unlock()
+
+	go func() {
+		defer close(done)
+		var (
+			timer   *time.Timer
+			timerCh <-chan time.Time
+			dirty   bool
+		)
+		stopTimer := func() {
+			if timer != nil {
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer = nil
+				timerCh = nil
+			}
+		}
+		for {
+			select {
+			case <-trigger:
+				dirty = true
+				if timer == nil {
+					timer = time.NewTimer(debounce)
+					timerCh = timer.C
+				}
+			case <-timerCh:
+				timer = nil
+				timerCh = nil
+				if dirty {
+					dirty = false
+					saveDiskCache()
+				}
+			case <-stop:
+				stopTimer()
+				select {
+				case <-trigger:
+					dirty = true
+				default:
+				}
+				if dirty {
+					saveDiskCache()
+				}
+				return
+			}
+		}
+	}()
+
+	var stopOnce sync.Once
+	return func() {
+		stopOnce.Do(func() {
+			cacheFlushMu.Lock()
+			if !cacheFlushActive || cacheFlushStop != stop {
+				cacheFlushMu.Unlock()
+				return
+			}
+			cacheFlushActive = false
+			cacheFlushTrigger = nil
+			cacheFlushStop = nil
+			cacheFlushDone = nil
+			close(stop)
+			cacheFlushMu.Unlock()
+			<-done
+		})
+	}
+}
+
+func scheduleDiskCacheSave() {
+	cacheFlushMu.Lock()
+	active := cacheFlushActive
+	trigger := cacheFlushTrigger
+	cacheFlushMu.Unlock()
+	if !active || trigger == nil {
+		saveDiskCache()
+		return
+	}
+	select {
+	case trigger <- struct{}{}:
+	default:
+	}
 }
 
 func makeCacheKey(dialect Dialect, p Profile, text string) string {

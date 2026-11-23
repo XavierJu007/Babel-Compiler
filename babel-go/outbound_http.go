@@ -93,7 +93,8 @@ func newSecureOutboundTransport() *outboundTransport {
 			// RootCAs is nil to use the operating system's trusted authorities.
 		},
 		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
+		MaxIdleConns:          256,
+		MaxIdleConnsPerHost:   64, // 默认 2 条会在 HTTP/1.1 上游下反复建连
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: time.Second,
