@@ -18,6 +18,12 @@ type Profile struct {
 	TokenEncoding  string `json:"token_encoding,omitempty"`
 	ValidationMode string `json:"validation_mode,omitempty"`
 	ReaderProfile  string `json:"reader_profile,omitempty"`
+	// AuditProfile 指定 compare 校验与 blind 对照使用的方案；留空沿用编译方案。
+	AuditProfile string `json:"audit_profile,omitempty"`
+	// DisableThinking / ReasoningEffort 只在显式配置时注入请求体，
+	// 默认保持字节级不变的请求，避免非标准字段被严格端点拒绝。
+	DisableThinking bool   `json:"disable_thinking,omitempty"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 type Config struct {
@@ -54,6 +60,9 @@ type CompileReq struct {
 	TokenEncoding    string   `json:"token_encoding,omitempty"`
 	ValidationMode   string   `json:"validation_mode,omitempty"`
 	ReaderProfile    *string  `json:"reader_profile,omitempty"`
+	AuditProfile     *string  `json:"audit_profile,omitempty"`
+	// SkipAuditIfNotShorter 仅供代理路径：候选不短于原文时无需再跑模型审计。
+	SkipAuditIfNotShorter bool `json:"-"`
 }
 
 // ValidationResult describes this request's checks, never a cached assertion.

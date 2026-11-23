@@ -317,6 +317,12 @@ func callLLM(p Profile, sysPrompt, userPrompt string, temp float64) (string, err
 }
 
 func callLLMContext(ctx context.Context, p Profile, sysPrompt, userPrompt string, temp float64) (string, error) {
+	return callLLMContextLimit(ctx, p, sysPrompt, userPrompt, temp, 0)
+}
+
+// callLLMContextLimit 在 callLLMContext 之上支持可选 maxTokens：
+// 0 表示不发送该字段（生成阶段防长文截断），校验阶段固定 512 限制冗余解释。
+func callLLMContextLimit(ctx context.Context, p Profile, sysPrompt, userPrompt string, temp float64, maxTokens int) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -333,6 +339,17 @@ func callLLMContext(ctx context.Context, p Profile, sysPrompt, userPrompt string
 			{"role": "user", "content": userPrompt},
 		},
 		"temperature": temp,
+	}
+	if maxTokens > 0 {
+		reqBody["max_tokens"] = maxTokens
+	}
+	// 仅显式配置时才注入思考控制，默认请求体保持与既有契约一致。
+	if effort := normalizeReasoningEffort(p.ReasoningEffort); effort != "" {
+		reqBody["reasoning_effort"] = effort
+	}
+	if p.DisableThinking {
+		reqBody["enable_thinking"] = false
+		reqBody["chat_template_kwargs"] = map[string]any{"enable_thinking": false}
 	}
 	jsonBytes, _ := json.Marshal(reqBody)
 	targetURL := compilerRequestURL(baseURL)
@@ -910,7 +927,7 @@ func runValidationContext(ctx context.Context, p Profile, orig, comp string, req
 		return newValidation("failed", "local_checks", failures...)
 	}
 	data, _ := json.Marshal(map[string]string{"original": orig, "candidate": comp})
-	raw, err := callLLMContext(ctx, p, verifyGatePrompt, string(data), 0.0)
+	raw, err := callLLMContextLimit(ctx, p, verifyGatePrompt, string(data), 0.0, 512)
 	if err != nil {
 		return newValidation("error", "llm_compare", err.Error())
 	}
@@ -976,7 +993,7 @@ func fillCompileStats(out *CompileResp, original, encoding string) error {
 	return nil
 }
 
-func validateCompileResponse(ctx context.Context, req CompileReq, p, reader Profile, out CompileResp) (CompileResp, error) {
+func validateCompileResponse(ctx context.Context, req CompileReq, p, auditor, reader Profile, out CompileResp) (CompileResp, error) {
 	out.Audit = ""
 	out.Validation = newValidation("not_run", "none")
 	if err := ctx.Err(); err != nil {
@@ -985,11 +1002,17 @@ func validateCompileResponse(ctx context.Context, req CompileReq, p, reader Prof
 	if err := fillCompileStats(&out, req.Text, p.TokenEncoding); err != nil {
 		return out, err
 	}
+	// 候选不比原文短时，代理不会采用它；此时再跑模型审计只是白烧配额。
+	// 该短路只由代理路径显式开启，Web/CLI 与 strict_gate 语义不变。
+	if req.SkipAuditIfNotShorter && out.Stats.CompiledTokens >= out.Stats.OriginalTokens {
+		out.Audit = validationSummary(out.Validation)
+		return out, nil
+	}
 	if req.Verify || req.StrictGate {
 		if p.ValidationMode == "blind" {
-			out.Validation = runBlindValidationContext(ctx, reader, p, req.Text, out.Compiled, req.RequiredKeywords)
+			out.Validation = runBlindValidationContext(ctx, reader, auditor, req.Text, out.Compiled, req.RequiredKeywords)
 		} else {
-			out.Validation = runValidationContext(ctx, p, req.Text, out.Compiled, req.RequiredKeywords)
+			out.Validation = runValidationContext(ctx, auditor, req.Text, out.Compiled, req.RequiredKeywords)
 		}
 	} else if len(req.RequiredKeywords) > 0 {
 		if issues := checkDeterministicInvariants(req.Text, out.Compiled, req.RequiredKeywords); len(issues) > 0 {
@@ -1031,6 +1054,10 @@ func doCompileContext(ctx context.Context, req CompileReq) (CompileResp, error) 
 			return CompileResp{}, err
 		}
 	}
+	auditor, err := resolveAuditProfile(cfg, p, "")
+	if err != nil {
+		return CompileResp{}, err
+	}
 	if !utf8.ValidString(req.Text) {
 		return CompileResp{}, fmt.Errorf("编译文本不是有效 UTF-8")
 	}
@@ -1066,7 +1093,7 @@ func doCompileContext(ctx context.Context, req CompileReq) (CompileResp, error) 
 	}
 	if !req.NoCache {
 		if out, hit := readCandidate(); hit {
-			return validateCompileResponse(ctx, req, p, reader, out)
+			return validateCompileResponse(ctx, req, p, auditor, reader, out)
 		}
 	}
 
@@ -1126,5 +1153,5 @@ func doCompileContext(ctx context.Context, req CompileReq) (CompileResp, error) 
 	}
 	// Only generation is shared. Every request satisfies its own current gate,
 	// including cache hits and followers of a non-verifying request.
-	return validateCompileResponse(ctx, req, p, reader, out)
+	return validateCompileResponse(ctx, req, p, auditor, reader, out)
 }

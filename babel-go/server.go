@@ -94,15 +94,18 @@ func newServerMux() *http.ServeMux {
 			safeProfiles := make(map[string]map[string]any)
 			for name, prof := range cfg.Profiles {
 				safeProfiles[name] = map[string]any{
-					"name":            name,
-					"api_key_masked":  maskKey(prof.APIKey),
-					"has_api_key":     prof.APIKey != "",
-					"base_url":        prof.BaseURL,
-					"model":           prof.Model,
-					"upstream_url":    prof.UpstreamURL,
-					"token_encoding":  normalizeTokenEncoding(prof.TokenEncoding),
-					"validation_mode": normalizeValidationMode(prof.ValidationMode),
-					"reader_profile":  prof.ReaderProfile,
+					"name":             name,
+					"api_key_masked":   maskKey(prof.APIKey),
+					"has_api_key":      prof.APIKey != "",
+					"base_url":         prof.BaseURL,
+					"model":            prof.Model,
+					"upstream_url":     prof.UpstreamURL,
+					"token_encoding":   normalizeTokenEncoding(prof.TokenEncoding),
+					"validation_mode":  normalizeValidationMode(prof.ValidationMode),
+					"reader_profile":   prof.ReaderProfile,
+					"audit_profile":    prof.AuditProfile,
+					"disable_thinking": prof.DisableThinking,
+					"reasoning_effort": prof.ReasoningEffort,
 				}
 			}
 			cacheMutex.RLock()
@@ -123,15 +126,18 @@ func newServerMux() *http.ServeMux {
 
 		if r.Method == "POST" {
 			var req struct {
-				Action         string  `json:"action"`
-				ProfileName    string  `json:"profile_name"`
-				APIKey         string  `json:"api_key"`
-				BaseURL        string  `json:"base_url"`
-				Model          string  `json:"model"`
-				UpstreamURL    *string `json:"upstream_url"`
-				TokenEncoding  *string `json:"token_encoding"`
-				ValidationMode *string `json:"validation_mode"`
-				ReaderProfile  *string `json:"reader_profile"`
+				Action          string  `json:"action"`
+				ProfileName     string  `json:"profile_name"`
+				APIKey          string  `json:"api_key"`
+				BaseURL         string  `json:"base_url"`
+				Model           string  `json:"model"`
+				UpstreamURL     *string `json:"upstream_url"`
+				TokenEncoding   *string `json:"token_encoding"`
+				ValidationMode  *string `json:"validation_mode"`
+				ReaderProfile   *string `json:"reader_profile"`
+				AuditProfile    *string `json:"audit_profile"`
+				DisableThinking *bool   `json:"disable_thinking"`
+				ReasoningEffort *string `json:"reasoning_effort"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				w.WriteHeader(400)
@@ -154,16 +160,30 @@ func newServerMux() *http.ServeMux {
 
 			switch req.Action {
 			case "delete":
-				var readers []string
+				var readers, auditors []string
 				for profileName, profile := range cfg.Profiles {
-					if profileName != name && strings.TrimSpace(profile.ReaderProfile) == name {
+					if profileName == name {
+						continue
+					}
+					if strings.TrimSpace(profile.ReaderProfile) == name {
 						readers = append(readers, profileName)
 					}
+					if strings.TrimSpace(profile.AuditProfile) == name {
+						auditors = append(auditors, profileName)
+					}
 				}
-				if len(readers) > 0 {
-					sort.Strings(readers)
+				if len(readers) > 0 || len(auditors) > 0 {
+					var details []string
+					if len(readers) > 0 {
+						sort.Strings(readers)
+						details = append(details, "阅读器: "+strings.Join(readers, ", "))
+					}
+					if len(auditors) > 0 {
+						sort.Strings(auditors)
+						details = append(details, "校验方案: "+strings.Join(auditors, ", "))
+					}
 					w.WriteHeader(http.StatusBadRequest)
-					json.NewEncoder(w).Encode(map[string]string{"detail": "该方案仍被用作阅读器，请先修改这些方案的阅读器选择: " + strings.Join(readers, ", ")})
+					json.NewEncoder(w).Encode(map[string]string{"detail": "该方案仍被引用，请先修改这些方案的设置（" + strings.Join(details, "；") + "）"})
 					return
 				}
 				if len(cfg.Profiles) <= 1 {
@@ -210,13 +230,30 @@ func newServerMux() *http.ServeMux {
 				if req.ReaderProfile != nil {
 					existing.ReaderProfile = strings.TrimSpace(*req.ReaderProfile)
 				}
+				if req.AuditProfile != nil {
+					existing.AuditProfile = strings.TrimSpace(*req.AuditProfile)
+				}
+				if req.DisableThinking != nil {
+					existing.DisableThinking = *req.DisableThinking
+				}
+				if req.ReasoningEffort != nil {
+					existing.ReasoningEffort = normalizeReasoningEffort(*req.ReasoningEffort)
+				}
 				optionErr := validateTokenEncoding(existing.TokenEncoding)
 				if optionErr == nil {
 					optionErr = validateValidationMode(existing.ValidationMode)
 				}
+				if optionErr == nil && req.ReasoningEffort != nil {
+					optionErr = validateReasoningEffort(*req.ReasoningEffort)
+				}
 				if optionErr == nil && existing.ReaderProfile != "" {
 					if _, exists := cfg.Profiles[existing.ReaderProfile]; !exists {
 						optionErr = fmt.Errorf("阅读器配置方案不存在: %s", existing.ReaderProfile)
+					}
+				}
+				if optionErr == nil && existing.AuditProfile != "" {
+					if _, exists := cfg.Profiles[existing.AuditProfile]; !exists {
+						optionErr = fmt.Errorf("校验配置方案不存在: %s", existing.AuditProfile)
 					}
 				}
 				if optionErr != nil {

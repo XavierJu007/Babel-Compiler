@@ -194,18 +194,20 @@ func translateMessageBlockContext(ctx context.Context, protocol, role, text stri
 	}
 
 	res, err := doCompileContext(ctx, CompileReq{
-		Profile:          p.Name,
-		Text:             text,
-		Mode:             dialect.Name,
-		Domains:          domains,
-		StrictGate:       true,
-		RequiredKeywords: activeKeywords,
-		APIKey:           p.APIKey,
-		BaseURL:          p.BaseURL,
-		Model:            p.Model,
-		TokenEncoding:    p.TokenEncoding,
-		ValidationMode:   p.ValidationMode,
-		ReaderProfile:    &p.ReaderProfile,
+		Profile:               p.Name,
+		Text:                  text,
+		Mode:                  dialect.Name,
+		Domains:               domains,
+		StrictGate:            true,
+		RequiredKeywords:      activeKeywords,
+		APIKey:                p.APIKey,
+		BaseURL:               p.BaseURL,
+		Model:                 p.Model,
+		TokenEncoding:         p.TokenEncoding,
+		ValidationMode:        p.ValidationMode,
+		ReaderProfile:         &p.ReaderProfile,
+		AuditProfile:          &p.AuditProfile,
+		SkipAuditIfNotShorter: true,
 	})
 	if ctx.Err() != nil {
 		compilerCB.ReleaseProbe(probeID)

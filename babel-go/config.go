@@ -35,13 +35,15 @@ func defaultProfile() Profile {
 		model = "gpt-4o-mini"
 	}
 	return Profile{
-		Name:           "default",
-		APIKey:         os.Getenv("BABEL_API_KEY"),
-		BaseURL:        base,
-		Model:          model,
-		UpstreamURL:    os.Getenv("BABEL_UPSTREAM_URL"),
-		TokenEncoding:  os.Getenv("BABEL_TOKEN_ENCODING"),
-		ValidationMode: os.Getenv("BABEL_VALIDATION_MODE"),
+		Name:            "default",
+		APIKey:          os.Getenv("BABEL_API_KEY"),
+		BaseURL:         base,
+		Model:           model,
+		UpstreamURL:     os.Getenv("BABEL_UPSTREAM_URL"),
+		TokenEncoding:   os.Getenv("BABEL_TOKEN_ENCODING"),
+		ValidationMode:  os.Getenv("BABEL_VALIDATION_MODE"),
+		AuditProfile:    os.Getenv("BABEL_AUDIT_PROFILE"),
+		ReasoningEffort: os.Getenv("BABEL_REASONING_EFFORT"),
 	}
 }
 
@@ -74,6 +76,8 @@ func configEnvFingerprint() string {
 		os.Getenv("BABEL_UPSTREAM_URL"),
 		os.Getenv("BABEL_TOKEN_ENCODING"),
 		os.Getenv("BABEL_VALIDATION_MODE"),
+		os.Getenv("BABEL_AUDIT_PROFILE"),
+		os.Getenv("BABEL_REASONING_EFFORT"),
 	}, "\x00")
 }
 
