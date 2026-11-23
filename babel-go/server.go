@@ -430,6 +430,9 @@ func startServer(preferredAddr string, autoOpen bool) {
 	// 服务端模式才启用代理提速默认值；显式 =0 / =false 会覆盖这里的默认。
 	configureProxySpeedDefaults()
 
+	// 服务端模式下日志脱敏移到后台 goroutine，避免大文本每块同步跑正则。
+	startAsyncLogRedaction()
+
 	// 服务端模式才启用异步落盘；退出前会强制刷盘，不丢缓存。
 	stopCacheFlusher := startAsyncCacheFlusher(500 * time.Millisecond)
 	defer stopCacheFlusher()

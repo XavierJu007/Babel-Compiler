@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -96,6 +95,14 @@ func normalizeDialectMode(mode string) (string, error) {
 	}
 }
 
+// 固定表达形态的收尾约束；与上面的公共规则、风格、示例一起构成常量提示词。
+const mixedFinalCheck = `最终检查：多分支用共享作用域的浅树；默认role/goal等短标签。条件、因果、集合和否定主动编成关系；不复刻原章节（包括删编号后加冒号或树枝），不逐句改写，不以关键词摘要丢细节。词典只辅助术语选择，不覆盖固定表达形态。输出脱离本提示词和领域资料仍须自解释；技术字面量、业务数值、必要步骤引用、关系方向、模态、例外及作用域完整保留。公共规则优先。`
+
+// composedCompilerPrompt 是固定提示词的全量拼接结果：初始化时算一次，
+// 避免每个请求重复 Join 与拼接。
+var composedCompilerPrompt = commonCompilerRules + "\n\n【固定表达策略】\n" +
+	mixedCompilerStyle + "\n\n" + mixedCompilerExamples + "\n\n" + mixedFinalCheck
+
 func getDialect(name string) Dialect {
 	if _, err := normalizeDialectMode(name); err != nil {
 		return Dialect{}
@@ -120,12 +127,21 @@ func composeDialect(mode string, domainNames []string, text string) (Dialect, er
 	}
 	d := getDialect(defaultDialectName)
 	d.Guidance = selectDomainGuidance(packs, text)
-	parts := []string{commonCompilerRules, "【固定表达策略】\n" + d.Prompt}
-	parts = append(parts, "最终检查：多分支用共享作用域的浅树；默认role/goal等短标签。条件、因果、集合和否定主动编成关系；不复刻原章节（包括删编号后加冒号或树枝），不逐句改写，不以关键词摘要丢细节。词典只辅助术语选择，不覆盖固定表达形态。输出脱离本提示词和领域资料仍须自解释；技术字面量、业务数值、必要步骤引用、关系方向、模态、例外及作用域完整保留。公共规则优先。")
-	d.Prompt = strings.Join(parts, "\n\n")
+	// 固定提示词是常量：初始化时拼一次，请求期直接复用。
+	d.Prompt = composedCompilerPrompt
 	// Include every explicitly selected pack's version/content, even when its
 	// current entries were not selected by the relevance budget.
-	fingerprint, _ := json.Marshal(packs)
-	d.PromptHash = shortHash(d.Prompt + "\n" + d.Guidance + "\n" + string(fingerprint))
+	// 每包的规范 JSON 在加载期已算好，这里只做一次数组拼接，
+	// 与 json.Marshal(packs) 的字节结果一致。
+	var fingerprint strings.Builder
+	fingerprint.WriteByte('[')
+	for i, pack := range packs {
+		if i > 0 {
+			fingerprint.WriteByte(',')
+		}
+		fingerprint.WriteString(pack.fingerprint)
+	}
+	fingerprint.WriteByte(']')
+	d.PromptHash = shortHash(d.Prompt + "\n" + d.Guidance + "\n" + fingerprint.String())
 	return d, nil
 }

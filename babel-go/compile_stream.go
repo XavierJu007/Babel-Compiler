@@ -149,7 +149,11 @@ func generateBabelCandidateStream(ctx context.Context, p Profile, dialect Dialec
 		hooks.onStage("rewriting")
 	}
 	data, _ = json.Marshal(babelCompilerInput{Original: original, DomainGuidance: dialect.Guidance, Candidate: candidate})
-	raw, err = callLLMContext(ctx, p, dialect.Prompt+"\n\n"+outlineRewriteInstruction, string(data), 0.1)
+	raw, _, err = callLLMStreamContext(ctx, p, dialect.Prompt+"\n\n"+outlineRewriteInstruction, string(data), 0.1, 0, func(delta string) {
+		if hooks.onDelta != nil {
+			hooks.onDelta(delta)
+		}
+	})
 	if err != nil {
 		if strings.TrimSpace(raw) != "" {
 			candidate = compactDSL(raw)
@@ -262,14 +266,46 @@ func compileStreamHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stream.emit("stage", map[string]string{"stage": "generating"})
-	candidate, genErr := generateBabelCandidateStream(r.Context(), p, dialect, req.Text, streamHooks{
-		onStage: func(stage string) { stream.emit("stage", map[string]string{"stage": stage}) },
-		onDelta: func(chunk string) { stream.emit("delta", map[string]any{"chunk": chunk, "reset": false}) },
-		onReset: func() { stream.emit("delta", map[string]any{"chunk": "", "reset": true}) },
-	})
+	// 生成缓存命中时不做流式（没有可流的内容），直接进入校验并给结果。
+	cacheKey := makeCacheKey(dialect, p, req.Text)
+	candidate := ""
+	cacheHit := false
+	if !req.NoCache && cacheKeyHasCandidate(cacheKey) {
+		cacheMutex.RLock()
+		candidate = diskCache[cacheKey].Compiled
+		cacheMutex.RUnlock()
+		cacheHit = candidate != "" && len(babelStructureIssues(req.Text, candidate)) == 0
+	}
+	var genErr error
+	if cacheHit {
+		stream.emit("stage", map[string]string{"stage": "validating"})
+	} else {
+		candidate = ""
+		stream.emit("stage", map[string]string{"stage": "generating"})
+		if shouldCompileInChunks(req) {
+			candidate, genErr = generateBabelCandidateParallel(r.Context(), p, dialect, req.Text)
+			if genErr == nil {
+				stream.emit("delta", map[string]any{"chunk": candidate, "reset": false})
+			}
+		} else {
+			candidate, genErr = generateBabelCandidateStream(r.Context(), p, dialect, req.Text, streamHooks{
+				onStage: func(stage string) { stream.emit("stage", map[string]string{"stage": stage}) },
+				onDelta: func(chunk string) { stream.emit("delta", map[string]any{"chunk": chunk, "reset": false}) },
+				onReset: func() { stream.emit("delta", map[string]any{"chunk": "", "reset": true}) },
+			})
+		}
+		if genErr == nil && !req.NoCache && strings.TrimSpace(candidate) != "" {
+			now := time.Now()
+			cacheMutex.Lock()
+			diskCache[cacheKey] = CacheEntry{Compiled: candidate, Model: p.Model, Mode: dialect.Name,
+				CreatedAt: now.Format(time.RFC3339), LastAccess: now.Unix()}
+			evictCacheIfNeededLocked()
+			cacheMutex.Unlock()
+			scheduleDiskCacheSave()
+		}
+	}
 
-	out := CompileResp{Compiled: candidate, Dialect: dialect.Name}
+	out := CompileResp{Compiled: candidate, Dialect: dialect.Name, CacheHit: cacheHit}
 	if genErr != nil {
 		out.Validation = newValidation("error", "none", genErr.Error())
 		var validationErr *ValidationError

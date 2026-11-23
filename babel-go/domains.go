@@ -42,6 +42,11 @@ type DomainEntry struct {
 	DoNotMergeWith []string        `json:"do_not_merge_with,omitempty"`
 	Symbols        []DomainSymbol  `json:"symbols,omitempty"`
 	Examples       []DomainExample `json:"examples,omitempty"`
+
+	// normTerms / normSymbols 是加载期预计算的小写去重快照，
+	// 供 domainEntryScore 在热路径直接复用，避免每次现场分配 map 与小写化。
+	normTerms   []string
+	normSymbols []string
 }
 
 type DomainPack struct {
@@ -52,6 +57,10 @@ type DomainPack struct {
 	Entries       []DomainEntry `json:"entries"`
 	Source        string        `json:"source,omitempty"`
 	FilePath      string        `json:"file_path,omitempty"`
+
+	// fingerprint 是「去掉存储来源后」的规范 JSON，加载期算一次即可参与
+	// composeDialect 的 PromptHash，无需每次请求重新序列化整包词典。
+	fingerprint string
 }
 
 //go:embed domains_builtin.json
@@ -166,16 +175,64 @@ func mustLoadBuiltinDomains() map[string]DomainPack {
 		}
 		p.Source = "builtin"
 		p.FilePath = ""
-		out[p.Name] = p
+		out[p.Name] = prepareDomainPack(p)
 	}
 	return out
 }
 
+// cloneDomainPack 显式复制所有切片，语义等价于原先的 JSON 往返，
+// 但省掉序列化开销；测试仍靠它拿到可安全修改的独立副本。
 func cloneDomainPack(p DomainPack) DomainPack {
-	b, _ := json.Marshal(p)
-	var cloned DomainPack
-	_ = json.Unmarshal(b, &cloned)
+	cloned := p
+	if p.Entries != nil {
+		cloned.Entries = make([]DomainEntry, len(p.Entries))
+		for i, entry := range p.Entries {
+			entry.Aliases = append([]string(nil), entry.Aliases...)
+			entry.Triggers = append([]string(nil), entry.Triggers...)
+			entry.UseWhen = append([]string(nil), entry.UseWhen...)
+			entry.Preserve = append([]string(nil), entry.Preserve...)
+			entry.DoNotMergeWith = append([]string(nil), entry.DoNotMergeWith...)
+			entry.Symbols = append([]DomainSymbol(nil), entry.Symbols...)
+			entry.Examples = append([]DomainExample(nil), entry.Examples...)
+			entry.normTerms = append([]string(nil), entry.normTerms...)
+			entry.normSymbols = append([]string(nil), entry.normSymbols...)
+			cloned.Entries[i] = entry
+		}
+	}
 	return cloned
+}
+
+// prepareDomainPack 预计算只读快照：规范指纹 + 小写去重词表。
+func prepareDomainPack(p DomainPack) DomainPack {
+	canonical := p
+	canonical.Source, canonical.FilePath = "", ""
+	canonical.fingerprint = ""
+	raw, _ := json.Marshal(canonical)
+	p.fingerprint = string(raw)
+
+	if p.Entries != nil {
+		entries := make([]DomainEntry, len(p.Entries))
+		for i, entry := range p.Entries {
+			seen := make(map[string]bool, len(entry.Aliases)+len(entry.Triggers))
+			terms := make([]string, 0, len(entry.Aliases)+len(entry.Triggers))
+			for _, term := range append(append([]string{}, entry.Aliases...), entry.Triggers...) {
+				normalized := strings.ToLower(strings.TrimSpace(term))
+				if normalized == "" || seen[normalized] {
+					continue
+				}
+				seen[normalized] = true
+				terms = append(terms, normalized)
+			}
+			entry.normTerms = terms
+			entry.normSymbols = make([]string, 0, len(entry.Symbols))
+			for _, symbol := range entry.Symbols {
+				entry.normSymbols = append(entry.normSymbols, strings.ToLower(symbol.Symbol))
+			}
+			entries[i] = entry
+		}
+		p.Entries = entries
+	}
+	return p
 }
 
 func parseDomainJSON(b []byte) (DomainPack, error) {
@@ -277,6 +334,9 @@ func reloadDomainsFromDirsLocked(globalDir, workspaceDir string) (int, error) {
 	invalid := make(map[string]error)
 	problems := scanDomainDir(globalDir, "global", next, invalid)
 	problems = append(problems, scanDomainDir(workspaceDir, "workspace", next, invalid)...)
+	for name, p := range next {
+		next[name] = prepareDomainPack(p)
+	}
 	domainsMutex.Lock()
 	loadedDomains, domainFileErrors = next, invalid
 	domainsMutex.Unlock()
@@ -421,7 +481,7 @@ func resolveDomainPacks(mode string, names []string) ([]DomainPack, error) {
 		if !ok {
 			return nil, fmt.Errorf("领域不存在: %s", name)
 		}
-		p = cloneDomainPack(p)
+		// 只读路径不再深拷贝：p 是值拷贝，切片由加载期快照共享且从不修改。
 		// Storage location and UI metadata do not affect compilation identity.
 		p.Source, p.FilePath = "", ""
 		packs = append(packs, p)
@@ -464,19 +524,32 @@ func domainEntryScore(e DomainEntry, text string) int {
 	if domainTermMatches(text, e.Canonical) {
 		score += 6
 	}
-	seen := make(map[string]bool)
-	for _, term := range append(append([]string{}, e.Aliases...), e.Triggers...) {
-		normalized := strings.ToLower(strings.TrimSpace(term))
-		if seen[normalized] {
-			continue
+	terms := e.normTerms
+	if terms == nil {
+		// 未经加载期快照的条目（测试或临时构造）现场去重。
+		seen := make(map[string]bool)
+		for _, term := range append(append([]string{}, e.Aliases...), e.Triggers...) {
+			normalized := strings.ToLower(strings.TrimSpace(term))
+			if normalized == "" || seen[normalized] {
+				continue
+			}
+			seen[normalized] = true
+			terms = append(terms, normalized)
 		}
-		seen[normalized] = true
+	}
+	for _, normalized := range terms {
 		if domainTermMatches(text, normalized) {
 			score += 2
 		}
 	}
-	for _, symbol := range e.Symbols {
-		if strings.Contains(text, strings.ToLower(symbol.Symbol)) {
+	symbols := e.normSymbols
+	if symbols == nil {
+		for _, symbol := range e.Symbols {
+			symbols = append(symbols, strings.ToLower(symbol.Symbol))
+		}
+	}
+	for _, symbol := range symbols {
+		if symbol != "" && strings.Contains(text, symbol) {
 			score++
 		}
 	}

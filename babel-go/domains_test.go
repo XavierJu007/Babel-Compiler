@@ -277,3 +277,21 @@ func TestDomainConcurrentReloadAndComposition(t *testing.T) {
 	}()
 	wg.Wait()
 }
+
+// 加载期指纹必须与「清空来源后」的规范 JSON 完全一致，
+// 这样 composeDialect 的 PromptHash 与改造前保持不变。
+func TestPreparedDomainPackFingerprintMatchesCanonicalJSON(t *testing.T) {
+	pack := builtinDomainPacks["api-contract"]
+	canonical := pack
+	canonical.Source, canonical.FilePath = "", ""
+	raw, err := json.Marshal(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pack.fingerprint != string(raw) {
+		t.Fatalf("fingerprint drifted from canonical JSON:\n got %s\nwant %s", pack.fingerprint, raw)
+	}
+	if len(pack.Entries) > 0 && pack.Entries[0].normTerms == nil && len(pack.Entries[0].Aliases)+len(pack.Entries[0].Triggers) > 0 {
+		t.Fatal("entry normalized terms were not precomputed")
+	}
+}

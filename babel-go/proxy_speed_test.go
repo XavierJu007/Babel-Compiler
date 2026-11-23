@@ -202,14 +202,23 @@ func TestProxyShadowWarmupNonBlockingAndDeduplicated(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
+	var slowest atomic.Int64
 	for i := 0; i < 5; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			started := time.Now()
 			translateMessageBlock("openai", "user", source, profile, dialect, nil, nil)
+			if elapsed := time.Since(started).Nanoseconds(); elapsed > slowest.Load() {
+				slowest.Store(elapsed)
+			}
 		}()
 	}
 	wg.Wait()
+	// 命中「已在预热」也必须直通：任何一次并发请求都不许跌穿到同步编译。
+	if elapsed := time.Duration(slowest.Load()); elapsed > 100*time.Millisecond {
+		t.Fatalf("deduplicated warmup request blocked for %v; want 原文直通 < 100ms", elapsed)
+	}
 
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -284,5 +293,78 @@ func TestNegativeCacheSkipsUncompressibleAndNeverCachesTransientErrors(t *testin
 	}
 	if strings.Contains(negativeCacheKey(dialect, profile, transient), "502") {
 		t.Fatal("negative cache key must not embed error text")
+	}
+}
+
+// 双缓存命中必须绕过信号量与熔断器：两者都被占满时仍要亚毫秒返回。
+func TestProxyCachedAdoptionBypassesSemaphoreAndBreaker(t *testing.T) {
+	isolateCompilerState(t)
+	isolateProxyState(t)
+	resetProxySpeedVars(t)
+	proxyValidationCacheTTL = 10 * time.Minute
+
+	var genCalls atomic.Int32
+	compiler := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body compilerRequestBody
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if len(body.Messages) > 0 && body.Messages[0].Content == verifyGatePrompt {
+			writeModelContent(w, `{"pass":true,"missing":[]}`)
+			return
+		}
+		genCalls.Add(1)
+		writeModelContent(w, "状态=待审 ⇒ 主管批准")
+	}))
+	defer compiler.Close()
+	if err := writeConfigFile(Config{ActiveProfile: "compiler", Profiles: map[string]Profile{
+		"compiler": {Name: "compiler", APIKey: "gen-key", BaseURL: compiler.URL, Model: "gen"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	profile := getActiveProfile(loadConfig(), "compiler")
+	dialect := getDialect(defaultDialectName)
+	source := "订单处于待审核状态时，必须由主管批准后才能继续处理，并记录审批人与时间。"
+
+	first, _, _, _ := translateMessageBlock("openai", "user", source, profile, dialect, nil, nil)
+	if first == source || genCalls.Load() != 1 {
+		t.Fatalf("fixture did not warm the caches: out=%q gen=%d", first, genCalls.Load())
+	}
+
+	// 占满唯一槽位并打开熔断器：纯缓存命中不应受任何影响。
+	oldSem := proxyCompileSem
+	proxyCompileSem = newCompileSemaphore(1)
+	proxyCompileSem.slots <- struct{}{}
+	oldBreaker := compilerCB
+	compilerCB = newCircuitBreaker(1, time.Minute)
+	compilerCB.RecordFailure()
+	t.Cleanup(func() {
+		<-proxyCompileSem.slots
+		proxyCompileSem = oldSem
+		compilerCB = oldBreaker
+	})
+
+	started := time.Now()
+	out, logID, _, _ := translateMessageBlock("openai", "user", source, profile, dialect, nil, nil)
+	if elapsed := time.Since(started); elapsed > 50*time.Millisecond {
+		t.Fatalf("cached adoption waited on semaphore/breaker: %v", elapsed)
+	}
+	if out != first || logID == "" || genCalls.Load() != 1 {
+		t.Fatalf("cached adoption did not reuse the candidate: out=%q gen=%d", out, genCalls.Load())
+	}
+	if status := compilerCB.Status(); status["state"] == "CLOSED" {
+		t.Fatal("cached adoption wrongly reset an open circuit breaker")
+	}
+}
+
+// 负缓存键必须带上目标编码：切换精确计数后应允许重新尝试。
+func TestNegativeCacheKeySeparatesTokenEncodings(t *testing.T) {
+	p := Profile{Name: "x", BaseURL: "https://example.com/v1/chat/completions", Model: "m"}
+	dialect := getDialect(defaultDialectName)
+	text := "同一段文本在两种计数口径下的负缓存必须互相独立。"
+	estimated := p
+	estimated.TokenEncoding = "estimate"
+	exact := p
+	exact.TokenEncoding = "cl100k_base"
+	if negativeCacheKey(dialect, estimated, text) == negativeCacheKey(dialect, exact, text) {
+		t.Fatal("negative cache key ignored token encoding")
 	}
 }

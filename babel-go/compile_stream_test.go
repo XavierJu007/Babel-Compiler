@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"unicode/utf8"
 )
 
 type streamEvent struct {
@@ -75,6 +76,7 @@ func TestCompileStreamEmitsStagesAndRejectsTruncatedStream(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(map[string]any{"text": "订单处于待审核状态时，必须由主管批准后才能继续处理。", "strict_gate": true})
+	uncachedBody, _ := json.Marshal(map[string]any{"text": "订单处于待审核状态时，必须由主管批准后才能继续处理，并记录审批人与时间。", "strict_gate": true, "no_cache": true})
 	req := httptest.NewRequest(http.MethodPost, "/api/compile/stream", strings.NewReader(string(body)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -111,7 +113,7 @@ func TestCompileStreamEmitsStagesAndRejectsTruncatedStream(t *testing.T) {
 	// finish_reason=length 必须按既有防截断规则报错，而不是当成完整候选。
 	finish.Store("length")
 	rec = httptest.NewRecorder()
-	newServerMux().ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/compile/stream", strings.NewReader(string(body))))
+	newServerMux().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/compile/stream", strings.NewReader(string(uncachedBody))).WithContext(context.Background()))
 	events = parseStreamEvents(t, rec.Body.String())
 	sawError := false
 	for _, event := range events {
@@ -225,5 +227,21 @@ func TestSplitCompileChunksKeepsFencesWhole(t *testing.T) {
 	}
 	if small := splitCompileChunks("短文本", chunkTargetRunes); len(small) != 1 {
 		t.Fatalf("short text should stay in one chunk, got %d", len(small))
+	}
+}
+
+// 尾块过短会白烧一次带完整系统提示词的请求：必须并回前一块。
+func TestSplitCompileChunksMergesShortTail(t *testing.T) {
+	paragraph := strings.Repeat("审", 190) + "。\n"
+	text := strings.Repeat(paragraph, 11) + strings.Repeat("尾", 80) + "\n"
+	chunks := splitCompileChunks(text, chunkTargetRunes)
+	if len(chunks) < 2 {
+		t.Fatalf("fixture did not produce multiple chunks: %d", len(chunks))
+	}
+	if tail := utf8.RuneCountInString(chunks[len(chunks)-1]); tail < chunkMinRunes {
+		t.Fatalf("short tail chunk (%d runes) was not merged", tail)
+	}
+	if strings.Join(chunks, "") != text {
+		t.Fatal("tail merge changed source bytes")
 	}
 }

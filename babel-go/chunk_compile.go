@@ -33,28 +33,32 @@ func splitCompileChunks(text string, target int) []string {
 	}
 	mask := outlineLiteralMask(text)
 
+	// 增量累加 rune 数，避免在每个换行上重扫整段前缀（原实现是 O(N²)）。
 	var chunks []string
 	chunkStart := 0
-	for offset := 0; offset < len(text); offset++ {
-		if text[offset] != '\n' {
-			continue
+	runes := 0
+	for i := 0; i < len(text); {
+		_, size := utf8.DecodeRuneInString(text[i:])
+		last := i + size - 1
+		runes++
+		if size == 1 && text[i] == '\n' && (i >= len(mask) || !mask[i]) && runes >= target {
+			breakAt := i + 1
+			chunks = append(chunks, text[chunkStart:breakAt])
+			chunkStart = breakAt
+			runes = 0
 		}
-		// 切断在受保护片段内部会破坏代码块或引文；宁可让这一块变长。
-		if offset < len(mask) && mask[offset] {
-			continue
-		}
-		breakAt := offset + 1
-		if utf8.RuneCountInString(text[chunkStart:breakAt]) < target {
-			continue
-		}
-		chunks = append(chunks, text[chunkStart:breakAt])
-		chunkStart = breakAt
+		i = last + 1
 	}
 	if chunkStart < len(text) {
 		chunks = append(chunks, text[chunkStart:])
 	}
 	if len(chunks) < 2 {
 		return []string{text}
+	}
+	// 尾块过短时并回前一块：省掉一次带完整系统提示词的 LLM 往返。
+	if len(chunks) >= 2 && utf8.RuneCountInString(chunks[len(chunks)-1]) < chunkMinRunes {
+		chunks[len(chunks)-2] += chunks[len(chunks)-1]
+		chunks = chunks[:len(chunks)-1]
 	}
 	return chunks
 }
@@ -68,6 +72,9 @@ func generateBabelCandidateParallel(ctx context.Context, p Profile, dialect Dial
 	}
 	results := make([]string, len(chunks))
 	errs := make([]error, len(chunks))
+	// 任意一块失败立即取消其余块，避免继续烧上游配额。
+	chunkCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	workers := parallelChunkWorkers
 	if workers > len(chunks) {
@@ -84,12 +91,12 @@ func generateBabelCandidateParallel(ctx context.Context, p Profile, dialect Dial
 				if idx >= len(chunks) {
 					return
 				}
-				if err := ctx.Err(); err != nil {
+				if err := chunkCtx.Err(); err != nil {
 					errs[idx] = err
 					return
 				}
 				// 与代理共用全局编译闸门，避免分块任务挤占交互请求。
-				release, acquired, canceled := proxyCompileSem.Acquire(ctx, proxyCompileQueueTimeout)
+				release, acquired, canceled := proxyCompileSem.Acquire(chunkCtx, proxyCompileQueueTimeout)
 				if canceled {
 					errs[idx] = ctx.Err()
 					return
@@ -98,8 +105,12 @@ func generateBabelCandidateParallel(ctx context.Context, p Profile, dialect Dial
 					errs[idx] = fmt.Errorf("编译并发队列繁忙，分块编译已中止")
 					return
 				}
-				results[idx], errs[idx] = generateBabelCandidate(ctx, p, dialect, chunks[idx])
+				results[idx], errs[idx] = generateBabelCandidate(chunkCtx, p, dialect, chunks[idx])
 				release()
+				if errs[idx] != nil {
+					cancel()
+					return
+				}
 			}
 		}()
 	}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/tiktoken-go/tokenizer"
@@ -59,6 +60,12 @@ var tokenCodecs = map[string]*tokenCodecState{
 	"o200k_base":  {},
 }
 
+// tokenCountCache 缓存确定性的精确计数：同一段文本在同一编码下重复分词是纯浪费。
+// 键为文本 SHA256 + 编码；只缓存 exact 结果，估算与失败都不入缓存。
+var tokenCountCache = newTTLLRU[string, TokenCount](4096)
+
+const tokenCountCacheTTL = 24 * time.Hour
+
 func measureTokens(text, encoding string) (TokenCount, error) {
 	encoding = normalizeTokenEncoding(encoding)
 	if err := validateTokenEncoding(encoding); err != nil {
@@ -74,6 +81,13 @@ func measureTokens(text, encoding string) (TokenCount, error) {
 		}, nil
 	}
 
+	cacheKey := ""
+	if encoding != "estimate" {
+		cacheKey = sha256Hex(text) + "\x00" + encoding
+		if cached, ok := tokenCountCache.Get(cacheKey); ok {
+			return cached, nil
+		}
+	}
 	state := tokenCodecs[encoding]
 	state.once.Do(func() {
 		state.codec, state.err = tokenizer.Get(tokenizer.Encoding(encoding))
@@ -87,8 +101,12 @@ func measureTokens(text, encoding string) (TokenCount, error) {
 	if err != nil {
 		return TokenCount{}, fmt.Errorf("cannot count tokens with %s: %w", encoding, err)
 	}
-	return TokenCount{
+	counted := TokenCount{
 		Tokens: len(ids), Kind: "exact", Source: "tiktoken-go/tokenizer",
 		Scope: "text", Encoding: encoding, Version: tokenCounterVersion,
-	}, nil
+	}
+	if cacheKey != "" {
+		tokenCountCache.Put(cacheKey, counted, tokenCountCacheTTL)
+	}
+	return counted, nil
 }

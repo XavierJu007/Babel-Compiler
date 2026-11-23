@@ -79,7 +79,7 @@ func saveDiskCache() {
 	cacheMutex.Unlock()
 
 	// Marshal outside cacheMutex so large snapshots never stall concurrent readers.
-	data, err := json.MarshalIndent(snapshot, "", "  ")
+	data, err := json.Marshal(snapshot)
 	if err != nil {
 		return
 	}

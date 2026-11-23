@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -98,7 +99,50 @@ type validationCacheKey struct {
 	RequiredKeywords string
 }
 
-var validationCache = newTTLLRU[validationCacheKey, ValidationResult](4096)
+// 16 分片：校验缓存是高并发下最热的共享结构，分片后跨请求不再抢同一把锁。
+const validationCacheShards = 16
+
+type shardedValidationCache struct {
+	shards [validationCacheShards]*ttlLRU[validationCacheKey, ValidationResult]
+}
+
+func newShardedValidationCache(capacity int) *shardedValidationCache {
+	cache := &shardedValidationCache{}
+	perShard := capacity / validationCacheShards
+	if perShard < 16 {
+		perShard = 16
+	}
+	for i := range cache.shards {
+		cache.shards[i] = newTTLLRU[validationCacheKey, ValidationResult](perShard)
+	}
+	return cache
+}
+
+func (c *shardedValidationCache) shardFor(key validationCacheKey) *ttlLRU[validationCacheKey, ValidationResult] {
+	index := 0
+	if key.CandidateSHA256 != "" {
+		if value, err := strconv.ParseUint(string(key.CandidateSHA256[0]), 16, 8); err == nil {
+			index = int(value) % validationCacheShards
+		}
+	}
+	return c.shards[index]
+}
+
+func (c *shardedValidationCache) Get(key validationCacheKey) (ValidationResult, bool) {
+	return c.shardFor(key).Get(key)
+}
+
+func (c *shardedValidationCache) Put(key validationCacheKey, value ValidationResult, ttl time.Duration) {
+	c.shardFor(key).Put(key, value, ttl)
+}
+
+func (c *shardedValidationCache) Reset() {
+	for _, shard := range c.shards {
+		shard.Reset()
+	}
+}
+
+var validationCache = newShardedValidationCache(4096)
 
 // cloneValidationResult 复制 Issues/Stages，避免缓存与调用方共享可变切片。
 func cloneValidationResult(result ValidationResult) ValidationResult {

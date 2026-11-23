@@ -77,5 +77,6 @@ func (c *negativeCacheStore) Reset() {
 
 // negativeCacheKey 绑定表达策略与目标编码：换模型、换词典或换端点后必须重试。
 func negativeCacheKey(dialect Dialect, p Profile, text string) string {
-	return makeCacheKey(dialect, p, text)
+	// makeCacheKey 不含目标编码：切换 estimate/cl100k_base 后必须能重新尝试。
+	return makeCacheKey(dialect, p, text) + "\x00" + normalizeTokenEncoding(p.TokenEncoding)
 }

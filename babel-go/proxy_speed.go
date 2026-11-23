@@ -19,6 +19,7 @@ var (
 	proxyAsyncWarmup        bool
 	proxyMinRunes           = 35
 	proxySkipNonProse       bool
+	proxyWarmupWorkers      = 2
 )
 
 const (
@@ -87,6 +88,21 @@ func configureProxySpeedDefaults() {
 	} else {
 		proxySkipNonProse = true
 	}
+	// 预热 worker 数量：默认 min(8, max(2, 全局槽位/2))，可按环境变量覆盖。
+	if raw, ok := os.LookupEnv("BABEL_PROXY_WARMUP_WORKERS"); ok {
+		if value, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil && value > 0 {
+			proxyWarmupWorkers = value
+		}
+	} else {
+		workers := proxyCompileSem.Status()["limit"] / 2
+		if workers < 2 {
+			workers = 2
+		}
+		if workers > 8 {
+			workers = 8
+		}
+		proxyWarmupWorkers = workers
+	}
 }
 
 // proxySpeedDurationLabel 让关掉的缓存显示为 off，而不是 0s。
@@ -104,6 +120,7 @@ func proxySpeedSummary() map[string]any {
 		"async_warmup":         proxyAsyncWarmup,
 		"min_runes":            proxyMinRunes,
 		"skip_non_prose":       proxySkipNonProse,
+		"warmup_workers":       proxyWarmupWorkers,
 	}
 }
 
@@ -142,9 +159,22 @@ var (
 	shadowWarmupFlight sync.Map
 )
 
+// warmupStatus 区分「新入队 / 已在预热 / 队列满」：三者都意味着不能同步等待。
+type warmupStatus int
+
+const (
+	warmupEnqueued warmupStatus = iota
+	warmupInFlight
+	warmupQueueFull
+)
+
 func startShadowWarmupWorkers() {
+	workers := proxyWarmupWorkers
+	if workers < 1 {
+		workers = 1
+	}
 	shadowWarmupQueue = make(chan shadowWarmupJob, shadowWarmupQueueSize)
-	for i := 0; i < shadowWarmupWorkers; i++ {
+	for i := 0; i < workers; i++ {
 		go func() {
 			for job := range shadowWarmupQueue {
 				runShadowWarmup(job)
@@ -154,20 +184,21 @@ func startShadowWarmupWorkers() {
 }
 
 // enqueueShadowWarmup 去重后投递后台预热任务；队列满则丢弃，绝不阻塞请求。
-func enqueueShadowWarmup(protocol, role, text string, p Profile, dialect Dialect, keywords, domains []string) bool {
+func enqueueShadowWarmup(protocol, role, text string, p Profile, dialect Dialect, keywords, domains []string) warmupStatus {
 	key := makeCacheKey(dialect, p, text)
 	if _, exists := shadowWarmupFlight.LoadOrStore(key, struct{}{}); exists {
-		return false
+		// 同一文本已在预热：调用方必须继续直通，绝不能跌穿到同步编译。
+		return warmupInFlight
 	}
 	shadowWarmupOnce.Do(startShadowWarmupWorkers)
 	job := shadowWarmupJob{protocol: protocol, role: role, text: text, profile: p,
 		dialect: dialect, keywords: keywords, domains: domains}
 	select {
 	case shadowWarmupQueue <- job:
-		return true
+		return warmupEnqueued
 	default:
 		shadowWarmupFlight.Delete(key)
-		return false
+		return warmupQueueFull
 	}
 }
 

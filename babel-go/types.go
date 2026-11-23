@@ -66,6 +66,10 @@ type CompileReq struct {
 	SkipAuditIfNotShorter bool `json:"-"`
 	// proxyPath 标记请求来自 /v1/* 透明代理，用于启用校验缓存等代理专属优化。
 	proxyPath bool
+	// preparedDialect / preparedCacheKey 由代理热路径算好后透传，
+	// 避免 doCompileContext 重复组合词典与序列化指纹。
+	preparedDialect  *Dialect
+	preparedCacheKey string
 }
 
 // ValidationResult describes this request's checks, never a cached assertion.

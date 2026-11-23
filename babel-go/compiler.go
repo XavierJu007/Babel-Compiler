@@ -1062,10 +1062,7 @@ func candidateCached(req CompileReq, p Profile) bool {
 	if err != nil {
 		return false
 	}
-	cacheMutex.RLock()
-	entry, ok := diskCache[key]
-	cacheMutex.RUnlock()
-	return ok && entry.Compiled != ""
+	return cacheKeyHasCandidate(key)
 }
 
 func doCompile(req CompileReq) (CompileResp, error) {
@@ -1099,11 +1096,19 @@ func doCompileContext(ctx context.Context, req CompileReq) (CompileResp, error) 
 		return CompileResp{}, fmt.Errorf("编译文本不是有效 UTF-8")
 	}
 
-	dialect, err := composeDialect(req.Mode, req.Domains, req.Text)
-	if err != nil {
-		return CompileResp{}, err
+	var dialect Dialect
+	cacheKey := req.preparedCacheKey
+	if req.preparedDialect != nil {
+		dialect = *req.preparedDialect
+	} else {
+		dialect, err = composeDialect(req.Mode, req.Domains, req.Text)
+		if err != nil {
+			return CompileResp{}, err
+		}
 	}
-	cacheKey := makeCacheKey(dialect, p, req.Text)
+	if cacheKey == "" {
+		cacheKey = makeCacheKey(dialect, p, req.Text)
+	}
 	readCandidate := func() (CompileResp, bool) {
 		now := time.Now().Unix()
 		cacheMutex.RLock()
