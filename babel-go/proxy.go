@@ -153,13 +153,71 @@ func translateMessageBlockContext(ctx context.Context, protocol, role, text stri
 	if ctx.Err() != nil {
 		return text, "", origTok, origTok
 	}
-	if len([]rune(strings.TrimSpace(text))) < 35 {
+	if len([]rune(strings.TrimSpace(text))) < proxyMinRunes {
 		return text, "", origTok, origTok
+	}
+	// 纯 JSON 或整体代码围栏对模型没有压缩价值，本地直接跳过。
+	if proxySkipNonProse && isNonProsePayload(text) {
+		return text, "", origTok, origTok
+	}
+
+	// 负缓存命中：这段文本此前确定压不短，直接返回原文，省掉一次模型往返。
+	if proxyNegativeCacheTTL > 0 && negativeCache.Get(negativeCacheKey(dialect, p, text)) {
+		logID := fmt.Sprintf("%d-%d", time.Now().UnixNano(), proxyLogSequence.Add(1))
+		appendProxyLog(ProxyLog{
+			ID: logID, Timestamp: time.Now().Format("15:04:05"),
+			Protocol: protocol, Dialect: dialect.Name, Domains: domains, Role: role,
+			Original: text, Compiled: text,
+			Decision: "kept_original",
+			Reason:   "负缓存命中：该文本此前未产生更短候选，已保留原文",
+		})
+		return text, logID, origTok, origTok
 	}
 
 	// 熔断窗口内直接短路：既不排队占槽位，也不额外记录失败。
 	if compilerCB.IsOpen() {
 		return text, "", origTok, origTok
+	}
+
+	var activeKeywords []string
+	textLower := strings.ToLower(text)
+	for _, kw := range reqKeywords {
+		if kw != "" && strings.Contains(textLower, strings.ToLower(kw)) {
+			activeKeywords = append(activeKeywords, kw)
+		}
+	}
+
+	req := CompileReq{
+		Profile:               p.Name,
+		Text:                  text,
+		Mode:                  dialect.Name,
+		Domains:               domains,
+		StrictGate:            true,
+		RequiredKeywords:      activeKeywords,
+		APIKey:                p.APIKey,
+		BaseURL:               p.BaseURL,
+		Model:                 p.Model,
+		TokenEncoding:         p.TokenEncoding,
+		ValidationMode:        p.ValidationMode,
+		ReaderProfile:         &p.ReaderProfile,
+		AuditProfile:          &p.AuditProfile,
+		SkipAuditIfNotShorter: true,
+		proxyPath:             true,
+	}
+
+	// 预热只覆盖「本地没有候选」的冷启动；已有缓存时仍走正常路径直接采用。
+	if proxyAsyncWarmup && !candidateCached(req, p) {
+		if enqueueShadowWarmup(protocol, role, text, p, dialect, reqKeywords, domains) {
+			logID := fmt.Sprintf("%d-%d", time.Now().UnixNano(), proxyLogSequence.Add(1))
+			appendProxyLog(ProxyLog{
+				ID: logID, Timestamp: time.Now().Format("15:04:05"),
+				Protocol: protocol, Dialect: dialect.Name, Domains: domains, Role: role,
+				Original: text, Compiled: text,
+				Decision: "kept_original",
+				Reason:   "已触发后台异步预热，本次保留原文直通",
+			})
+			return text, logID, origTok, origTok
+		}
 	}
 
 	// 全局并发闸门：队列超时说明编译侧忙不过来，退回原文而不是拖住上游请求。
@@ -185,30 +243,7 @@ func translateMessageBlockContext(ctx context.Context, protocol, role, text stri
 		return text, "", origTok, origTok
 	}
 
-	var activeKeywords []string
-	textLower := strings.ToLower(text)
-	for _, kw := range reqKeywords {
-		if kw != "" && strings.Contains(textLower, strings.ToLower(kw)) {
-			activeKeywords = append(activeKeywords, kw)
-		}
-	}
-
-	res, err := doCompileContext(ctx, CompileReq{
-		Profile:               p.Name,
-		Text:                  text,
-		Mode:                  dialect.Name,
-		Domains:               domains,
-		StrictGate:            true,
-		RequiredKeywords:      activeKeywords,
-		APIKey:                p.APIKey,
-		BaseURL:               p.BaseURL,
-		Model:                 p.Model,
-		TokenEncoding:         p.TokenEncoding,
-		ValidationMode:        p.ValidationMode,
-		ReaderProfile:         &p.ReaderProfile,
-		AuditProfile:          &p.AuditProfile,
-		SkipAuditIfNotShorter: true,
-	})
+	res, err := doCompileContext(ctx, req)
 	if ctx.Err() != nil {
 		compilerCB.ReleaseProbe(probeID)
 		return text, "", origTok, origTok
@@ -254,6 +289,9 @@ func translateMessageBlockContext(ctx context.Context, protocol, role, text stri
 		countLabel = res.Stats.MeasurementEncoding + " 文本 Token"
 	}
 	if strings.TrimSpace(res.Compiled) == "" || res.Stats.CompiledTokens >= res.Stats.OriginalTokens {
+		if proxyNegativeCacheTTL > 0 && res.Stats.OriginalTokens > 0 {
+			negativeCache.Put(negativeCacheKey(dialect, p, text), proxyNegativeCacheTTL)
+		}
 		entry.Reason = "候选未减少" + countLabel + "，已保留原文"
 		appendProxyLog(entry)
 		return text, logID, origTok, origTok
@@ -284,7 +322,7 @@ type proxyBlockResult struct {
 
 // appendProxyTextBlock 只把够长的文本加入编译队列；短文本按原文计入统计。
 func appendProxyTextBlock(blocks *[]proxyTextBlock, role, text string, reqKeywords []string, apply func(string), estOrig, estComp *int) {
-	if len([]rune(strings.TrimSpace(text))) < 35 {
+	if len([]rune(strings.TrimSpace(text))) < proxyMinRunes {
 		t := estimateTokensBPE(text)
 		*estOrig += t
 		*estComp += t

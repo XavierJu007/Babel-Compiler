@@ -1009,10 +1009,25 @@ func validateCompileResponse(ctx context.Context, req CompileReq, p, auditor, re
 		return out, nil
 	}
 	if req.Verify || req.StrictGate {
+		// 校验缓存只服务 /v1/* 代理且 TTL>0；Web/CLI 与 eval 永远走新鲜校验。
+		cacheable := req.proxyPath && proxyValidationCacheTTL > 0
+		var cacheKey validationCacheKey
+		if cacheable {
+			cacheKey = makeValidationCacheKey(req, p.ValidationMode, auditor, reader, out.Compiled)
+			if cached, ok := validationCache.Get(cacheKey); ok {
+				out.Validation = cloneValidationResult(cached)
+				out.Audit = validationSummary(out.Validation)
+				return out, nil
+			}
+		}
 		if p.ValidationMode == "blind" {
 			out.Validation = runBlindValidationContext(ctx, reader, auditor, req.Text, out.Compiled, req.RequiredKeywords)
 		} else {
 			out.Validation = runValidationContext(ctx, auditor, req.Text, out.Compiled, req.RequiredKeywords)
+		}
+		// 只缓存通过的结论；error / not_run / failed 一律不缓存。
+		if cacheable && out.Validation.Status == "passed" {
+			validationCache.Put(cacheKey, cloneValidationResult(out.Validation), proxyValidationCacheTTL)
 		}
 	} else if len(req.RequiredKeywords) > 0 {
 		if issues := checkDeterministicInvariants(req.Text, out.Compiled, req.RequiredKeywords); len(issues) > 0 {
@@ -1029,6 +1044,28 @@ func validateCompileResponse(ctx context.Context, req CompileReq, p, auditor, re
 		return out, &ValidationError{Validation: out.Validation}
 	}
 	return out, nil
+}
+
+// candidateCacheKey 复算 doCompileContext 将要使用的缓存键：
+// 领域相关性会影响 Guidance，因此必须用同一段文本重新组合 dialect。
+func candidateCacheKey(req CompileReq, p Profile) (string, error) {
+	dialect, err := composeDialect(req.Mode, req.Domains, req.Text)
+	if err != nil {
+		return "", err
+	}
+	return makeCacheKey(dialect, p, req.Text), nil
+}
+
+// candidateCached 判断生成缓存里是否已有可直接采用的候选（不触发任何模型调用）。
+func candidateCached(req CompileReq, p Profile) bool {
+	key, err := candidateCacheKey(req, p)
+	if err != nil {
+		return false
+	}
+	cacheMutex.RLock()
+	entry, ok := diskCache[key]
+	cacheMutex.RUnlock()
+	return ok && entry.Compiled != ""
 }
 
 func doCompile(req CompileReq) (CompileResp, error) {

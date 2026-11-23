@@ -426,6 +426,9 @@ func startServer(preferredAddr string, autoOpen bool) {
 		os.Exit(1)
 	}
 
+	// 服务端模式才启用代理提速默认值；显式 =0 / =false 会覆盖这里的默认。
+	configureProxySpeedDefaults()
+
 	// 服务端模式才启用异步落盘；退出前会强制刷盘，不丢缓存。
 	stopCacheFlusher := startAsyncCacheFlusher(500 * time.Millisecond)
 	defer stopCacheFlusher()
@@ -445,6 +448,9 @@ func startServer(preferredAddr string, autoOpen bool) {
 	fmt.Printf("    - LRU 缓存池:     %s (上限 %d 条，异步防抖落盘)\n", cacheFilePath(), maxCacheEntries)
 	fmt.Printf("    - 代理并发控制:   全局上限 %d / 单请求块并发 %d / 队列超时 %v\n",
 		proxyCompileSem.Status()["limit"], proxyBlockConcurrency, proxyCompileQueueTimeout)
+	fmt.Printf("    - 代理提速:       校验缓存 %s / 负缓存 %s / 异步预热 %t / 最小长度 %d / 跳过非散文 %t\n",
+		proxySpeedDurationLabel(proxyValidationCacheTTL), proxySpeedDurationLabel(proxyNegativeCacheTTL),
+		proxyAsyncWarmup, proxyMinRunes, proxySkipNonProse)
 	fmt.Printf("    - Web 控制台:     %s\n", webURL)
 	fmt.Printf("    - OpenAI 代理:    %s/v1/chat/completions\n", webURL)
 	fmt.Printf("    - Anthropic 代理: %s/v1/messages\n", webURL)

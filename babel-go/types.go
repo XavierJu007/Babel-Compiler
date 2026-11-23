@@ -63,6 +63,8 @@ type CompileReq struct {
 	AuditProfile     *string  `json:"audit_profile,omitempty"`
 	// SkipAuditIfNotShorter 仅供代理路径：候选不短于原文时无需再跑模型审计。
 	SkipAuditIfNotShorter bool `json:"-"`
+	// proxyPath 标记请求来自 /v1/* 透明代理，用于启用校验缓存等代理专属优化。
+	proxyPath bool
 }
 
 // ValidationResult describes this request's checks, never a cached assertion.
