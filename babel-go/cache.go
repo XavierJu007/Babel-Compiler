@@ -4,16 +4,44 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"math"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
 
 var cachePersistMutex sync.Mutex
 
-const candidateCacheVersion = "candidate-v3"
+const (
+	candidateCacheVersion = "candidate-v3"
+	defaultMaxCacheBytes  = 32 * 1024 * 1024 // 32 MiB disk cache budget
+)
+
+func maxCacheBytesLimit() int64 {
+	raw := strings.TrimSpace(os.Getenv("BABEL_CACHE_MAX_BYTES"))
+	if raw == "" {
+		return defaultMaxCacheBytes
+	}
+	if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n > 0 {
+		return n
+	}
+	return defaultMaxCacheBytes
+}
+
+func cacheEntryApproxBytes(key string, entry CacheEntry) int64 {
+	return int64(len(key) + len(entry.Compiled) + len(entry.Model) + len(entry.Mode) + len(entry.CreatedAt) + 96)
+}
+
+func diskCacheApproxBytesLocked() int64 {
+	var total int64
+	for k, v := range diskCache {
+		total += cacheEntryApproxBytes(k, v)
+	}
+	return total
+}
 
 func cacheFilePath() string {
 	localCache := "babel.cache.json"
@@ -47,20 +75,36 @@ func initDiskCache() {
 }
 
 func evictCacheIfNeededLocked() {
-	for len(diskCache) > maxCacheEntries {
-		var oldestKey string
-		var oldestTime int64 = math.MaxInt64
-		for k, v := range diskCache {
-			if v.LastAccess < oldestTime {
-				oldestTime = v.LastAccess
-				oldestKey = k
-			}
+	byteLimit := maxCacheBytesLimit()
+	totalBytes := diskCacheApproxBytesLocked()
+	if len(diskCache) <= maxCacheEntries && totalBytes <= byteLimit {
+		return
+	}
+	type cacheOrderItem struct {
+		key        string
+		lastAccess int64
+		size       int64
+	}
+	items := make([]cacheOrderItem, 0, len(diskCache))
+	for k, v := range diskCache {
+		items = append(items, cacheOrderItem{
+			key:        k,
+			lastAccess: v.LastAccess,
+			size:       cacheEntryApproxBytes(k, v),
+		})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].lastAccess != items[j].lastAccess {
+			return items[i].lastAccess < items[j].lastAccess
 		}
-		if oldestKey != "" {
-			delete(diskCache, oldestKey)
-		} else {
+		return items[i].key < items[j].key
+	})
+	for _, item := range items {
+		if len(diskCache) <= maxCacheEntries && totalBytes <= byteLimit {
 			break
 		}
+		delete(diskCache, item.key)
+		totalBytes -= item.size
 	}
 }
 

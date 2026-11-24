@@ -1594,8 +1594,9 @@
                 <button id="resetCircuitBtn" type="button" class="btn btn-danger hidden" onclick="resetCircuitBreaker()">立即恢复编译</button>
             </div>
             <p style="font-size: 12px; color: var(--text-secondary); line-height: 1.65;">
-                固定编译为高密度巴别语，校验通过且文本更短时才替换。<code style="color: var(--gold-soft)">X-Babel-Domains</code> 可选择自己的领域词典（逗号分隔）。编译失败或未达到替换条件时转发原文；上游 usage 是整次请求用量。
+                固定编译为高密度巴别语，校验通过且文本更短时才替换。支持 <code style="color: var(--accent-ice)">/v1/chat/completions</code>、<code style="color: var(--accent-ice)">/v1/responses</code>、<code style="color: var(--lilac-soft)">/v1/messages</code> 压缩及其他 <code style="color: var(--accent-ice)">/v1/*</code> 自动透传。<code style="color: var(--gold-soft)">X-Babel-Domains</code> 可选领域词典，<code style="color: var(--gold-soft)">X-Babel-Bypass: 1</code> 可单次直通。
             </p>
+            <div id="proxyMetricsBar" class="endpoint-row hidden" style="margin-top: 8px;"></div>
         </div>
 
         <div class="pane-actions">
@@ -3216,6 +3217,37 @@
         } catch (e) {}
     }
 
+    function renderProxyMetrics(metrics, speed) {
+        const bar = document.getElementById('proxyMetricsBar');
+        if (!bar) return;
+        bar.innerHTML = '';
+        if (!metrics && !speed) {
+            bar.classList.add('hidden');
+            return;
+        }
+        const addChip = (text) => {
+            const chip = document.createElement('span');
+            chip.className = 'tag tag-role';
+            chip.textContent = text;
+            bar.appendChild(chip);
+        };
+        if (metrics) {
+            addChip(`请求 ${metrics.requests_total || 0}`);
+            addChip(`采纳 ${metrics.adopted_total || 0}`);
+            addChip(`直通 ${metrics.passthrough_total || 0}`);
+            if (metrics.bypass_total) addChip(`旁路 ${metrics.bypass_total}`);
+            if (metrics.oversize_total) addChip(`大包透传 ${metrics.oversize_total}`);
+            if (metrics.budget_timeout_total) addChip(`预算回退 ${metrics.budget_timeout_total}`);
+            if (metrics.upstream_error_total) addChip(`上游异常 ${metrics.upstream_error_total}`);
+        }
+        if (speed) {
+            addChip(`编译预算 ${speed.compile_budget || 'off'}`);
+            addChip(`异步预热 ${speed.async_warmup ? '开(user≥' + (speed.warmup_user_min_hits ?? 1) + ')' : '关'}`);
+            if (speed.skip_cache_control) addChip('保护 cache_control');
+        }
+        bar.classList.remove('hidden');
+    }
+
     async function loadLogs() {
         try {
             const payload = await fetchJSON('/api/logs');
@@ -3224,6 +3256,7 @@
                 document.getElementById('redactCheck').checked = payload.redact_enabled;
             }
             if (payload.circuit) renderCircuitStatus(payload.circuit);
+            renderProxyMetrics(payload.metrics, payload.proxy_speed);
             document.getElementById('logsError').classList.add('hidden');
 
             const badge = document.getElementById('logCountBadge');

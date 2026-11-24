@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -68,20 +69,46 @@ func (g *localHTTPGuard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reject(http.StatusForbidden, "拒绝与本机监听地址不匹配的 Host")
 		return
 	}
+	isProxyRoute := strings.HasPrefix(r.URL.Path, "/v1/")
+	allowedProxyOrigin := ""
 	if origins, present := r.Header["Origin"]; present {
-		if len(origins) != 1 || !sameLocalOrigin(origins[0], host, port, r.TLS != nil) {
+		if len(origins) != 1 {
+			reject(http.StatusForbidden, "拒绝跨源或不透明来源请求")
+			return
+		}
+		if sameLocalOrigin(origins[0], host, port, r.TLS != nil) {
+			// Same-origin browser request is always allowed.
+		} else if isProxyRoute && isAllowedProxyCORSOrigin(origins[0]) {
+			allowedProxyOrigin = origins[0]
+		} else {
 			reject(http.StatusForbidden, "拒绝跨源或不透明来源请求")
 			return
 		}
 	}
 	if sites, present := r.Header["Sec-Fetch-Site"]; present {
-		if len(sites) != 1 || sites[0] != "same-origin" && sites[0] != "none" {
+		if len(sites) != 1 || (sites[0] != "same-origin" && sites[0] != "none" && allowedProxyOrigin == "") {
 			reject(http.StatusForbidden, "拒绝跨站浏览器请求")
 			return
 		}
 	}
+	if allowedProxyOrigin != "" {
+		protected.Header().Set("Access-Control-Allow-Origin", allowedProxyOrigin)
+		protected.Header().Add("Vary", "Origin")
+		protected.Header().Set("Access-Control-Expose-Headers", "X-Babel-Status, X-Babel-Compile-Ms")
+		if r.Method == http.MethodOptions {
+			protected.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+			reqHeaders := sanitizeCORSRequestHeaders(r.Header.Get("Access-Control-Request-Headers"))
+			if reqHeaders == "" {
+				reqHeaders = "Authorization, Content-Type, x-api-key, api-key, anthropic-version, anthropic-beta, OpenAI-Organization, OpenAI-Beta, X-Babel-Profile, X-Babel-Domains, X-Babel-Validation-Mode, X-Babel-Reader-Profile, X-Babel-Audit-Profile, X-Babel-Bypass, X-Babel-Compile-Budget, X-Babel-Skip-Cache-Control, X-Babel-Compress-Developer, X-Upstream-BaseURL"
+			}
+			protected.Header().Set("Access-Control-Allow-Headers", reqHeaders)
+			protected.Header().Set("Access-Control-Max-Age", "600")
+			protected.WriteHeader(http.StatusNoContent)
+			return
+		}
+	}
 	apiRoute := strings.HasPrefix(r.URL.Path, "/api/")
-	proxyJSONRoute := r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/messages"
+	proxyJSONRoute := r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/responses" || r.URL.Path == "/v1/messages"
 	if apiRoute || proxyJSONRoute {
 		maxBytes := int64(maxLocalJSONBodyBytes)
 		if proxyJSONRoute {
@@ -142,6 +169,52 @@ func sameLocalOrigin(origin, requestHost, requestPort string, tls bool) bool {
 		port = "443"
 	}
 	return ok && host == requestHost && port == requestPort
+}
+
+// isAllowedProxyCORSOrigin checks explicit opt-in origins configured via
+// BABEL_PROXY_ALLOWED_ORIGINS (comma-separated). Wildcards ("*") and opaque
+// "null" origins are always rejected so the local boundary stays explicit.
+func isAllowedProxyCORSOrigin(origin string) bool {
+	origin = strings.TrimSpace(origin)
+	if origin == "" || origin == "*" || strings.EqualFold(origin, "null") {
+		return false
+	}
+	raw := strings.TrimSpace(os.Getenv("BABEL_PROXY_ALLOWED_ORIGINS"))
+	if raw == "" {
+		return false
+	}
+	for _, entry := range strings.Split(raw, ",") {
+		candidate := strings.TrimSpace(entry)
+		if candidate == "" || candidate == "*" || strings.EqualFold(candidate, "null") {
+			continue
+		}
+		if strings.EqualFold(candidate, origin) {
+			return true
+		}
+	}
+	return false
+}
+
+func sanitizeCORSRequestHeaders(raw string) string {
+	var safe []string
+	for _, part := range strings.Split(raw, ",") {
+		name := strings.TrimSpace(part)
+		if name == "" {
+			continue
+		}
+		valid := true
+		for i := 0; i < len(name); i++ {
+			c := name[i]
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+				valid = false
+				break
+			}
+		}
+		if valid {
+			safe = append(safe, name)
+		}
+	}
+	return strings.Join(safe, ", ")
 }
 
 // Set headers at the actual commit point so an upstream response cannot replace

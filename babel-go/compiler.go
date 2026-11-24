@@ -316,6 +316,33 @@ func buildOpenAICompletionsURL(baseURL string) string {
 	return u.String()
 }
 
+func buildOpenAIResponsesURL(baseURL string) string {
+	raw := strings.TrimSpace(baseURL)
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		clean := strings.TrimRight(raw, "/")
+		if strings.HasSuffix(clean, "/responses") {
+			return clean
+		}
+		return clean + "/responses"
+	}
+	path := strings.TrimRight(u.Path, "/")
+	switch {
+	case strings.HasSuffix(path, "/responses"):
+		return raw
+	case strings.HasSuffix(path, "/chat/completions"):
+		u.Path = strings.TrimSuffix(path, "/chat/completions") + "/responses"
+	case path == "":
+		u.Path = "/v1/responses"
+	case isAPIBasePath(path):
+		u.Path = path + "/responses"
+	default:
+		u.Path = path + "/responses"
+	}
+	u.RawPath = ""
+	return u.String()
+}
+
 func buildAnthropicMessagesURL(baseURL string) string {
 	raw := strings.TrimSpace(baseURL)
 	u, err := url.Parse(raw)

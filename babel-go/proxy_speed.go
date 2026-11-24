@@ -19,6 +19,7 @@ var (
 	proxyCompileBudget      time.Duration
 	proxyAsyncWarmup        bool
 	proxySkipCacheControl   bool
+	proxyCompressDeveloper  bool
 	proxyMinRunes           = 35
 	proxySkipNonProse       bool
 	proxyWarmupWorkers      = 2
@@ -106,6 +107,11 @@ func configureProxySpeedDefaults() {
 	} else {
 		proxySkipCacheControl = false
 	}
+	if raw, ok := os.LookupEnv("BABEL_PROXY_COMPRESS_DEVELOPER"); ok {
+		proxyCompressDeveloper = parseProxyBool(raw, false)
+	} else {
+		proxyCompressDeveloper = false
+	}
 	if raw, ok := os.LookupEnv("BABEL_PROXY_WARMUP_USER_MIN_HITS"); ok {
 		if value, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil && value >= 0 {
 			proxyWarmupUserMinHits = value
@@ -147,6 +153,7 @@ func proxySpeedSummary() map[string]any {
 		"compile_budget":       proxySpeedDurationLabel(proxyCompileBudget),
 		"async_warmup":         proxyAsyncWarmup,
 		"skip_cache_control":   proxySkipCacheControl,
+		"compress_developer":   proxyCompressDeveloper,
 		"warmup_user_min_hits": proxyWarmupUserMinHits,
 		"min_runes":            proxyMinRunes,
 		"skip_non_prose":       proxySkipNonProse,

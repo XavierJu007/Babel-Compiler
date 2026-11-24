@@ -110,6 +110,7 @@ func newServerMux() *http.ServeMux {
 			}
 			cacheMutex.RLock()
 			cacheCount := len(diskCache)
+			cacheBytes := diskCacheApproxBytesLocked()
 			cacheMutex.RUnlock()
 
 			json.NewEncoder(w).Encode(map[string]any{
@@ -117,6 +118,7 @@ func newServerMux() *http.ServeMux {
 				"config_path":      configPath(),
 				"cache_path":       cacheFilePath(),
 				"cache_count":      cacheCount,
+				"cache_bytes":      cacheBytes,
 				"profiles":         safeProfiles,
 				"token_encodings":  supportedTokenEncodings(),
 				"validation_modes": []string{"compare", "blind"},
@@ -432,6 +434,7 @@ func newServerMux() *http.ServeMux {
 
 	mux.HandleFunc("/api/compile/stream", compileStreamHandler)
 	mux.HandleFunc("/v1/chat/completions", openAIProxyHandler)
+	mux.HandleFunc("/v1/responses", openAIResponsesProxyHandler)
 	mux.HandleFunc("/v1/messages", anthropicProxyHandler)
 	mux.HandleFunc("/v1/", v1PassthroughProxyHandler)
 
@@ -473,15 +476,16 @@ func startServer(preferredAddr string, autoOpen bool) {
 	fmt.Printf("    - 配置文件:       %s\n", configPath())
 	fmt.Printf("    - 表达策略:       mixed（高密度巴别语 / 关系·条件·约束）\n")
 	fmt.Printf("    - 领域表达目录:   %s (支持 ./domains 覆盖)\n", globalDomainsDir())
-	fmt.Printf("    - LRU 缓存池:     %s (上限 %d 条，异步防抖落盘)\n", cacheFilePath(), maxCacheEntries)
+	fmt.Printf("    - LRU 缓存池:     %s (上限 %d 条 / %d MiB，异步防抖落盘)\n", cacheFilePath(), maxCacheEntries, maxCacheBytesLimit()/(1024*1024))
 	fmt.Printf("    - 代理并发控制:   全局上限 %d / 单请求块并发 %d / 队列超时 %v\n",
 		proxyCompileSem.Status()["limit"], proxyBlockConcurrency, proxyCompileQueueTimeout)
 	fmt.Printf("    - 代理提速:       校验缓存 %s / 负缓存 %s / 编译预算 %s / 异步预热 %t (user≥%d次) / 保护cache_control %t / 最小长度 %d / 跳过非散文 %t\n",
 		proxySpeedDurationLabel(proxyValidationCacheTTL), proxySpeedDurationLabel(proxyNegativeCacheTTL),
 		proxySpeedDurationLabel(proxyCompileBudget), proxyAsyncWarmup, proxyWarmupUserMinHits, proxySkipCacheControl, proxyMinRunes, proxySkipNonProse)
 	fmt.Printf("    - Web 控制台:     %s\n", webURL)
-	fmt.Printf("    - OpenAI 代理:    %s/v1/chat/completions\n", webURL)
-	fmt.Printf("    - Anthropic 代理: %s/v1/messages\n", webURL)
+	fmt.Printf("    - 健康检查:       %s/healthz\n", webURL)
+	fmt.Printf("    - OpenAI 代理:    %s/v1/chat/completions · %s/v1/responses\n", webURL, webURL)
+	fmt.Printf("    - Anthropic 代理: %s/v1/messages (其余 /v1/* 自动流式透传)\n", webURL)
 
 	if autoOpen {
 		openBrowser(webURL)

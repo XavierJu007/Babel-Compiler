@@ -72,14 +72,16 @@ curl http://127.0.0.1:8080/api/compile \
 
 Set the final service's base URL as `upstream_url` in the model settings, then point your client at the corresponding local endpoint:
 
-| Protocol | Endpoint | Upstream authentication supplied by the caller |
-| --- | --- | --- |
-| OpenAI | `/v1/chat/completions` | `Authorization` |
-| Anthropic | `/v1/messages` | `x-api-key` |
+| Protocol | Endpoint | Upstream authentication supplied by the caller | Behavior |
+| --- | --- | --- | --- |
+| OpenAI Chat | `/v1/chat/completions` | `Authorization` or `api-key` | Compresses `system`, `user` and tool descriptions |
+| OpenAI Responses | `/v1/responses` | `Authorization` or `api-key` | Compresses `instructions`, `input` and tool descriptions |
+| Anthropic | `/v1/messages` | `x-api-key` or `Authorization` | Compresses `system`, `user` and tool descriptions |
+| Other endpoints | `/v1/*` (e.g. `/v1/models`, `/v1/messages/count_tokens`, `/v1/embeddings`) | Same as above | Zero-parse streaming passthrough |
 
 **Compilation uses the saved profile; final execution uses `model` from the request body.** The caller must provide the upstream key; the proxy never borrows the compiler key.
 
-The proxy compresses `system`, `user` and tool descriptions, replacing only their text while preserving message roles and tool structure. Model responses pass through without translation. [Full setup and fallback rules (Chinese)](docs/usage/validation.md#4-代理使用).
+The proxy replaces only eligible text fields while preserving roles, tool schemas, query strings and client headers; model responses (including long SSE streams) pass through directly without re-translation. Supports `X-Babel-Bypass: 1`, `X-Babel-Compile-Budget`, `X-Babel-Skip-Cache-Control: true`, and `GET /healthz`. [Full setup and fallback rules (Chinese)](docs/usage/validation.md#4-代理使用).
 
 ## Documentation
 

@@ -45,6 +45,7 @@ func resetProxySpeedVars(t *testing.T) {
 	proxyCompileBudget = 0
 	proxyAsyncWarmup = false
 	proxySkipCacheControl = false
+	proxyCompressDeveloper = false
 	proxyWarmupUserMinHits = 1
 	proxyMinRunes = 35
 	proxySkipNonProse = false

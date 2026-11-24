@@ -1184,3 +1184,301 @@ func TestParallelChunkCompileIsolatedFromProxySemaphore(t *testing.T) {
 		t.Fatal("parallel chunk compile deadlocked on saturated proxyCompileSem")
 	}
 }
+
+func TestOpenAIResponsesProxyCompressesInstructionsInputToolsAndDeepSchema(t *testing.T) {
+	isolateDomainIntegration(t)
+	isolateProxyState(t)
+	resetProxySpeedVars(t)
+
+	const instr = "Follow all operational requirements and retain every authorization condition and exception when reviewing requests."
+	const instrShort = "Follow requirements; retain all auth conditions & exceptions."
+	const userText = "Please review the supplied payment specification and summarize every rule, threshold and boundary clearly."
+	const userShort = "Review payment spec; summarize rules, thresholds, boundaries."
+	const toolDesc = "Execute a comprehensive compliance check across the target order and return structured findings for every rule."
+	const toolDescShort = "Run order compliance check; return rule findings."
+	const defDesc = "Detailed schema definition describing the strict verification policy applied to nested line items in an order."
+	const defDescShort = "Verification policy for nested order line items."
+	const anyOfDesc = "Alternative filter expression allowing either a numeric threshold or a named tier identifier for matching."
+	const anyOfDescShort = "Filter: numeric threshold or named tier."
+	const protectedToolOut = "Immutable function_call_output payload that must never be sent to the compiler under any circumstance."
+
+	mapping := map[string]string{
+		instr:     instrShort,
+		userText:  userShort,
+		toolDesc:  toolDescShort,
+		defDesc:   defDescShort,
+		anyOfDesc: anyOfDescShort,
+	}
+
+	compiler := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req compilerRequestBody
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if len(req.Messages) > 0 && req.Messages[0].Content == verifyGatePrompt {
+			writeModelContent(w, `{"pass":true,"missing":[]}`)
+			return
+		}
+		orig := decodeCompilerInput(t, req.Messages[1].Content).Original
+		if out, ok := mapping[orig]; ok {
+			writeModelContent(w, out)
+			return
+		}
+		t.Errorf("unexpected text sent to compiler: %q", orig)
+		writeModelContent(w, orig)
+	}))
+	defer compiler.Close()
+
+	var forwarded map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Errorf("unexpected responses path: %s", r.URL.Path)
+		}
+		b, _ := io.ReadAll(r.Body)
+		forwarded, _ = decodeProxyPayload(b)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"))
+		_, _ = w.Write([]byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":188}}}\n\n"))
+	}))
+	defer upstream.Close()
+
+	if err := writeConfigFile(Config{ActiveProfile: "fixture", Profiles: map[string]Profile{
+		"fixture": {Name: "fixture", APIKey: "k", BaseURL: compiler.URL, UpstreamURL: upstream.URL, Model: "m"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	payload := map[string]any{
+		"model":        "gpt-5",
+		"stream":       true,
+		"instructions": instr,
+		"input": []any{
+			map[string]any{
+				"type": "message",
+				"role": "user",
+				"content": []any{
+					map[string]any{"type": "input_text", "text": userText},
+				},
+			},
+			map[string]any{
+				"type":    "function_call_output",
+				"call_id": "call_1",
+				"output":  protectedToolOut,
+			},
+		},
+		"tools": []any{
+			map[string]any{
+				"type":        "function",
+				"name":        "audit_order",
+				"description": toolDesc,
+				"parameters": map[string]any{
+					"type": "object",
+					"$defs": map[string]any{
+						"LinePolicy": map[string]any{"type": "object", "description": defDesc},
+					},
+					"properties": map[string]any{
+						"filter": map[string]any{
+							"anyOf": []any{
+								map[string]any{"type": "number", "description": anyOfDesc},
+								map[string]any{"type": "string"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	raw, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer consumer-key")
+	rec := httptest.NewRecorder()
+	newServerMux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Header().Get("X-Babel-Status") != "adopted" {
+		t.Fatalf("/v1/responses failed: status=%d babel=%q body=%s", rec.Code, rec.Header().Get("X-Babel-Status"), rec.Body.String())
+	}
+	if forwarded["instructions"] != instrShort {
+		t.Fatalf("instructions not compressed: %v", forwarded["instructions"])
+	}
+	inputs := forwarded["input"].([]any)
+	gotUser := inputs[0].(map[string]any)["content"].([]any)[0].(map[string]any)["text"]
+	if gotUser != userShort {
+		t.Fatalf("input_text not compressed: %v", gotUser)
+	}
+	if inputs[1].(map[string]any)["output"] != protectedToolOut {
+		t.Fatalf("function_call_output was mutated: %v", inputs[1])
+	}
+	tool := forwarded["tools"].([]any)[0].(map[string]any)
+	if tool["description"] != toolDescShort {
+		t.Fatalf("flat tool description not compressed: %v", tool["description"])
+	}
+	params := tool["parameters"].(map[string]any)
+	if params["$defs"].(map[string]any)["LinePolicy"].(map[string]any)["description"] != defDescShort {
+		t.Fatal("$defs description not compressed")
+	}
+	if params["properties"].(map[string]any)["filter"].(map[string]any)["anyOf"].([]any)[0].(map[string]any)["description"] != anyOfDescShort {
+		t.Fatal("anyOf description not compressed")
+	}
+	logsMutex.RLock()
+	hasUsage := len(proxyLogs) > 0 && proxyLogs[0].RealPromptTokens == 188
+	logsMutex.RUnlock()
+	if !hasUsage {
+		t.Fatalf("Responses SSE usage (188) was not recorded in proxyLogs")
+	}
+}
+
+func TestProxyCompressDeveloperRoleIsOptIn(t *testing.T) {
+	isolateDomainIntegration(t)
+	isolateProxyState(t)
+	resetProxySpeedVars(t)
+
+	const devText = "You are a strict compliance auditor; preserve every policy rule, numerical threshold and exception in your review."
+	const devShort = "role:compliance auditor; preserve all rules, thresholds, exceptions."
+
+	var devCompileCalls atomic.Int32
+	compiler := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req compilerRequestBody
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if len(req.Messages) > 0 && req.Messages[0].Content == verifyGatePrompt {
+			writeModelContent(w, `{"pass":true,"missing":[]}`)
+			return
+		}
+		devCompileCalls.Add(1)
+		writeModelContent(w, devShort)
+	}))
+	defer compiler.Close()
+
+	var lastDev string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if len(body.Messages) > 0 {
+			lastDev = body.Messages[0].Content
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[]}`))
+	}))
+	defer upstream.Close()
+
+	if err := writeConfigFile(Config{ActiveProfile: "fixture", Profiles: map[string]Profile{
+		"fixture": {Name: "fixture", APIKey: "k", BaseURL: compiler.URL, UpstreamURL: upstream.URL, Model: "m"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, _ := json.Marshal(map[string]any{
+		"model":    "o3",
+		"messages": []any{map[string]any{"role": "developer", "content": devText}},
+	})
+
+	// Default: developer role is NOT compressed.
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(raw))
+	req1.Header.Set("Content-Type", "application/json")
+	req1.Header.Set("Authorization", "Bearer user-key")
+	rec1 := httptest.NewRecorder()
+	newServerMux().ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusOK || devCompileCalls.Load() != 0 || lastDev != devText {
+		t.Fatalf("default developer handling altered text: calls=%d got=%q", devCompileCalls.Load(), lastDev)
+	}
+
+	// Opt-in via header: developer role IS compressed.
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(raw))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("Authorization", "Bearer user-key")
+	req2.Header.Set("X-Babel-Compress-Developer", "true")
+	rec2 := httptest.NewRecorder()
+	newServerMux().ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK || devCompileCalls.Load() != 1 || lastDev != devShort {
+		t.Fatalf("opt-in developer compression failed: status=%d calls=%d got=%q", rec2.Code, devCompileCalls.Load(), lastDev)
+	}
+}
+
+func TestProxyCORSAllowlistScopedToV1Only(t *testing.T) {
+	isolateDomainIntegration(t)
+	isolateProxyState(t)
+	t.Setenv("BABEL_PROXY_ALLOWED_ORIGINS", "http://localhost:3000, *, null")
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+	if err := writeConfigFile(Config{ActiveProfile: "fixture", Profiles: map[string]Profile{
+		"fixture": {Name: "fixture", APIKey: "k", BaseURL: upstream.URL, UpstreamURL: upstream.URL, Model: "m"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := guardedLocalHandler(t)
+
+	// Allowed origin preflight OPTIONS on /v1/chat/completions succeeds with 204 and exact CORS headers.
+	optReq := httptest.NewRequest(http.MethodOptions, "http://127.0.0.1:8080/v1/chat/completions", nil)
+	optReq.Header.Set("Origin", "http://localhost:3000")
+	optReq.Header.Set("Sec-Fetch-Site", "cross-site")
+	optReq.Header.Set("Access-Control-Request-Headers", "Authorization, Content-Type")
+	optRec := httptest.NewRecorder()
+	handler.ServeHTTP(optRec, optReq)
+	if optRec.Code != http.StatusNoContent || optRec.Header().Get("Access-Control-Allow-Origin") != "http://localhost:3000" {
+		t.Fatalf("preflight failed: status=%d acao=%q", optRec.Code, optRec.Header().Get("Access-Control-Allow-Origin"))
+	}
+
+	// Allowed origin POST on /v1/chat/completions succeeds.
+	postReq := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8080/v1/chat/completions", strings.NewReader(`{"model":"m","messages":[]}`))
+	postReq.Header.Set("Content-Type", "application/json")
+	postReq.Header.Set("Authorization", "Bearer user-key")
+	postReq.Header.Set("Origin", "http://localhost:3000")
+	postReq.Header.Set("Sec-Fetch-Site", "cross-site")
+	postRec := httptest.NewRecorder()
+	handler.ServeHTTP(postRec, postReq)
+	if postRec.Code != http.StatusOK || postRec.Header().Get("Access-Control-Allow-Origin") != "http://localhost:3000" {
+		t.Fatalf("allowed cross-origin proxy POST failed: status=%d body=%s", postRec.Code, postRec.Body.String())
+	}
+
+	// Wildcard/null in env var must NEVER allow arbitrary or opaque origins.
+	for _, badOrigin := range []string{"http://evil.example", "null"} {
+		badReq := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8080/v1/chat/completions", strings.NewReader(`{}`))
+		badReq.Header.Set("Content-Type", "application/json")
+		badReq.Header.Set("Origin", badOrigin)
+		badRec := httptest.NewRecorder()
+		handler.ServeHTTP(badRec, badReq)
+		if badRec.Code != http.StatusForbidden {
+			t.Fatalf("origin %q should be rejected with 403; got %d", badOrigin, badRec.Code)
+		}
+	}
+
+	// Management API /api/config must NEVER accept cross-origin even when in BABEL_PROXY_ALLOWED_ORIGINS.
+	mgmtReq := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8080/api/config", nil)
+	mgmtReq.Header.Set("Origin", "http://localhost:3000")
+	mgmtRec := httptest.NewRecorder()
+	handler.ServeHTTP(mgmtRec, mgmtReq)
+	if mgmtRec.Code != http.StatusForbidden {
+		t.Fatalf("/api/config leaked cross-origin access: status=%d", mgmtRec.Code)
+	}
+}
+
+func TestDiskCacheEvictsByByteLimitLRU(t *testing.T) {
+	isolateProxyState(t)
+	t.Setenv("BABEL_CACHE_MAX_BYTES", "700")
+
+	cacheMutex.Lock()
+	diskCache["k1-oldest"] = CacheEntry{Compiled: strings.Repeat("a", 200), LastAccess: 100}
+	diskCache["k2-old"] = CacheEntry{Compiled: strings.Repeat("b", 200), LastAccess: 200}
+	diskCache["k3-new"] = CacheEntry{Compiled: strings.Repeat("c", 200), LastAccess: 300}
+	diskCache["k4-newest"] = CacheEntry{Compiled: strings.Repeat("d", 200), LastAccess: 400}
+	evictCacheIfNeededLocked()
+	remainingBytes := diskCacheApproxBytesLocked()
+	_, hasOldest := diskCache["k1-oldest"]
+	_, hasNewest := diskCache["k4-newest"]
+	count := len(diskCache)
+	cacheMutex.Unlock()
+
+	if remainingBytes > 700 {
+		t.Fatalf("diskCache exceeded byte budget: %d > 700", remainingBytes)
+	}
+	if hasOldest || !hasNewest || count == 0 {
+		t.Fatalf("LRU byte eviction kept wrong entries: count=%d hasOldest=%t hasNewest=%t", count, hasOldest, hasNewest)
+	}
+}

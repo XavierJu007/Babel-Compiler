@@ -154,6 +154,40 @@ func newOpenAISSEUsageSampler() *sseUsageSampler {
 	}
 }
 
+func newOpenAIResponsesSSEUsageSampler() *sseUsageSampler {
+	return &sseUsageSampler{
+		parse: func(line []byte) (int, bool) {
+			if !bytes.Contains(line, []byte("input_tokens")) {
+				return 0, false
+			}
+			payload := parseSSEDataPayload(line)
+			if payload == nil {
+				return 0, false
+			}
+			var evt struct {
+				Type     string `json:"type"`
+				Response struct {
+					Usage struct {
+						InputTokens int `json:"input_tokens"`
+					} `json:"usage"`
+				} `json:"response"`
+				Usage struct {
+					InputTokens int `json:"input_tokens"`
+				} `json:"usage"`
+			}
+			if json.Unmarshal(payload, &evt) == nil {
+				if evt.Response.Usage.InputTokens > 0 {
+					return evt.Response.Usage.InputTokens, evt.Type == "response.completed"
+				}
+				if evt.Usage.InputTokens > 0 {
+					return evt.Usage.InputTokens, evt.Type == "response.completed"
+				}
+			}
+			return 0, false
+		},
+	}
+}
+
 func newAnthropicSSEUsageSampler() *sseUsageSampler {
 	return &sseUsageSampler{
 		parse: func(line []byte) (int, bool) {

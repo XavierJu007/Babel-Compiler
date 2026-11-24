@@ -72,14 +72,16 @@ curl http://127.0.0.1:8080/api/compile \
 
 在模型配置中填写最终服务基址 `upstream_url`，客户端连接本机对应入口：
 
-| 协议 | 入口 | 调用方携带的上游认证 |
-| --- | --- | --- |
-| OpenAI | `/v1/chat/completions` | `Authorization` |
-| Anthropic | `/v1/messages` | `x-api-key` |
+| 协议 | 入口 | 调用方携带的上游认证 | 行为 |
+| --- | --- | --- | --- |
+| OpenAI Chat | `/v1/chat/completions` | `Authorization` 或 `api-key` | 压缩 `system`/`user` 与工具描述 |
+| OpenAI Responses | `/v1/responses` | `Authorization` 或 `api-key` | 压缩 `instructions`/`input` 与工具描述 |
+| Anthropic | `/v1/messages` | `x-api-key` 或 `Authorization` | 压缩 `system`/`user` 与工具描述 |
+| 其他端点 | `/v1/*`（如 `/v1/models`、`/v1/messages/count_tokens`、`/v1/embeddings`） | 同上 | 零解析流式透传 |
 
 **编译使用已保存方案，最终执行使用请求体中的 `model`。** 上游 Key 必须由调用方提供，代理不会借用编译 Key。
 
-代理压缩 `system`、`user` 和工具描述，只替换对应文本，保留消息角色与工具结构；模型响应直接透传，不额外回译。[完整接入与回退规则](docs/usage/validation.md#4-代理使用)。
+代理只替换对应文本字段，保留消息角色、工具结构、查询参数与业务请求头；模型响应（含长 SSE 流）直接透传，不额外回译。支持 `X-Babel-Bypass: 1` 单次旁路、`X-Babel-Compile-Budget` 编译延迟预算、`X-Babel-Skip-Cache-Control: true` 保护上游 Prompt Cache，以及 `GET /healthz` 健康与指标检查。[完整接入与回退规则](docs/usage/validation.md#4-代理使用)。
 
 ## 文档
 

@@ -125,23 +125,37 @@ curl http://127.0.0.1:8080/api/validate \
 
 ## 4. 代理使用
 
-OpenAI `/v1/chat/completions` 与 Anthropic `/v1/messages` 代理均支持以下请求头：
+OpenAI `/v1/chat/completions`、OpenAI `/v1/responses` 与 Anthropic `/v1/messages` 代理均支持以下请求头（其余 `/v1/*` 路径如 `/v1/models`、`/v1/messages/count_tokens`、`/v1/embeddings` 自动零解析流式透传）：
 
 ```text
 X-Babel-Profile: compiler
 X-Babel-Validation-Mode: blind
 X-Babel-Reader-Profile: reader
+X-Babel-Bypass: 1                    # 可选：跳过压缩直接流式透传
+X-Babel-Compile-Budget: 3s           # 可选：单次请求编译预算，超时立即回退原文
+X-Babel-Skip-Cache-Control: true     # 可选：保护带 cache_control 的前缀不被改动
+X-Babel-Compress-Developer: true     # 可选：允许压缩 OpenAI developer 角色（默认关闭）
 ```
 
-省略请求头时继承所选方案；方案未设置校验方式时使用 `compare`。`X-Babel-Reader-Profile` 需要指向已保存方案；显式发送空值可以清除继承的阅读器，改用本次编译方案。
+省略请求头时继承所选方案与服务端默认配置；方案未设置校验方式时使用 `compare`。`X-Babel-Reader-Profile` 需要指向已保存方案；显式发送空值可以清除继承的阅读器，改用本次编译方案。代理会在响应头附加不覆写上游的 `X-Babel-Status` 与 `X-Babel-Compile-Ms` 便于排查，并提供 `GET /healthz` 返回运行状态与代理指标。
+
+常用服务端环境变量（均可通过环境变量覆写）：
+- `BABEL_PROXY_COMPILE_BUDGET`（默认 `5s`，`0`/`off` 关闭）：单次请求的编译延迟预算，超时立刻 fail-open 转发原文。
+- `BABEL_PROXY_SKIP_CACHE_CONTROL`（默认 `false`）：开启后按前缀断点跳过 `system` / `tools` / `messages` 中 `cache_control` 及其之前的内容，避免击穿上游 Prompt Caching。
+- `BABEL_PROXY_WARMUP_USER_MIN_HITS`（默认 `2`，`0` 禁用 `user` 预热）：异步预热时 `system`/`tool:*` 首次即预热，`user` 需重复出现达到阈值才入队，避免一次性输入浪费编译配额。
+- `BABEL_PROXY_COMPRESS_DEVELOPER`（默认 `false`）：是否允许压缩 OpenAI `developer` 消息。
+- `BABEL_PROXY_MAX_BODY_BYTES` / `BABEL_PROXY_MAX_COMPILE_BYTES`（默认均为 8 MiB）：提高前者后，超出编译上限的大请求体（含 chunked）直接流式透传原文。
+- `BABEL_PROXY_ALLOWED_ORIGINS`（默认空）：仅对 `/v1/*` 开放显式 CORS 来源白名单（逗号分隔，拒绝 `*` 与 `null`），管理接口 `/` 与 `/api/*` 仍严格同源。
+- `BABEL_CACHE_MAX_BYTES`（默认 32 MiB）：磁盘候选缓存总字节上限。
 
 代理按固定范围尝试压缩，并对每个实际编译的文本独立执行严格等义校验：
 
 | 请求位置 | 可压缩文本 |
 | --- | --- |
-| OpenAI 消息 | `system` 和 `user` 的字符串内容或显式 `text` 块 |
-| Anthropic 消息 | 顶层 `system` 的字符串或 `text` 块，以及 `user` 的字符串或 `text` 块 |
-| 两种协议的工具定义 | 工具 `description`，以及参数 schema 根节点、`properties` 和 `items` 遍历到的 `description` |
+| OpenAI Chat (`messages`) | `system` 和 `user`（以及显式开启后的 `developer`）的字符串内容或显式 `text` 块 |
+| OpenAI Responses | 顶层 `instructions`、`input` 字符串或 `system`/`user` 消息中的 `input_text`/`text` 块 |
+| Anthropic (`messages`) | 顶层 `system` 的字符串或 `text` 块，以及 `user` 的字符串或 `text` 块 |
+| 两种协议的工具定义 | 工具 `description`，以及参数 schema 根节点及递归遍历 `properties`、`items`、`prefixItems`、`additionalProperties`、`anyOf`/`oneOf`/`allOf`、`$defs`/`definitions` 得到的 `description` |
 
 候选只写回原文本字段，不改变消息角色、块元数据或工具结构。`developer`、assistant 历史、工具调用与结果、工具名、参数名、类型、枚举和必填约束保留。`381efa0` 的仅 `user` 限制已纠正；上述校验用于保留原意，不承担原始 prompt 内容审查。
 

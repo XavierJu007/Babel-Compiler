@@ -546,9 +546,18 @@ func appendProxyTextBlock(blocks *[]proxyTextBlock, role, text string, reqKeywor
 	})
 }
 
+const maxSchemaTraversalDepth = 16
+
 // Only description strings are eligible for compilation. Schema keywords,
 // property names, enum values and all other protocol data keep their values.
 func collectSchemaBlocks(toolLabel string, node map[string]any, blocks *[]proxyTextBlock, estOrig, estComp *int) {
+	collectSchemaBlocksDepth(toolLabel, node, 0, blocks, estOrig, estComp)
+}
+
+func collectSchemaBlocksDepth(toolLabel string, node map[string]any, depth int, blocks *[]proxyTextBlock, estOrig, estComp *int) {
+	if node == nil || depth > maxSchemaTraversalDepth {
+		return
+	}
 	if desc, ok := node["description"].(string); ok {
 		target := node
 		appendProxyTextBlock(blocks, toolLabel, desc, nil, func(v string) { target["description"] = v }, estOrig, estComp)
@@ -556,12 +565,40 @@ func collectSchemaBlocks(toolLabel string, node map[string]any, blocks *[]proxyT
 	if props, ok := node["properties"].(map[string]any); ok {
 		for propName, propVal := range props {
 			if propMap, ok := propVal.(map[string]any); ok {
-				collectSchemaBlocks(toolLabel+"."+propName, propMap, blocks, estOrig, estComp)
+				collectSchemaBlocksDepth(toolLabel+"."+propName, propMap, depth+1, blocks, estOrig, estComp)
 			}
 		}
 	}
 	if items, ok := node["items"].(map[string]any); ok {
-		collectSchemaBlocks(toolLabel+"[]", items, blocks, estOrig, estComp)
+		collectSchemaBlocksDepth(toolLabel+"[]", items, depth+1, blocks, estOrig, estComp)
+	}
+	if prefixItems, ok := node["prefixItems"].([]any); ok {
+		for i, item := range prefixItems {
+			if itemMap, ok := item.(map[string]any); ok {
+				collectSchemaBlocksDepth(fmt.Sprintf("%s[%d]", toolLabel, i), itemMap, depth+1, blocks, estOrig, estComp)
+			}
+		}
+	}
+	if addProps, ok := node["additionalProperties"].(map[string]any); ok {
+		collectSchemaBlocksDepth(toolLabel+".*", addProps, depth+1, blocks, estOrig, estComp)
+	}
+	for _, keyword := range []string{"anyOf", "oneOf", "allOf"} {
+		if variants, ok := node[keyword].([]any); ok {
+			for i, v := range variants {
+				if vMap, ok := v.(map[string]any); ok {
+					collectSchemaBlocksDepth(fmt.Sprintf("%s.%s[%d]", toolLabel, keyword, i), vMap, depth+1, blocks, estOrig, estComp)
+				}
+			}
+		}
+	}
+	for _, defsKey := range []string{"$defs", "definitions"} {
+		if defs, ok := node[defsKey].(map[string]any); ok {
+			for defName, defVal := range defs {
+				if defMap, ok := defVal.(map[string]any); ok {
+					collectSchemaBlocksDepth(toolLabel+"."+defsKey+"."+defName, defMap, depth+1, blocks, estOrig, estComp)
+				}
+			}
+		}
 	}
 }
 
@@ -633,6 +670,10 @@ func collectToolsBlocksWithOptions(tools []any, skipCacheControl bool, blocks *[
 		}
 		if schema, ok := toolMap["input_schema"].(map[string]any); ok {
 			collectSchemaBlocks(label, schema, blocks, estOrig, estComp)
+		}
+		// OpenAI Responses API uses flat function tools with top-level "parameters".
+		if params, ok := toolMap["parameters"].(map[string]any); ok {
+			collectSchemaBlocks(label, params, blocks, estOrig, estComp)
 		}
 	}
 }
@@ -749,12 +790,17 @@ func extractUsageFromAnthropicSSE(buf string) int {
 	return 0
 }
 
+type proxyCollectOptions struct {
+	skipCacheControl  bool
+	compressDeveloper bool
+}
+
 type proxyProtocolAdapter struct {
 	protocol           string
 	missingAuthMessage string
 	hasCallerAuth      func(r *http.Request) bool
 	resolveTargetURL   func(r *http.Request, p Profile) (string, error)
-	collectBlocks      func(payload map[string]any, skipCacheControl bool, blocks *[]proxyTextBlock, estOrig, estComp *int)
+	collectBlocks      func(payload map[string]any, opts proxyCollectOptions, blocks *[]proxyTextBlock, estOrig, estComp *int)
 	prepareHeaders     func(dst, src http.Header)
 	extractUsage       func(respBytes []byte) int
 	newSSESampler      func() *sseUsageSampler
@@ -772,6 +818,26 @@ func resolveRequestSkipCacheControl(r *http.Request) bool {
 		return parseProxyBool(raw, proxySkipCacheControl)
 	}
 	return proxySkipCacheControl
+}
+
+func resolveRequestCompressDeveloper(r *http.Request) bool {
+	if raw := strings.TrimSpace(r.Header.Get("X-Babel-Compress-Developer")); raw != "" {
+		return parseProxyBool(raw, proxyCompressDeveloper)
+	}
+	return proxyCompressDeveloper
+}
+
+func isResponsesJSONFormat(payload map[string]any) bool {
+	textCfg, ok := payload["text"].(map[string]any)
+	if !ok {
+		return false
+	}
+	formatCfg, ok := textCfg["format"].(map[string]any)
+	if !ok {
+		return false
+	}
+	formatType, _ := formatCfg["type"].(string)
+	return formatType == "json_object"
 }
 
 func isProxyBypassRequested(r *http.Request) bool {
@@ -878,7 +944,10 @@ func handleStructuredProxy(w http.ResponseWriter, r *http.Request, adapter proxy
 		estCompTotal int
 		blocks       []proxyTextBlock
 	)
-	adapter.collectBlocks(payload, resolveRequestSkipCacheControl(r), &blocks, &estOrigTotal, &estCompTotal)
+	adapter.collectBlocks(payload, proxyCollectOptions{
+		skipCacheControl:  resolveRequestSkipCacheControl(r),
+		compressDeveloper: resolveRequestCompressDeveloper(r),
+	}, &blocks, &estOrigTotal, &estCompTotal)
 
 	compileStart := time.Now()
 	compileCtx := r.Context()
@@ -1011,14 +1080,14 @@ var openAIProxyAdapter = proxyProtocolAdapter{
 		}
 		return targetURL, nil
 	},
-	collectBlocks: func(payload map[string]any, skipCacheControl bool, blocks *[]proxyTextBlock, estOrig, estComp *int) {
+	collectBlocks: func(payload map[string]any, opts proxyCollectOptions, blocks *[]proxyTextBlock, estOrig, estComp *int) {
 		var reqKeywords []string
 		if isJSONResponseFormat(payload) {
 			reqKeywords = append(reqKeywords, "json")
 		}
 		if msgs, ok := payload["messages"].([]any); ok {
 			lastCachedMsgIdx := -1
-			if skipCacheControl {
+			if opts.skipCacheControl {
 				for i, m := range msgs {
 					if msgMap, ok := m.(map[string]any); ok && messageHasCacheControl(msgMap) {
 						lastCachedMsgIdx = i
@@ -1031,9 +1100,10 @@ var openAIProxyAdapter = proxyProtocolAdapter{
 					continue
 				}
 				role, _ := msgMap["role"].(string)
-				// Compile only the original system/user text slots. Developer policy,
-				// assistant history and tool results are outside this transform.
-				if role != "system" && role != "user" {
+				// Compile only system/user by default; developer is opt-in via
+				// BABEL_PROXY_COMPRESS_DEVELOPER / X-Babel-Compress-Developer.
+				eligible := role == "system" || role == "user" || (opts.compressDeveloper && role == "developer")
+				if !eligible {
 					if contentStr, ok := msgMap["content"].(string); ok {
 						t := estimateTokensBPE(contentStr)
 						*estOrig += t
@@ -1053,7 +1123,7 @@ var openAIProxyAdapter = proxyProtocolAdapter{
 					appendProxyTextBlock(blocks, role, content, reqKeywords, func(v string) { target["content"] = v }, estOrig, estComp)
 				case []any:
 					lastCachedPartIdx := -1
-					if skipCacheControl {
+					if opts.skipCacheControl {
 						for j, part := range content {
 							if partMap, ok := part.(map[string]any); ok && hasCacheControl(partMap) {
 								lastCachedPartIdx = j
@@ -1080,7 +1150,7 @@ var openAIProxyAdapter = proxyProtocolAdapter{
 			}
 		}
 		if tools, ok := payload["tools"].([]any); ok {
-			collectToolsBlocksWithOptions(tools, skipCacheControl, blocks, estOrig, estComp)
+			collectToolsBlocksWithOptions(tools, opts.skipCacheControl, blocks, estOrig, estComp)
 		}
 	},
 	prepareHeaders: func(dst, src http.Header) {
@@ -1121,14 +1191,14 @@ var anthropicProxyAdapter = proxyProtocolAdapter{
 		}
 		return targetURL, nil
 	},
-	collectBlocks: func(payload map[string]any, skipCacheControl bool, blocks *[]proxyTextBlock, estOrig, estComp *int) {
+	collectBlocks: func(payload map[string]any, opts proxyCollectOptions, blocks *[]proxyTextBlock, estOrig, estComp *int) {
 		switch sysVal := payload["system"].(type) {
 		case string:
 			target := payload
 			appendProxyTextBlock(blocks, "system", sysVal, nil, func(v string) { target["system"] = v }, estOrig, estComp)
 		case []any:
 			lastCachedSysIdx := -1
-			if skipCacheControl {
+			if opts.skipCacheControl {
 				for i, block := range sysVal {
 					if blockMap, ok := block.(map[string]any); ok && hasCacheControl(blockMap) {
 						lastCachedSysIdx = i
@@ -1155,7 +1225,7 @@ var anthropicProxyAdapter = proxyProtocolAdapter{
 
 		if msgs, ok := payload["messages"].([]any); ok {
 			lastCachedMsgIdx := -1
-			if skipCacheControl {
+			if opts.skipCacheControl {
 				for i, m := range msgs {
 					if msgMap, ok := m.(map[string]any); ok && messageHasCacheControl(msgMap) {
 						lastCachedMsgIdx = i
@@ -1188,7 +1258,7 @@ var anthropicProxyAdapter = proxyProtocolAdapter{
 					appendProxyTextBlock(blocks, "user", content, nil, func(v string) { target["content"] = v }, estOrig, estComp)
 				case []any:
 					lastCachedPartIdx := -1
-					if skipCacheControl {
+					if opts.skipCacheControl {
 						for j, part := range content {
 							if partMap, ok := part.(map[string]any); ok && hasCacheControl(partMap) {
 								lastCachedPartIdx = j
@@ -1216,7 +1286,7 @@ var anthropicProxyAdapter = proxyProtocolAdapter{
 		}
 
 		if tools, ok := payload["tools"].([]any); ok {
-			collectToolsBlocksWithOptions(tools, skipCacheControl, blocks, estOrig, estComp)
+			collectToolsBlocksWithOptions(tools, opts.skipCacheControl, blocks, estOrig, estComp)
 		}
 	},
 	prepareHeaders: func(dst, src http.Header) {
@@ -1242,8 +1312,111 @@ var anthropicProxyAdapter = proxyProtocolAdapter{
 	newSSESampler: newAnthropicSSEUsageSampler,
 }
 
+var openAIResponsesProxyAdapter = proxyProtocolAdapter{
+	protocol:           "openai",
+	missingAuthMessage: "代理请求必须携带最终服务的 Authorization 或 api-key；不会使用已保存的编译密钥",
+	hasCallerAuth: func(r *http.Request) bool {
+		return strings.TrimSpace(r.Header.Get("Authorization")) != "" || strings.TrimSpace(r.Header.Get("api-key")) != ""
+	},
+	resolveTargetURL: func(r *http.Request, p Profile) (string, error) {
+		upstreamBase := strings.TrimSpace(r.Header.Get("X-Upstream-BaseURL"))
+		if upstreamBase == "" {
+			upstreamBase = strings.TrimSpace(p.UpstreamURL)
+		}
+		if upstreamBase == "" {
+			upstreamBase = inferOpenAIBaseFromCompilerURL(p.BaseURL)
+		}
+		if upstreamBase == "" {
+			return "", fmt.Errorf("OpenAI Responses 代理需要 upstream_url 或 X-Upstream-BaseURL")
+		}
+		targetURL := mergeRequestQuery(buildOpenAIResponsesURL(upstreamBase), r.URL.RawQuery)
+		if err := validateOutboundURL(targetURL); err != nil {
+			return "", fmt.Errorf("上游地址无效: %v", err)
+		}
+		return targetURL, nil
+	},
+	collectBlocks: func(payload map[string]any, opts proxyCollectOptions, blocks *[]proxyTextBlock, estOrig, estComp *int) {
+		var reqKeywords []string
+		if isResponsesJSONFormat(payload) {
+			reqKeywords = append(reqKeywords, "json")
+		}
+		if instr, ok := payload["instructions"].(string); ok {
+			target := payload
+			appendProxyTextBlock(blocks, "system", instr, reqKeywords, func(v string) { target["instructions"] = v }, estOrig, estComp)
+		}
+		switch inputVal := payload["input"].(type) {
+		case string:
+			target := payload
+			appendProxyTextBlock(blocks, "user", inputVal, reqKeywords, func(v string) { target["input"] = v }, estOrig, estComp)
+		case []any:
+			for _, item := range inputVal {
+				itemMap, ok := item.(map[string]any)
+				if !ok {
+					continue
+				}
+				// Only compress message items; skip function_call / function_call_output / reasoning items.
+				if itemType, _ := itemMap["type"].(string); itemType != "" && itemType != "message" {
+					continue
+				}
+				role, _ := itemMap["role"].(string)
+				eligible := role == "system" || role == "user" || (opts.compressDeveloper && role == "developer")
+				if !eligible {
+					if contentStr, ok := itemMap["content"].(string); ok {
+						t := estimateTokensBPE(contentStr)
+						*estOrig += t
+						*estComp += t
+					}
+					continue
+				}
+				switch content := itemMap["content"].(type) {
+				case string:
+					target := itemMap
+					appendProxyTextBlock(blocks, role, content, reqKeywords, func(v string) { target["content"] = v }, estOrig, estComp)
+				case []any:
+					for _, part := range content {
+						partMap, ok := part.(map[string]any)
+						if !ok {
+							continue
+						}
+						partType, _ := partMap["type"].(string)
+						if partType == "input_text" || partType == "text" {
+							if txt, ok := partMap["text"].(string); ok {
+								target := partMap
+								appendProxyTextBlock(blocks, role, txt, reqKeywords, func(v string) { target["text"] = v }, estOrig, estComp)
+							}
+						}
+					}
+				}
+			}
+		}
+		if tools, ok := payload["tools"].([]any); ok {
+			collectToolsBlocksWithOptions(tools, opts.skipCacheControl, blocks, estOrig, estComp)
+		}
+	},
+	prepareHeaders: func(dst, src http.Header) {
+		copyProxyRequestHeaders(dst, src)
+		dst.Set("Content-Type", "application/json")
+	},
+	extractUsage: func(respBytes []byte) int {
+		var nonStreamResp struct {
+			Usage struct {
+				InputTokens int `json:"input_tokens"`
+			} `json:"usage"`
+		}
+		if json.Unmarshal(respBytes, &nonStreamResp) == nil && nonStreamResp.Usage.InputTokens > 0 {
+			return nonStreamResp.Usage.InputTokens
+		}
+		return 0
+	},
+	newSSESampler: newOpenAIResponsesSSEUsageSampler,
+}
+
 func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 	handleStructuredProxy(w, r, openAIProxyAdapter)
+}
+
+func openAIResponsesProxyHandler(w http.ResponseWriter, r *http.Request) {
+	handleStructuredProxy(w, r, openAIResponsesProxyAdapter)
 }
 
 func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
