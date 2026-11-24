@@ -403,13 +403,37 @@ func newServerMux() *http.ServeMux {
 			"redact_enabled": isLogRedactEnabled(),
 			"circuit":        compilerCB.Status(),
 			"concurrency":    proxyCompileSem.Status(),
+			"proxy_speed":    proxySpeedSummary(),
+			"metrics":        proxyMetricsSnapshot(),
 			"logs":           list,
+		})
+	})
+
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":      "ok",
+			"version":     version,
+			"circuit":     compilerCB.Status(),
+			"concurrency": proxyCompileSem.Status(),
+			"proxy_speed": proxySpeedSummary(),
+			"metrics":     proxyMetricsSnapshot(),
 		})
 	})
 
 	mux.HandleFunc("/api/compile/stream", compileStreamHandler)
 	mux.HandleFunc("/v1/chat/completions", openAIProxyHandler)
 	mux.HandleFunc("/v1/messages", anthropicProxyHandler)
+	mux.HandleFunc("/v1/", v1PassthroughProxyHandler)
 
 	return mux
 }
@@ -452,9 +476,9 @@ func startServer(preferredAddr string, autoOpen bool) {
 	fmt.Printf("    - LRU 缓存池:     %s (上限 %d 条，异步防抖落盘)\n", cacheFilePath(), maxCacheEntries)
 	fmt.Printf("    - 代理并发控制:   全局上限 %d / 单请求块并发 %d / 队列超时 %v\n",
 		proxyCompileSem.Status()["limit"], proxyBlockConcurrency, proxyCompileQueueTimeout)
-	fmt.Printf("    - 代理提速:       校验缓存 %s / 负缓存 %s / 异步预热 %t / 最小长度 %d / 跳过非散文 %t\n",
+	fmt.Printf("    - 代理提速:       校验缓存 %s / 负缓存 %s / 编译预算 %s / 异步预热 %t / 保护cache_control %t / 最小长度 %d / 跳过非散文 %t\n",
 		proxySpeedDurationLabel(proxyValidationCacheTTL), proxySpeedDurationLabel(proxyNegativeCacheTTL),
-		proxyAsyncWarmup, proxyMinRunes, proxySkipNonProse)
+		proxySpeedDurationLabel(proxyCompileBudget), proxyAsyncWarmup, proxySkipCacheControl, proxyMinRunes, proxySkipNonProse)
 	fmt.Printf("    - Web 控制台:     %s\n", webURL)
 	fmt.Printf("    - OpenAI 代理:    %s/v1/chat/completions\n", webURL)
 	fmt.Printf("    - Anthropic 代理: %s/v1/messages\n", webURL)
@@ -478,10 +502,12 @@ func startServer(preferredAddr string, autoOpen bool) {
 			os.Exit(1)
 		}
 	case <-sigCtx.Done():
-		// 停止接收新连接，给在途请求（含 SSE）15s 收尾时间，再强制刷缓存。
+		// 停止接收新连接，给在途请求（含 SSE）15s 收尾时间，再排空预热与日志并刷缓存。
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
 		<-errCh
+		drainShadowWarmup(3 * time.Second)
+		drainAsyncLogRedaction(2 * time.Second)
 	}
 }

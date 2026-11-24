@@ -80,10 +80,15 @@ func (g *localHTTPGuard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	jsonRoute := strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/messages"
-	if jsonRoute {
-		if r.ContentLength > maxLocalJSONBodyBytes {
-			reject(http.StatusRequestEntityTooLarge, "请求正文超过 8 MiB 上限")
+	apiRoute := strings.HasPrefix(r.URL.Path, "/api/")
+	proxyJSONRoute := r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/messages"
+	if apiRoute || proxyJSONRoute {
+		maxBytes := int64(maxLocalJSONBodyBytes)
+		if proxyJSONRoute {
+			maxBytes = proxyMaxBodyLimit()
+		}
+		if r.ContentLength > maxBytes {
+			reject(http.StatusRequestEntityTooLarge, fmt.Sprintf("请求正文超过 %d 字节上限", maxBytes))
 			return
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
@@ -94,7 +99,7 @@ func (g *localHTTPGuard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if r.Body != nil {
-			r.Body = http.MaxBytesReader(w, r.Body, maxLocalJSONBodyBytes)
+			r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
 		}
 	}
 	g.next.ServeHTTP(protected, r)

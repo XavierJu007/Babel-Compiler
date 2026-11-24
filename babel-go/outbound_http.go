@@ -65,6 +65,10 @@ func (t *outboundTransport) RoundTrip(req *http.Request) (*http.Response, error)
 func (t *outboundTransport) CloseIdleConnections() { t.base.CloseIdleConnections() }
 
 func newSecureOutboundTransport() *outboundTransport {
+	return newSecureOutboundTransportWithHeaderTimeout(0)
+}
+
+func newSecureOutboundTransportWithHeaderTimeout(responseHeaderTimeout time.Duration) *outboundTransport {
 	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
 	return &outboundTransport{base: &http.Transport{
 		Proxy: func(req *http.Request) (*url.URL, error) {
@@ -98,12 +102,17 @@ func newSecureOutboundTransport() *outboundTransport {
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: time.Second,
+		ResponseHeaderTimeout: responseHeaderTimeout,
 	}}
 }
 
 // Reuse connections while keeping our security policy independent of mutable
 // package-wide http.DefaultTransport settings. There is no insecure TLS mode.
 var sharedOutboundTransport = newSecureOutboundTransport()
+
+// Proxy forwarding uses ResponseHeaderTimeout instead of http.Client.Timeout so
+// long-running SSE streams (e.g. reasoning models) are never cut off mid-stream.
+var sharedProxyOutboundTransport = newSecureOutboundTransportWithHeaderTimeout(300 * time.Second)
 
 // A configured endpoint is the complete destination. Replaying prompts or keys
 // at a provider-supplied Location crosses that boundary, even if Go strips some
@@ -112,6 +121,16 @@ func newOutboundHTTPClient(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Timeout:   timeout,
 		Transport: sharedOutboundTransport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+func newProxyForwardHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout:   0,
+		Transport: sharedProxyOutboundTransport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},

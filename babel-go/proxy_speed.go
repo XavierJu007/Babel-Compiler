@@ -16,7 +16,9 @@ import (
 var (
 	proxyValidationCacheTTL time.Duration
 	proxyNegativeCacheTTL   time.Duration
+	proxyCompileBudget      time.Duration
 	proxyAsyncWarmup        bool
+	proxySkipCacheControl   bool
 	proxyMinRunes           = 35
 	proxySkipNonProse       bool
 	proxyWarmupWorkers      = 2
@@ -88,6 +90,16 @@ func configureProxySpeedDefaults() {
 	} else {
 		proxySkipNonProse = true
 	}
+	if raw, ok := os.LookupEnv("BABEL_PROXY_COMPILE_BUDGET"); ok {
+		proxyCompileBudget = parseProxyDuration(raw)
+	} else {
+		proxyCompileBudget = 5 * time.Second
+	}
+	if raw, ok := os.LookupEnv("BABEL_PROXY_SKIP_CACHE_CONTROL"); ok {
+		proxySkipCacheControl = parseProxyBool(raw, false)
+	} else {
+		proxySkipCacheControl = false
+	}
 	// 预热 worker 数量：默认 min(8, max(2, 全局槽位/2))，可按环境变量覆盖。
 	if raw, ok := os.LookupEnv("BABEL_PROXY_WARMUP_WORKERS"); ok {
 		if value, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil && value > 0 {
@@ -117,22 +129,27 @@ func proxySpeedSummary() map[string]any {
 	return map[string]any{
 		"validation_cache_ttl": proxyValidationCacheTTL.String(),
 		"negative_cache_ttl":   proxyNegativeCacheTTL.String(),
+		"compile_budget":       proxySpeedDurationLabel(proxyCompileBudget),
 		"async_warmup":         proxyAsyncWarmup,
+		"skip_cache_control":   proxySkipCacheControl,
 		"min_runes":            proxyMinRunes,
 		"skip_non_prose":       proxySkipNonProse,
 		"warmup_workers":       proxyWarmupWorkers,
 	}
 }
 
-// isNonProsePayload 识别纯 JSON 载荷与整体被代码围栏包裹的文本：
+// isNonProsePayload 识别纯 JSON 载荷与整体被单个代码围栏包裹的文本：
 // 这类内容编译收益极低，开启 skip_non_prose 后本地直接跳过。
 func isNonProsePayload(text string) bool {
 	trimmed := strings.TrimSpace(text)
-	if strings.HasPrefix(trimmed, "```") && strings.HasSuffix(trimmed, "```") && strings.Count(trimmed, "```") >= 2 {
-		return true
-	}
 	if len(trimmed) < 2 {
 		return false
+	}
+	if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+		lits := codeLiterals(trimmed)
+		if len(lits) == 1 && lits[0].start == 0 && lits[0].end == len(trimmed) {
+			return true
+		}
 	}
 	first, last := trimmed[0], trimmed[len(trimmed)-1]
 	if (first == '{' && last == '}') || (first == '[' && last == ']') {
@@ -154,9 +171,10 @@ type shadowWarmupJob struct {
 }
 
 var (
-	shadowWarmupOnce   sync.Once
-	shadowWarmupQueue  chan shadowWarmupJob
-	shadowWarmupFlight sync.Map
+	shadowWarmupOnce    sync.Once
+	shadowWarmupQueue   chan shadowWarmupJob
+	shadowWarmupFlight  sync.Map
+	shadowWarmupPending sync.WaitGroup
 )
 
 // warmupStatus 区分「新入队 / 已在预热 / 队列满」：三者都意味着不能同步等待。
@@ -193,16 +211,33 @@ func enqueueShadowWarmup(protocol, role, text string, p Profile, dialect Dialect
 	shadowWarmupOnce.Do(startShadowWarmupWorkers)
 	job := shadowWarmupJob{protocol: protocol, role: role, text: text, profile: p,
 		dialect: dialect, keywords: keywords, domains: domains}
+	shadowWarmupPending.Add(1)
 	select {
 	case shadowWarmupQueue <- job:
 		return warmupEnqueued
 	default:
+		shadowWarmupPending.Done()
 		shadowWarmupFlight.Delete(key)
 		return warmupQueueFull
 	}
 }
 
+func drainShadowWarmup(timeout time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		shadowWarmupPending.Wait()
+		close(done)
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+	}
+}
+
 func runShadowWarmup(job shadowWarmupJob) {
+	defer shadowWarmupPending.Done()
 	key := makeCacheKey(job.dialect, job.profile, job.text)
 	defer shadowWarmupFlight.Delete(key)
 
@@ -238,6 +273,8 @@ func runShadowWarmup(job shadowWarmupJob) {
 		AuditProfile:          &job.profile.AuditProfile,
 		SkipAuditIfNotShorter: true,
 		proxyPath:             true,
+		preparedDialect:       &job.dialect,
+		preparedCacheKey:      key,
 	})
 	if ctx.Err() != nil {
 		compilerCB.ReleaseProbe(probeID)

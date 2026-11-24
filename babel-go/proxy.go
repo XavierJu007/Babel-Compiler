@@ -37,24 +37,70 @@ func redactSecrets(text string) string {
 	return res
 }
 
-// 服务端模式下把 6 条密钥正则的扫描丢到单个后台 goroutine；
+// 服务端模式下把 6 条密钥正则的扫描与上游用量回填串行丢到单个后台 goroutine，
+// 既避免热路径同步跑正则，又保证用量更新严格排在日志写入之后不发生竞态；
 // 单测与 CLI 仍是同步脱敏，日志可见性与既有断言不变。
+type proxyLogEventKind int
+
+const (
+	proxyLogEventAppend proxyLogEventKind = iota
+	proxyLogEventUsage
+	proxyLogEventBarrier
+)
+
+type proxyLogEvent struct {
+	kind             proxyLogEventKind
+	entry            ProxyLog
+	logIDs           []string
+	estOrigTotal     int
+	estCompTotal     int
+	realPromptTokens int
+	done             chan struct{}
+}
+
 var (
 	logRedactAsync atomic.Bool
-	logRedactQueue chan ProxyLog
+	logRedactQueue chan proxyLogEvent
 	logRedactOnce  sync.Once
 )
 
 func startAsyncLogRedaction() {
 	logRedactOnce.Do(func() {
-		logRedactQueue = make(chan ProxyLog, 512)
+		logRedactQueue = make(chan proxyLogEvent, 512)
 		go func() {
-			for entry := range logRedactQueue {
-				insertProxyLog(redactProxyLog(entry))
+			for ev := range logRedactQueue {
+				switch ev.kind {
+				case proxyLogEventAppend:
+					insertProxyLog(redactProxyLog(ev.entry))
+				case proxyLogEventUsage:
+					applyUpstreamUsageSync(ev.logIDs, ev.estOrigTotal, ev.estCompTotal, ev.realPromptTokens)
+				case proxyLogEventBarrier:
+					if ev.done != nil {
+						close(ev.done)
+					}
+				}
 			}
 		}()
 	})
 	logRedactAsync.Store(true)
+}
+
+func drainAsyncLogRedaction(timeout time.Duration) {
+	if !logRedactAsync.Load() || logRedactQueue == nil {
+		return
+	}
+	done := make(chan struct{})
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case logRedactQueue <- proxyLogEvent{kind: proxyLogEventBarrier, done: done}:
+	case <-timer.C:
+		return
+	}
+	select {
+	case <-done:
+	case <-timer.C:
+	}
 }
 
 func redactProxyLog(entry ProxyLog) ProxyLog {
@@ -86,7 +132,7 @@ func insertProxyLog(entry ProxyLog) {
 func appendProxyLog(entry ProxyLog) {
 	if logRedactAsync.Load() && logRedactQueue != nil {
 		select {
-		case logRedactQueue <- entry:
+		case logRedactQueue <- proxyLogEvent{kind: proxyLogEventAppend, entry: entry}:
 			return
 		default: // 队列满时退回同步路径，绝不阻塞请求
 		}
@@ -95,6 +141,27 @@ func appendProxyLog(entry ProxyLog) {
 }
 
 func applyUpstreamUsage(logIDs []string, estOrigTotal, estCompTotal, realPromptTokens int) {
+	if realPromptTokens <= 0 || len(logIDs) == 0 {
+		return
+	}
+	if logRedactAsync.Load() && logRedactQueue != nil {
+		idsCopy := append([]string(nil), logIDs...)
+		select {
+		case logRedactQueue <- proxyLogEvent{
+			kind:             proxyLogEventUsage,
+			logIDs:           idsCopy,
+			estOrigTotal:     estOrigTotal,
+			estCompTotal:     estCompTotal,
+			realPromptTokens: realPromptTokens,
+		}:
+			return
+		default: // 队列满时退回同步路径，绝不阻塞请求
+		}
+	}
+	applyUpstreamUsageSync(logIDs, estOrigTotal, estCompTotal, realPromptTokens)
+}
+
+func applyUpstreamUsageSync(logIDs []string, estOrigTotal, estCompTotal, realPromptTokens int) {
 	if realPromptTokens <= 0 || len(logIDs) == 0 {
 		return
 	}
@@ -146,6 +213,18 @@ func decodeProxyPayload(raw []byte) (map[string]any, error) {
 		return nil, fmt.Errorf("request must contain exactly one JSON object")
 	}
 	return payload, nil
+}
+
+// marshalProxyPayload disables Go's default HTML escaping so `<`, `>`, `&` in
+// code blocks, tool outputs and user prompts stay untouched in forwarded JSON.
+func marshalProxyPayload(payload map[string]any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(payload); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
 
 func resolveProxyDialect(r *http.Request) (Dialect, []string, error) {
@@ -255,7 +334,7 @@ func translateMessageBlockContext(ctx context.Context, protocol, role, text stri
 
 	// 预热只覆盖「本地没有候选」的冷启动；已有缓存时走正常路径直接采用。
 	if proxyAsyncWarmup && !cacheKeyHasCandidate(cacheKey) {
-		status := enqueueShadowWarmup(protocol, role, text, p, blockDialect, reqKeywords, domains)
+		status := enqueueShadowWarmup(protocol, role, text, p, blockDialect, activeKeywords, domains)
 		reason := "已触发后台异步预热，本次保留原文直通"
 		switch status {
 		case warmupInFlight:
@@ -344,7 +423,7 @@ func translateMessageBlockContext(ctx context.Context, protocol, role, text stri
 	}
 	if strings.TrimSpace(res.Compiled) == "" || res.Stats.CompiledTokens >= res.Stats.OriginalTokens {
 		if proxyNegativeCacheTTL > 0 && res.Stats.OriginalTokens > 0 {
-			negativeCache.Put(negativeCacheKey(dialect, p, text), proxyNegativeCacheTTL)
+			negativeCache.Put(negativeCacheKey(blockDialect, p, text), proxyNegativeCacheTTL)
 		}
 		entry.Reason = "候选未减少" + countLabel + "，已保留原文"
 		appendProxyLog(entry)
@@ -399,10 +478,22 @@ func proxyCachedAdoption(protocol, role, text string, p Profile, dialect Dialect
 		return "", "", 0, false
 	}
 
-	origTok := estimateTokensBPE(text)
-	compTok := estimateTokensBPE(entry.Compiled)
-	if compTok >= origTok {
+	before, err := measureTokens(text, p.TokenEncoding)
+	if err != nil {
 		return "", "", 0, false
+	}
+	after, err := measureTokens(entry.Compiled, p.TokenEncoding)
+	if err != nil || after.Tokens >= before.Tokens {
+		return "", "", 0, false
+	}
+	compTok := estimateTokensBPE(entry.Compiled)
+	label := "估算"
+	if before.Kind == "exact" {
+		label = "所选编码精确计数: " + before.Encoding
+	}
+	percent := 0.0
+	if before.Tokens > 0 {
+		percent = (1.0 - float64(after.Tokens)/float64(before.Tokens)) * 100
 	}
 	logID := fmt.Sprintf("%d-%d", time.Now().UnixNano(), proxyLogSequence.Add(1))
 	appendProxyLog(ProxyLog{
@@ -411,9 +502,9 @@ func proxyCachedAdoption(protocol, role, text string, p Profile, dialect Dialect
 		Original: text, Compiled: entry.Compiled, CacheHit: true,
 		Decision:            "adopted",
 		Reason:              "生成缓存与校验缓存双命中，直接采用",
-		Ratio:               fmt.Sprintf("文本 Token（估算）%d→%d", origTok, compTok),
-		MeasurementKind:     "estimated",
-		MeasurementEncoding: "estimate",
+		Ratio:               fmt.Sprintf("文本 Token（%s）%d→%d (减少%.1f%%)", label, before.Tokens, after.Tokens, percent),
+		MeasurementKind:     before.Kind,
+		MeasurementEncoding: before.Encoding,
 		ValidationMethod:    "cached",
 	})
 	return entry.Compiled, logID, compTok, true
@@ -470,8 +561,43 @@ func collectSchemaBlocks(toolLabel string, node map[string]any, blocks *[]proxyT
 	}
 }
 
-func collectToolsBlocks(tools []any, blocks *[]proxyTextBlock, estOrig, estComp *int) {
-	for _, item := range tools {
+func hasCacheControl(m map[string]any) bool {
+	if m == nil {
+		return false
+	}
+	v, ok := m["cache_control"]
+	return ok && v != nil
+}
+
+func messageHasCacheControl(msgMap map[string]any) bool {
+	if hasCacheControl(msgMap) {
+		return true
+	}
+	if parts, ok := msgMap["content"].([]any); ok {
+		for _, part := range parts {
+			if partMap, ok := part.(map[string]any); ok && hasCacheControl(partMap) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func collectToolsBlocksWithOptions(tools []any, skipCacheControl bool, blocks *[]proxyTextBlock, estOrig, estComp *int) {
+	lastCachedIdx := -1
+	if skipCacheControl {
+		// In Anthropic prompt caching, placing cache_control on tool[k] caches the
+		// entire tools[0..k] prefix; mutating any earlier tool busts that prefix.
+		for i, item := range tools {
+			if toolMap, ok := item.(map[string]any); ok && hasCacheControl(toolMap) {
+				lastCachedIdx = i
+			}
+		}
+	}
+	for i, item := range tools {
+		if i <= lastCachedIdx {
+			continue
+		}
 		toolMap, ok := item.(map[string]any)
 		if !ok {
 			continue
@@ -505,6 +631,10 @@ func collectToolsBlocks(tools []any, blocks *[]proxyTextBlock, estOrig, estComp 
 			collectSchemaBlocks(label, schema, blocks, estOrig, estComp)
 		}
 	}
+}
+
+func collectToolsBlocks(tools []any, blocks *[]proxyTextBlock, estOrig, estComp *int) {
+	collectToolsBlocksWithOptions(tools, false, blocks, estOrig, estComp)
 }
 
 // compileProxyBlocks 把一次请求里的文本块做有界并行编译，然后按原顺序写回。
@@ -615,57 +745,111 @@ func extractUsageFromAnthropicSSE(buf string) int {
 	return 0
 }
 
-func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
-		http.Error(w, "Method Not Allowed", 405)
+type proxyProtocolAdapter struct {
+	protocol           string
+	missingAuthMessage string
+	hasCallerAuth      func(r *http.Request) bool
+	resolveTargetURL   func(r *http.Request, p Profile) (string, error)
+	collectBlocks      func(payload map[string]any, skipCacheControl bool, blocks *[]proxyTextBlock, estOrig, estComp *int)
+	prepareHeaders     func(dst, src http.Header)
+	extractUsage       func(respBytes []byte) int
+	newSSESampler      func() *sseUsageSampler
+}
+
+func resolveRequestCompileBudget(r *http.Request) time.Duration {
+	if raw := strings.TrimSpace(r.Header.Get("X-Babel-Compile-Budget")); raw != "" {
+		return parseProxyDuration(raw)
+	}
+	return proxyCompileBudget
+}
+
+func resolveRequestSkipCacheControl(r *http.Request) bool {
+	if raw := strings.TrimSpace(r.Header.Get("X-Babel-Skip-Cache-Control")); raw != "" {
+		return parseProxyBool(raw, proxySkipCacheControl)
+	}
+	return proxySkipCacheControl
+}
+
+func isProxyBypassRequested(r *http.Request) bool {
+	return parseProxyBool(r.Header.Get("X-Babel-Bypass"), false)
+}
+
+func handleStructuredProxy(w http.ResponseWriter, r *http.Request, adapter proxyProtocolAdapter) {
+	proxyMetrics.requestsTotal.Add(1)
+	if r.Method != http.MethodPost {
+		writeProxyError(w, adapter.protocol, http.StatusMethodNotAllowed, "invalid_request_error", "Method Not Allowed")
 		return
 	}
+
+	bypass := isProxyBypassRequested(r)
+	oversize := r.ContentLength > proxyMaxCompileBodyLimit()
+	if bypass || oversize {
+		if !adapter.hasCallerAuth(r) {
+			writeProxyError(w, adapter.protocol, http.StatusUnauthorized, "authentication_error", adapter.missingAuthMessage)
+			return
+		}
+		cfg := loadConfig()
+		p, err := resolveProxyProfile(r, cfg)
+		if err != nil {
+			writeProxyError(w, adapter.protocol, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
+		}
+		targetURL, err := adapter.resolveTargetURL(r, p)
+		if err != nil {
+			writeProxyError(w, adapter.protocol, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
+		}
+		status := "oversize"
+		if bypass {
+			status = "bypass"
+			proxyMetrics.bypassTotal.Add(1)
+		} else {
+			proxyMetrics.oversizeTotal.Add(1)
+		}
+		var extra func(http.Header)
+		if adapter.protocol == "anthropic" {
+			extra = func(h http.Header) {
+				if h.Get("anthropic-version") == "" {
+					h.Set("anthropic-version", "2023-06-01")
+				}
+			}
+		}
+		streamPassthroughRequestWithStatus(w, r, adapter.protocol, targetURL, status, extra)
+		return
+	}
+
 	rawBody, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, "读取请求失败", 400)
+		writeProxyError(w, adapter.protocol, http.StatusBadRequest, "invalid_request_error", "读取请求失败")
 		return
 	}
 
 	payload, err := decodeProxyPayload(rawBody)
 	if err != nil {
-		http.Error(w, "无效的 JSON 请求体", 400)
+		writeProxyError(w, adapter.protocol, http.StatusBadRequest, "invalid_request_error", "无效的 JSON 请求体")
 		return
 	}
-	callerAuth := strings.TrimSpace(r.Header.Get("Authorization"))
-	if callerAuth == "" {
-		http.Error(w, "代理请求必须携带最终服务的 Authorization；不会使用已保存的编译密钥", http.StatusUnauthorized)
+	if !adapter.hasCallerAuth(r) {
+		writeProxyError(w, adapter.protocol, http.StatusUnauthorized, "authentication_error", adapter.missingAuthMessage)
 		return
 	}
 
 	cfg := loadConfig()
 	p, err := resolveProxyProfile(r, cfg)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeProxyError(w, adapter.protocol, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
 	dialect, domains, err := resolveProxyDialect(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeProxyError(w, adapter.protocol, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
-	}
-	upstreamBase := strings.TrimSpace(r.Header.Get("X-Upstream-BaseURL"))
-	if upstreamBase == "" {
-		upstreamBase = strings.TrimSpace(p.UpstreamURL)
 	}
 	// Validate the final destination before any generation or audit request.
-	targetURL := compilerRequestURL(p.BaseURL)
-	if upstreamBase != "" {
-		targetURL = buildOpenAICompletionsURL(upstreamBase)
-	}
-	if err := validateOutboundURL(targetURL); err != nil {
-		http.Error(w, fmt.Sprintf("上游地址无效: %v", err), http.StatusBadRequest)
+	targetURL, err := adapter.resolveTargetURL(r, p)
+	if err != nil {
+		writeProxyError(w, adapter.protocol, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
-	}
-
-	var reqKeywords []string
-	requireJSON := isJSONResponseFormat(payload)
-	if requireJSON {
-		reqKeywords = append(reqKeywords, "json")
 	}
 
 	var (
@@ -674,52 +858,38 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 		estCompTotal int
 		blocks       []proxyTextBlock
 	)
+	adapter.collectBlocks(payload, resolveRequestSkipCacheControl(r), &blocks, &estOrigTotal, &estCompTotal)
 
-	if msgs, ok := payload["messages"].([]any); ok {
-		for _, m := range msgs {
-			msgMap, ok := m.(map[string]any)
-			if !ok {
-				continue
-			}
-			role, _ := msgMap["role"].(string)
-			// Compile only the original system/user text slots. Developer policy,
-			// assistant history and tool results are outside this transform.
-			if role != "system" && role != "user" {
-				if contentStr, ok := msgMap["content"].(string); ok {
-					t := estimateTokensBPE(contentStr)
-					estOrigTotal += t
-					estCompTotal += t
-				}
-				continue
-			}
-
-			switch content := msgMap["content"].(type) {
-			case string:
-				target := msgMap
-				appendProxyTextBlock(&blocks, role, content, reqKeywords, func(v string) { target["content"] = v }, &estOrigTotal, &estCompTotal)
-			case []any:
-				for _, part := range content {
-					if partMap, ok := part.(map[string]any); ok {
-						if partMap["type"] == "text" {
-							if txt, ok := partMap["text"].(string); ok {
-								target := partMap
-								appendProxyTextBlock(&blocks, role, txt, reqKeywords, func(v string) { target["text"] = v }, &estOrigTotal, &estCompTotal)
-							}
-						}
-					}
-				}
-			}
-		}
-
+	compileStart := time.Now()
+	compileCtx := r.Context()
+	var cancelCompile context.CancelFunc
+	if budget := resolveRequestCompileBudget(r); budget > 0 {
+		compileCtx, cancelCompile = context.WithTimeout(r.Context(), budget)
 	}
-
-	if tools, ok := payload["tools"].([]any); ok {
-		collectToolsBlocks(tools, &blocks, &estOrigTotal, &estCompTotal)
+	mutated := compileProxyBlocks(compileCtx, adapter.protocol, blocks, p, dialect, domains, &logIDs, &estOrigTotal, &estCompTotal)
+	budgetExceeded := cancelCompile != nil && compileCtx.Err() != nil && r.Context().Err() == nil
+	if cancelCompile != nil {
+		cancelCompile()
 	}
-
-	mutated := compileProxyBlocks(r.Context(), "openai", blocks, p, dialect, domains, &logIDs, &estOrigTotal, &estCompTotal)
+	compileElapsedMS := time.Since(compileStart).Milliseconds()
 	if r.Context().Err() != nil {
 		return
+	}
+
+	babelStatus := "passthrough"
+	switch {
+	case mutated:
+		babelStatus = "adopted"
+		proxyMetrics.adoptedTotal.Add(1)
+	case budgetExceeded:
+		babelStatus = "budget_timeout"
+		proxyMetrics.budgetTimeoutTotal.Add(1)
+		proxyMetrics.passthroughTotal.Add(1)
+	case len(blocks) > 0:
+		babelStatus = "fallback"
+		proxyMetrics.passthroughTotal.Add(1)
+	default:
+		proxyMetrics.passthroughTotal.Add(1)
 	}
 
 	isStream, _ := payload["stream"].(bool)
@@ -728,60 +898,53 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 	// 未替换任何文本时直接复用原始字节，避免对上 MB 的工具输出重新序列化。
 	modifiedBody := rawBody
 	if mutated {
-		modifiedBody, _ = json.Marshal(payload)
+		if encoded, err := marshalProxyPayload(payload); err == nil {
+			modifiedBody = encoded
+		}
 	}
 
-	proxyReq, err := http.NewRequestWithContext(r.Context(), "POST", targetURL, bytes.NewBuffer(modifiedBody))
+	proxyReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewBuffer(modifiedBody))
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		writeProxyError(w, adapter.protocol, http.StatusInternalServerError, "api_error", err.Error())
 		return
 	}
+	adapter.prepareHeaders(proxyReq.Header, r.Header)
 
-	proxyReq.Header.Set("Content-Type", "application/json")
-	proxyReq.Header.Set("Authorization", callerAuth)
-
-	client := newOutboundHTTPClient(300 * time.Second)
-	resp, err := client.Do(proxyReq)
+	resp, err := newProxyForwardHTTPClient().Do(proxyReq)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("上游转发失败: %v", err), 502)
+		proxyMetrics.upstreamErrorTotal.Add(1)
+		writeProxyError(w, adapter.protocol, http.StatusBadGateway, "api_error", fmt.Sprintf("上游转发失败: %v", err))
 		return
 	}
 	defer resp.Body.Close()
-	if rejectProxyRedirect(w, resp) {
+	if rejectProxyRedirectForProtocol(w, adapter.protocol, resp) {
+		proxyMetrics.upstreamErrorTotal.Add(1)
 		return
 	}
 
-	for k, vals := range resp.Header {
-		if strings.EqualFold(k, "Content-Length") {
-			continue
-		}
-		for _, v := range vals {
-			w.Header().Add(k, v)
-		}
-	}
+	copyProxyResponseHeaders(w.Header(), resp.Header)
+	setDiagnosticHeader(w.Header(), "X-Babel-Status", babelStatus)
+	setDiagnosticHeader(w.Header(), "X-Babel-Compile-Ms", fmt.Sprintf("%d", compileElapsedMS))
 	w.WriteHeader(resp.StatusCode)
 
-	if !isStream {
+	useSSE := isEventStreamResponse(resp) || (isStream && resp.StatusCode >= 200 && resp.StatusCode < 300)
+	if !useSSE {
 		respBytes, copyErr := forwardProxyResponseBody(w, resp.Body)
 		if copyErr != nil {
+			if r.Context().Err() == nil {
+				panic(http.ErrAbortHandler)
+			}
 			return
 		}
-
-		var nonStreamResp struct {
-			Usage struct {
-				PromptTokens int `json:"prompt_tokens"`
-			} `json:"usage"`
-		}
-		if json.Unmarshal(respBytes, &nonStreamResp) == nil && nonStreamResp.Usage.PromptTokens > 0 {
-			go applyUpstreamUsage(logIDs, estOrigTotal, estCompTotal, nonStreamResp.Usage.PromptTokens)
+		if realTokens := adapter.extractUsage(respBytes); realTokens > 0 {
+			applyUpstreamUsage(logIDs, estOrigTotal, estCompTotal, realTokens)
 		}
 		return
 	}
 
 	flusher, canFlush := w.(http.Flusher)
 	buf := make([]byte, 4096)
-	// 固定容量尾部缓冲：只保留最后 4KB 用于解析 usage，流式转发本身零拼接。
-	tailBuf := make([]byte, 0, 8192)
+	sampler := adapter.newSSESampler()
 	for {
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
@@ -792,198 +955,258 @@ func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
 			if canFlush {
 				flusher.Flush()
 			}
-			if len(chunk) >= 4096 {
-				tailBuf = append(tailBuf[:0], chunk[len(chunk)-4096:]...)
-			} else {
-				tailBuf = append(tailBuf, chunk...)
-				if len(tailBuf) > 4096 {
-					excess := len(tailBuf) - 4096
-					copy(tailBuf, tailBuf[excess:])
-					tailBuf = tailBuf[:4096]
-				}
-			}
+			sampler.Write(chunk)
 		}
 		if readErr != nil {
+			if !errors.Is(readErr, io.EOF) && r.Context().Err() == nil {
+				panic(http.ErrAbortHandler)
+			}
 			break
 		}
 	}
 
-	if realTokens := extractUsageFromOpenAISSETail(string(tailBuf)); realTokens > 0 {
-		go applyUpstreamUsage(logIDs, estOrigTotal, estCompTotal, realTokens)
+	if realTokens := sampler.Tokens(); realTokens > 0 {
+		applyUpstreamUsage(logIDs, estOrigTotal, estCompTotal, realTokens)
 	}
 }
 
-func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
-		http.Error(w, "Method Not Allowed", 405)
-		return
-	}
-	rawBody, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "读取请求失败", 400)
-		return
-	}
-
-	payload, err := decodeProxyPayload(rawBody)
-	if err != nil {
-		http.Error(w, "无效的 JSON 请求体", 400)
-		return
-	}
-	callerAPIKey := strings.TrimSpace(r.Header.Get("x-api-key"))
-	callerAuth := strings.TrimSpace(r.Header.Get("Authorization"))
-	if callerAPIKey == "" && callerAuth == "" {
-		http.Error(w, "代理请求必须携带最终服务的 x-api-key 或 Authorization；不会使用已保存的编译密钥", http.StatusUnauthorized)
-		return
-	}
-
-	cfg := loadConfig()
-	p, err := resolveProxyProfile(r, cfg)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	dialect, domains, err := resolveProxyDialect(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	upstreamBase := strings.TrimSpace(r.Header.Get("X-Upstream-BaseURL"))
-	if upstreamBase == "" {
-		upstreamBase = strings.TrimSpace(p.UpstreamURL)
-	}
-	if upstreamBase == "" {
-		http.Error(w, "Anthropic 代理需要 upstream_url 或 X-Upstream-BaseURL；无法从编译请求 URL 推导 Messages 地址", http.StatusBadRequest)
-		return
-	}
-	targetURL := buildAnthropicMessagesURL(upstreamBase)
-	if err := validateOutboundURL(targetURL); err != nil {
-		http.Error(w, fmt.Sprintf("上游地址无效: %v", err), http.StatusBadRequest)
-		return
-	}
-
-	var (
-		logIDs       []string
-		estOrigTotal int
-		estCompTotal int
-		blocks       []proxyTextBlock
-	)
-
-	switch sysVal := payload["system"].(type) {
-	case string:
-		target := payload
-		appendProxyTextBlock(&blocks, "system", sysVal, nil, func(v string) { target["system"] = v }, &estOrigTotal, &estCompTotal)
-	case []any:
-		for _, block := range sysVal {
-			if blockMap, ok := block.(map[string]any); ok {
-				if blockMap["type"] == "text" {
-					if txt, ok := blockMap["text"].(string); ok {
-						target := blockMap
-						appendProxyTextBlock(&blocks, "system", txt, nil, func(v string) { target["text"] = v }, &estOrigTotal, &estCompTotal)
+var openAIProxyAdapter = proxyProtocolAdapter{
+	protocol:           "openai",
+	missingAuthMessage: "代理请求必须携带最终服务的 Authorization 或 api-key；不会使用已保存的编译密钥",
+	hasCallerAuth: func(r *http.Request) bool {
+		return strings.TrimSpace(r.Header.Get("Authorization")) != "" || strings.TrimSpace(r.Header.Get("api-key")) != ""
+	},
+	resolveTargetURL: func(r *http.Request, p Profile) (string, error) {
+		upstreamBase := strings.TrimSpace(r.Header.Get("X-Upstream-BaseURL"))
+		if upstreamBase == "" {
+			upstreamBase = strings.TrimSpace(p.UpstreamURL)
+		}
+		targetURL := compilerRequestURL(p.BaseURL)
+		if upstreamBase != "" {
+			targetURL = buildOpenAICompletionsURL(upstreamBase)
+		}
+		targetURL = mergeRequestQuery(targetURL, r.URL.RawQuery)
+		if err := validateOutboundURL(targetURL); err != nil {
+			return "", fmt.Errorf("上游地址无效: %v", err)
+		}
+		return targetURL, nil
+	},
+	collectBlocks: func(payload map[string]any, skipCacheControl bool, blocks *[]proxyTextBlock, estOrig, estComp *int) {
+		var reqKeywords []string
+		if isJSONResponseFormat(payload) {
+			reqKeywords = append(reqKeywords, "json")
+		}
+		if msgs, ok := payload["messages"].([]any); ok {
+			lastCachedMsgIdx := -1
+			if skipCacheControl {
+				for i, m := range msgs {
+					if msgMap, ok := m.(map[string]any); ok && messageHasCacheControl(msgMap) {
+						lastCachedMsgIdx = i
 					}
 				}
 			}
-		}
-	}
-
-	if msgs, ok := payload["messages"].([]any); ok {
-		for _, m := range msgs {
-			msgMap, ok := m.(map[string]any)
-			if !ok {
-				continue
-			}
-			role, _ := msgMap["role"].(string)
-			if role != "user" {
-				if contentStr, ok := msgMap["content"].(string); ok {
-					t := estimateTokensBPE(contentStr)
-					estOrigTotal += t
-					estCompTotal += t
+			for i, m := range msgs {
+				msgMap, ok := m.(map[string]any)
+				if !ok {
+					continue
 				}
-				continue
-			}
-
-			switch content := msgMap["content"].(type) {
-			case string:
-				target := msgMap
-				appendProxyTextBlock(&blocks, "user", content, nil, func(v string) { target["content"] = v }, &estOrigTotal, &estCompTotal)
-			case []any:
-				for _, part := range content {
-					if partMap, ok := part.(map[string]any); ok {
-						if partMap["type"] == "text" {
-							if txt, ok := partMap["text"].(string); ok {
-								target := partMap
-								appendProxyTextBlock(&blocks, "user", txt, nil, func(v string) { target["text"] = v }, &estOrigTotal, &estCompTotal)
+				role, _ := msgMap["role"].(string)
+				// Compile only the original system/user text slots. Developer policy,
+				// assistant history and tool results are outside this transform.
+				if role != "system" && role != "user" {
+					if contentStr, ok := msgMap["content"].(string); ok {
+						t := estimateTokensBPE(contentStr)
+						*estOrig += t
+						*estComp += t
+					}
+					continue
+				}
+				switch content := msgMap["content"].(type) {
+				case string:
+					if i <= lastCachedMsgIdx {
+						t := estimateTokensBPE(content)
+						*estOrig += t
+						*estComp += t
+						continue
+					}
+					target := msgMap
+					appendProxyTextBlock(blocks, role, content, reqKeywords, func(v string) { target["content"] = v }, estOrig, estComp)
+				case []any:
+					lastCachedPartIdx := -1
+					if skipCacheControl {
+						for j, part := range content {
+							if partMap, ok := part.(map[string]any); ok && hasCacheControl(partMap) {
+								lastCachedPartIdx = j
+							}
+						}
+					}
+					for j, part := range content {
+						if partMap, ok := part.(map[string]any); ok {
+							if partMap["type"] == "text" {
+								if txt, ok := partMap["text"].(string); ok {
+									if i < lastCachedMsgIdx || j <= lastCachedPartIdx {
+										t := estimateTokensBPE(txt)
+										*estOrig += t
+										*estComp += t
+										continue
+									}
+									target := partMap
+									appendProxyTextBlock(blocks, role, txt, reqKeywords, func(v string) { target["text"] = v }, estOrig, estComp)
+								}
 							}
 						}
 					}
 				}
 			}
 		}
-	}
-
-	if tools, ok := payload["tools"].([]any); ok {
-		collectToolsBlocks(tools, &blocks, &estOrigTotal, &estCompTotal)
-	}
-
-	mutated := compileProxyBlocks(r.Context(), "anthropic", blocks, p, dialect, domains, &logIDs, &estOrigTotal, &estCompTotal)
-	if r.Context().Err() != nil {
-		return
-	}
-
-	isStream, _ := payload["stream"].(bool)
-	modifiedBody := rawBody
-	if mutated {
-		modifiedBody, _ = json.Marshal(payload)
-	}
-
-	proxyReq, err := http.NewRequestWithContext(r.Context(), "POST", targetURL, bytes.NewBuffer(modifiedBody))
-	if err != nil {
-		http.Error(w, err.Error(), 500)
-		return
-	}
-
-	proxyReq.Header.Set("Content-Type", "application/json")
-	if callerAPIKey != "" {
-		proxyReq.Header.Set("x-api-key", callerAPIKey)
-	} else {
-		proxyReq.Header.Set("Authorization", callerAuth)
-	}
-
-	if ver := r.Header.Get("anthropic-version"); ver != "" {
-		proxyReq.Header.Set("anthropic-version", ver)
-	} else {
-		proxyReq.Header.Set("anthropic-version", "2023-06-01")
-	}
-	if beta := r.Header.Get("anthropic-beta"); beta != "" {
-		proxyReq.Header.Set("anthropic-beta", beta)
-	}
-
-	client := newOutboundHTTPClient(300 * time.Second)
-	resp, err := client.Do(proxyReq)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Anthropic 上游转发失败: %v", err), 502)
-		return
-	}
-	defer resp.Body.Close()
-	if rejectProxyRedirect(w, resp) {
-		return
-	}
-
-	for k, vals := range resp.Header {
-		if strings.EqualFold(k, "Content-Length") {
-			continue
+		if tools, ok := payload["tools"].([]any); ok {
+			collectToolsBlocksWithOptions(tools, skipCacheControl, blocks, estOrig, estComp)
 		}
-		for _, v := range vals {
-			w.Header().Add(k, v)
+	},
+	prepareHeaders: func(dst, src http.Header) {
+		copyProxyRequestHeaders(dst, src)
+		dst.Set("Content-Type", "application/json")
+	},
+	extractUsage: func(respBytes []byte) int {
+		var nonStreamResp struct {
+			Usage struct {
+				PromptTokens int `json:"prompt_tokens"`
+			} `json:"usage"`
 		}
-	}
-	w.WriteHeader(resp.StatusCode)
+		if json.Unmarshal(respBytes, &nonStreamResp) == nil && nonStreamResp.Usage.PromptTokens > 0 {
+			return nonStreamResp.Usage.PromptTokens
+		}
+		return 0
+	},
+	newSSESampler: newOpenAISSEUsageSampler,
+}
 
-	if !isStream {
-		respBytes, copyErr := forwardProxyResponseBody(w, resp.Body)
-		if copyErr != nil {
-			return
+var anthropicProxyAdapter = proxyProtocolAdapter{
+	protocol:           "anthropic",
+	missingAuthMessage: "代理请求必须携带最终服务的 x-api-key 或 Authorization；不会使用已保存的编译密钥",
+	hasCallerAuth: func(r *http.Request) bool {
+		return strings.TrimSpace(r.Header.Get("x-api-key")) != "" || strings.TrimSpace(r.Header.Get("Authorization")) != ""
+	},
+	resolveTargetURL: func(r *http.Request, p Profile) (string, error) {
+		upstreamBase := strings.TrimSpace(r.Header.Get("X-Upstream-BaseURL"))
+		if upstreamBase == "" {
+			upstreamBase = strings.TrimSpace(p.UpstreamURL)
+		}
+		if upstreamBase == "" {
+			return "", fmt.Errorf("Anthropic 代理需要 upstream_url 或 X-Upstream-BaseURL；无法从编译请求 URL 推导 Messages 地址")
+		}
+		targetURL := mergeRequestQuery(buildAnthropicMessagesURL(upstreamBase), r.URL.RawQuery)
+		if err := validateOutboundURL(targetURL); err != nil {
+			return "", fmt.Errorf("上游地址无效: %v", err)
+		}
+		return targetURL, nil
+	},
+	collectBlocks: func(payload map[string]any, skipCacheControl bool, blocks *[]proxyTextBlock, estOrig, estComp *int) {
+		switch sysVal := payload["system"].(type) {
+		case string:
+			target := payload
+			appendProxyTextBlock(blocks, "system", sysVal, nil, func(v string) { target["system"] = v }, estOrig, estComp)
+		case []any:
+			lastCachedSysIdx := -1
+			if skipCacheControl {
+				for i, block := range sysVal {
+					if blockMap, ok := block.(map[string]any); ok && hasCacheControl(blockMap) {
+						lastCachedSysIdx = i
+					}
+				}
+			}
+			for i, block := range sysVal {
+				if blockMap, ok := block.(map[string]any); ok {
+					if blockMap["type"] == "text" {
+						if txt, ok := blockMap["text"].(string); ok {
+							if i <= lastCachedSysIdx {
+								t := estimateTokensBPE(txt)
+								*estOrig += t
+								*estComp += t
+								continue
+							}
+							target := blockMap
+							appendProxyTextBlock(blocks, "system", txt, nil, func(v string) { target["text"] = v }, estOrig, estComp)
+						}
+					}
+				}
+			}
 		}
 
+		if msgs, ok := payload["messages"].([]any); ok {
+			lastCachedMsgIdx := -1
+			if skipCacheControl {
+				for i, m := range msgs {
+					if msgMap, ok := m.(map[string]any); ok && messageHasCacheControl(msgMap) {
+						lastCachedMsgIdx = i
+					}
+				}
+			}
+			for i, m := range msgs {
+				msgMap, ok := m.(map[string]any)
+				if !ok {
+					continue
+				}
+				role, _ := msgMap["role"].(string)
+				if role != "user" {
+					if contentStr, ok := msgMap["content"].(string); ok {
+						t := estimateTokensBPE(contentStr)
+						*estOrig += t
+						*estComp += t
+					}
+					continue
+				}
+				switch content := msgMap["content"].(type) {
+				case string:
+					if i <= lastCachedMsgIdx {
+						t := estimateTokensBPE(content)
+						*estOrig += t
+						*estComp += t
+						continue
+					}
+					target := msgMap
+					appendProxyTextBlock(blocks, "user", content, nil, func(v string) { target["content"] = v }, estOrig, estComp)
+				case []any:
+					lastCachedPartIdx := -1
+					if skipCacheControl {
+						for j, part := range content {
+							if partMap, ok := part.(map[string]any); ok && hasCacheControl(partMap) {
+								lastCachedPartIdx = j
+							}
+						}
+					}
+					for j, part := range content {
+						if partMap, ok := part.(map[string]any); ok {
+							if partMap["type"] == "text" {
+								if txt, ok := partMap["text"].(string); ok {
+									if i < lastCachedMsgIdx || j <= lastCachedPartIdx {
+										t := estimateTokensBPE(txt)
+										*estOrig += t
+										*estComp += t
+										continue
+									}
+									target := partMap
+									appendProxyTextBlock(blocks, "user", txt, nil, func(v string) { target["text"] = v }, estOrig, estComp)
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		if tools, ok := payload["tools"].([]any); ok {
+			collectToolsBlocksWithOptions(tools, skipCacheControl, blocks, estOrig, estComp)
+		}
+	},
+	prepareHeaders: func(dst, src http.Header) {
+		copyProxyRequestHeaders(dst, src)
+		dst.Set("Content-Type", "application/json")
+		if dst.Get("anthropic-version") == "" {
+			dst.Set("anthropic-version", "2023-06-01")
+		}
+	},
+	extractUsage: func(respBytes []byte) int {
 		var nonStreamResp struct {
 			Usage struct {
 				InputTokens              int `json:"input_tokens"`
@@ -992,44 +1215,19 @@ func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
 			} `json:"usage"`
 		}
 		if json.Unmarshal(respBytes, &nonStreamResp) == nil {
-			realIn := nonStreamResp.Usage.InputTokens + nonStreamResp.Usage.CacheCreationInputTokens + nonStreamResp.Usage.CacheReadInputTokens
-			if realIn > 0 {
-				go applyUpstreamUsage(logIDs, estOrigTotal, estCompTotal, realIn)
-			}
+			return nonStreamResp.Usage.InputTokens + nonStreamResp.Usage.CacheCreationInputTokens + nonStreamResp.Usage.CacheReadInputTokens
 		}
-		return
-	}
+		return 0
+	},
+	newSSESampler: newAnthropicSSEUsageSampler,
+}
 
-	flusher, canFlush := w.(http.Flusher)
-	buf := make([]byte, 4096)
-	// message_start（含 usage）出现在流首部，固定 8KB 头部缓冲即可覆盖。
-	headBuf := make([]byte, 0, 8192)
-	for {
-		n, readErr := resp.Body.Read(buf)
-		if n > 0 {
-			chunk := buf[:n]
-			if _, writeErr := w.Write(chunk); writeErr != nil {
-				return
-			}
-			if canFlush {
-				flusher.Flush()
-			}
-			if rem := 8192 - len(headBuf); rem > 0 {
-				if len(chunk) > rem {
-					headBuf = append(headBuf, chunk[:rem]...)
-				} else {
-					headBuf = append(headBuf, chunk...)
-				}
-			}
-		}
-		if readErr != nil {
-			break
-		}
-	}
+func openAIProxyHandler(w http.ResponseWriter, r *http.Request) {
+	handleStructuredProxy(w, r, openAIProxyAdapter)
+}
 
-	if realTokens := extractUsageFromAnthropicSSE(string(headBuf)); realTokens > 0 {
-		go applyUpstreamUsage(logIDs, estOrigTotal, estCompTotal, realTokens)
-	}
+func anthropicProxyHandler(w http.ResponseWriter, r *http.Request) {
+	handleStructuredProxy(w, r, anthropicProxyAdapter)
 }
 
 const maxProxyUsageCaptureBytes = 1 << 20
@@ -1078,11 +1276,15 @@ func forwardProxyResponseBody(dst io.Writer, src io.Reader) ([]byte, error) {
 }
 
 func rejectProxyRedirect(w http.ResponseWriter, resp *http.Response) bool {
+	return rejectProxyRedirectForProtocol(w, "openai", resp)
+}
+
+func rejectProxyRedirectForProtocol(w http.ResponseWriter, protocol string, resp *http.Response) bool {
 	if resp.StatusCode < 300 || resp.StatusCode >= 400 {
 		return false
 	}
 	// Relaying Location would let an auto-following SDK perform the same unsafe
 	// replay. Report the error without that header or the provider's response body.
-	http.Error(w, fmt.Sprintf("上游重定向已拒绝 (HTTP %d)，请直接配置最终请求地址", resp.StatusCode), http.StatusBadGateway)
+	writeProxyError(w, protocol, http.StatusBadGateway, "api_error", fmt.Sprintf("上游重定向已拒绝 (HTTP %d)，请直接配置最终请求地址", resp.StatusCode))
 	return true
 }

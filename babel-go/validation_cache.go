@@ -22,6 +22,7 @@ type ttlLRU[K comparable, V any] struct {
 type ttlEntry[K comparable, V any] struct {
 	key     K
 	value   V
+	ttl     time.Duration
 	expires time.Time
 }
 
@@ -41,10 +42,16 @@ func (c *ttlLRU[K, V]) Get(key K) (V, bool) {
 		return zero, false
 	}
 	entry := element.Value.(*ttlEntry[K, V])
-	if !entry.expires.IsZero() && time.Now().After(entry.expires) {
+	now := time.Now()
+	if !entry.expires.IsZero() && now.After(entry.expires) {
 		c.order.Remove(element)
 		delete(c.entries, key)
 		return zero, false
+	}
+	// Sliding TTL renewal keeps active multi-turn system/tool prefixes stable
+	// instead of expiring mid-conversation and busting upstream prompt caches.
+	if entry.ttl > 0 {
+		entry.expires = now.Add(entry.ttl)
 	}
 	c.order.MoveToFront(element)
 	return entry.value, true
@@ -60,11 +67,12 @@ func (c *ttlLRU[K, V]) Put(key K, value V, ttl time.Duration) {
 	if element, ok := c.entries[key]; ok {
 		entry := element.Value.(*ttlEntry[K, V])
 		entry.value = value
+		entry.ttl = ttl
 		entry.expires = expires
 		c.order.MoveToFront(element)
 		return
 	}
-	element := c.order.PushFront(&ttlEntry[K, V]{key: key, value: value, expires: expires})
+	element := c.order.PushFront(&ttlEntry[K, V]{key: key, value: value, ttl: ttl, expires: expires})
 	c.entries[key] = element
 	for len(c.entries) > c.capacity {
 		oldest := c.order.Back()

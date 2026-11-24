@@ -294,22 +294,52 @@ func effectiveCompilerProfile(p Profile) Profile {
 
 // Used only for explicitly configured transparent-proxy upstream bases.
 func buildOpenAICompletionsURL(baseURL string) string {
-	clean := strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	if strings.HasSuffix(clean, "/chat/completions") {
-		return clean
+	raw := strings.TrimSpace(baseURL)
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		clean := strings.TrimRight(raw, "/")
+		if strings.HasSuffix(clean, "/chat/completions") {
+			return clean
+		}
+		return clean + "/chat/completions"
 	}
-	return clean + "/chat/completions"
+	path := strings.TrimRight(u.Path, "/")
+	switch {
+	case strings.HasSuffix(path, "/chat/completions"):
+		return raw
+	case path == "":
+		u.Path = "/v1/chat/completions"
+	default:
+		u.Path = path + "/chat/completions"
+	}
+	u.RawPath = ""
+	return u.String()
 }
 
 func buildAnthropicMessagesURL(baseURL string) string {
-	clean := strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	if strings.HasSuffix(clean, "/v1/messages") || strings.HasSuffix(clean, "/messages") {
-		return clean
+	raw := strings.TrimSpace(baseURL)
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		clean := strings.TrimRight(raw, "/")
+		if strings.HasSuffix(clean, "/v1/messages") || strings.HasSuffix(clean, "/messages") {
+			return clean
+		}
+		if strings.HasSuffix(clean, "/v1") {
+			return clean + "/messages"
+		}
+		return clean + "/v1/messages"
 	}
-	if strings.HasSuffix(clean, "/v1") {
-		return clean + "/messages"
+	path := strings.TrimRight(u.Path, "/")
+	switch {
+	case strings.HasSuffix(path, "/v1/messages") || strings.HasSuffix(path, "/messages"):
+		return raw
+	case isAPIBasePath(path):
+		u.Path = path + "/messages"
+	default:
+		u.Path = path + "/v1/messages"
 	}
-	return clean + "/v1/messages"
+	u.RawPath = ""
+	return u.String()
 }
 
 func callLLM(p Profile, sysPrompt, userPrompt string, temp float64) (string, error) {
