@@ -334,13 +334,17 @@ func translateMessageBlockContext(ctx context.Context, protocol, role, text stri
 
 	// 预热只覆盖「本地没有候选」的冷启动；已有缓存时走正常路径直接采用。
 	if proxyAsyncWarmup && !cacheKeyHasCandidate(cacheKey) {
-		status := enqueueShadowWarmup(protocol, role, text, p, blockDialect, activeKeywords, domains)
 		reason := "已触发后台异步预热，本次保留原文直通"
-		switch status {
-		case warmupInFlight:
-			reason = "该文本已在后台预热，本次保留原文直通"
-		case warmupQueueFull:
-			reason = "预热队列已满，本次保留原文直通"
+		if !shouldWarmupBlock(role, cacheKey) {
+			reason = "一次性 user 文本未达预热频次阈值，本次保留原文直通"
+		} else {
+			status := enqueueShadowWarmup(protocol, role, text, p, blockDialect, activeKeywords, domains)
+			switch status {
+			case warmupInFlight:
+				reason = "该文本已在后台预热，本次保留原文直通"
+			case warmupQueueFull:
+				reason = "预热队列已满，本次保留原文直通"
+			}
 		}
 		logID := fmt.Sprintf("%d-%d", time.Now().UnixNano(), proxyLogSequence.Add(1))
 		appendProxyLog(ProxyLog{
@@ -781,9 +785,7 @@ func handleStructuredProxy(w http.ResponseWriter, r *http.Request, adapter proxy
 		return
 	}
 
-	bypass := isProxyBypassRequested(r)
-	oversize := r.ContentLength > proxyMaxCompileBodyLimit()
-	if bypass || oversize {
+	forwardDirect := func(status string, body io.Reader, contentLength int64) {
 		if !adapter.hasCallerAuth(r) {
 			writeProxyError(w, adapter.protocol, http.StatusUnauthorized, "authentication_error", adapter.missingAuthMessage)
 			return
@@ -799,9 +801,7 @@ func handleStructuredProxy(w http.ResponseWriter, r *http.Request, adapter proxy
 			writeProxyError(w, adapter.protocol, http.StatusBadRequest, "invalid_request_error", err.Error())
 			return
 		}
-		status := "oversize"
-		if bypass {
-			status = "bypass"
+		if status == "bypass" {
 			proxyMetrics.bypassTotal.Add(1)
 		} else {
 			proxyMetrics.oversizeTotal.Add(1)
@@ -814,13 +814,33 @@ func handleStructuredProxy(w http.ResponseWriter, r *http.Request, adapter proxy
 				}
 			}
 		}
-		streamPassthroughRequestWithStatus(w, r, adapter.protocol, targetURL, status, extra)
+		streamPassthroughBodyWithStatus(w, r, adapter.protocol, targetURL, status, body, contentLength, extra)
+	}
+
+	compileLimit := proxyMaxCompileBodyLimit()
+	if isProxyBypassRequested(r) {
+		forwardDirect("bypass", r.Body, r.ContentLength)
+		return
+	}
+	if r.ContentLength > compileLimit {
+		forwardDirect("oversize", r.Body, r.ContentLength)
 		return
 	}
 
-	rawBody, err := io.ReadAll(r.Body)
+	rawBody, err := io.ReadAll(io.LimitReader(r.Body, compileLimit+1))
 	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeProxyError(w, adapter.protocol, http.StatusRequestEntityTooLarge, "invalid_request_error", fmt.Sprintf("请求正文超过 %d 字节上限", maxErr.Limit))
+			return
+		}
 		writeProxyError(w, adapter.protocol, http.StatusBadRequest, "invalid_request_error", "读取请求失败")
+		return
+	}
+	if int64(len(rawBody)) > compileLimit {
+		// Chunked or unknown-length body exceeded compileLimit: stream the already-read
+		// prefix plus the remaining request body directly upstream without buffering all of it.
+		forwardDirect("oversize", io.MultiReader(bytes.NewReader(rawBody), r.Body), -1)
 		return
 	}
 

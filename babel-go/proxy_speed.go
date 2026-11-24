@@ -22,11 +22,17 @@ var (
 	proxyMinRunes           = 35
 	proxySkipNonProse       bool
 	proxyWarmupWorkers      = 2
+	// proxyWarmupUserMinHits 控制 user 角色文本进入后台异步预热前需被观测到的次数：
+	// 包级默认 1 保持单测零变化；服务端生产默认 2，避免一次性 user 提问白烧编译配额与污染 LRU。
+	// system 与 tool:* 属于高复用前缀，始终在首次命中即预热；0 表示禁用 user 预热。
+	proxyWarmupUserMinHits = 1
 )
 
 const (
 	proxyValidationCacheCapacity = 4096
 	proxyNegativeCacheCapacity   = 2000
+	proxyWarmupSeenCapacity      = 4096
+	proxyWarmupSeenTTL           = 30 * time.Minute
 	shadowWarmupQueueSize        = 256
 	shadowWarmupTimeout          = 45 * time.Second
 	shadowWarmupWorkers          = 2
@@ -100,6 +106,15 @@ func configureProxySpeedDefaults() {
 	} else {
 		proxySkipCacheControl = false
 	}
+	if raw, ok := os.LookupEnv("BABEL_PROXY_WARMUP_USER_MIN_HITS"); ok {
+		if value, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil && value >= 0 {
+			proxyWarmupUserMinHits = value
+		} else {
+			proxyWarmupUserMinHits = 2
+		}
+	} else {
+		proxyWarmupUserMinHits = 2
+	}
 	// 预热 worker 数量：默认 min(8, max(2, 全局槽位/2))，可按环境变量覆盖。
 	if raw, ok := os.LookupEnv("BABEL_PROXY_WARMUP_WORKERS"); ok {
 		if value, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil && value > 0 {
@@ -132,6 +147,7 @@ func proxySpeedSummary() map[string]any {
 		"compile_budget":       proxySpeedDurationLabel(proxyCompileBudget),
 		"async_warmup":         proxyAsyncWarmup,
 		"skip_cache_control":   proxySkipCacheControl,
+		"warmup_user_min_hits": proxyWarmupUserMinHits,
 		"min_runes":            proxyMinRunes,
 		"skip_non_prose":       proxySkipNonProse,
 		"warmup_workers":       proxyWarmupWorkers,
@@ -175,7 +191,38 @@ var (
 	shadowWarmupQueue   chan shadowWarmupJob
 	shadowWarmupFlight  sync.Map
 	shadowWarmupPending sync.WaitGroup
+
+	warmupSeenMu    sync.Mutex
+	warmupSeenCache = newTTLLRU[string, int](proxyWarmupSeenCapacity)
 )
+
+// shouldWarmupBlock implements a frequency admission filter for async warmup:
+// high-reuse prefixes (system, tool:*) always warm immediately, while user text
+// must be seen at least proxyWarmupUserMinHits times to avoid burning compiler
+// quota and evicting useful LRU entries on one-off prompts.
+func shouldWarmupBlock(role, cacheKey string) bool {
+	if role != "user" {
+		return true
+	}
+	if proxyWarmupUserMinHits <= 0 {
+		return false
+	}
+	if proxyWarmupUserMinHits == 1 {
+		return true
+	}
+	warmupSeenMu.Lock()
+	defer warmupSeenMu.Unlock()
+	hits, _ := warmupSeenCache.Get(cacheKey)
+	hits++
+	warmupSeenCache.Put(cacheKey, hits, proxyWarmupSeenTTL)
+	return hits >= proxyWarmupUserMinHits
+}
+
+func resetWarmupAdmissionCache() {
+	warmupSeenMu.Lock()
+	warmupSeenCache.Reset()
+	warmupSeenMu.Unlock()
+}
 
 // warmupStatus 区分「新入队 / 已在预热 / 队列满」：三者都意味着不能同步等待。
 type warmupStatus int

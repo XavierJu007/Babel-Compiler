@@ -10,11 +10,16 @@ import (
 )
 
 const (
-	parallelChunkThreshold = 2000
-	chunkTargetRunes       = 1000
-	chunkMinRunes          = 700
-	parallelChunkWorkers   = 4
+	parallelChunkThreshold     = 2000
+	chunkTargetRunes           = 1000
+	chunkMinRunes              = 700
+	parallelChunkWorkers       = 4
+	defaultChunkMaxConcurrency = 16
 )
+
+// chunkCompileSem isolates chunked sub-tasks from proxyCompileSem so a caller
+// already holding a proxyCompileSem slot can never self-deadlock on nested acquire.
+var chunkCompileSem = newCompileSemaphore(envPositiveInt("BABEL_CHUNK_MAX_CONCURRENCY", defaultChunkMaxConcurrency))
 
 // shouldCompileInChunks 只在显式开启且确实超长时走分块路径；
 // 默认关闭，保证既有编译输出与测试完全不变。
@@ -95,10 +100,13 @@ func generateBabelCandidateParallel(ctx context.Context, p Profile, dialect Dial
 					errs[idx] = err
 					return
 				}
-				// 与代理共用全局编译闸门，避免分块任务挤占交互请求。
-				release, acquired, canceled := proxyCompileSem.Acquire(chunkCtx, proxyCompileQueueTimeout)
+				// 使用独立的分块信号量，避免与外层 proxyCompileSem 形成嵌套死锁。
+				release, acquired, canceled := chunkCompileSem.Acquire(chunkCtx, proxyCompileQueueTimeout)
 				if canceled {
-					errs[idx] = ctx.Err()
+					errs[idx] = chunkCtx.Err()
+					if errs[idx] == nil {
+						errs[idx] = ctx.Err()
+					}
 					return
 				}
 				if !acquired {

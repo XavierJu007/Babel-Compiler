@@ -42,19 +42,27 @@ func resetProxySpeedVars(t *testing.T) {
 	t.Helper()
 	proxyValidationCacheTTL = 0
 	proxyNegativeCacheTTL = 0
+	proxyCompileBudget = 0
 	proxyAsyncWarmup = false
+	proxySkipCacheControl = false
+	proxyWarmupUserMinHits = 1
 	proxyMinRunes = 35
 	proxySkipNonProse = false
 	validationCache.Reset()
 	negativeCache.Reset()
+	resetWarmupAdmissionCache()
 	t.Cleanup(func() {
 		proxyValidationCacheTTL = 0
 		proxyNegativeCacheTTL = 0
+		proxyCompileBudget = 0
 		proxyAsyncWarmup = false
+		proxySkipCacheControl = false
+		proxyWarmupUserMinHits = 1
 		proxyMinRunes = 35
 		proxySkipNonProse = false
 		validationCache.Reset()
 		negativeCache.Reset()
+		resetWarmupAdmissionCache()
 	})
 }
 

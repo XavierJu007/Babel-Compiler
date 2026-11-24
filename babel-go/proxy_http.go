@@ -382,13 +382,17 @@ func streamPassthroughRequest(w http.ResponseWriter, r *http.Request, protocol, 
 }
 
 func streamPassthroughRequestWithStatus(w http.ResponseWriter, r *http.Request, protocol, targetURL, babelStatus string, extraHeaders func(http.Header)) {
-	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
+	streamPassthroughBodyWithStatus(w, r, protocol, targetURL, babelStatus, r.Body, r.ContentLength, extraHeaders)
+}
+
+func streamPassthroughBodyWithStatus(w http.ResponseWriter, r *http.Request, protocol, targetURL, babelStatus string, body io.Reader, contentLength int64, extraHeaders func(http.Header)) {
+	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, body)
 	if err != nil {
 		writeProxyError(w, protocol, http.StatusInternalServerError, "api_error", err.Error())
 		return
 	}
-	if r.ContentLength >= 0 {
-		proxyReq.ContentLength = r.ContentLength
+	if contentLength >= 0 {
+		proxyReq.ContentLength = contentLength
 	}
 	copyProxyRequestHeaders(proxyReq.Header, r.Header)
 	if extraHeaders != nil {
@@ -397,6 +401,11 @@ func streamPassthroughRequestWithStatus(w http.ResponseWriter, r *http.Request, 
 
 	resp, err := newProxyForwardHTTPClient().Do(proxyReq)
 	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeProxyError(w, protocol, http.StatusRequestEntityTooLarge, "invalid_request_error", fmt.Sprintf("请求正文超过 %d 字节上限", maxErr.Limit))
+			return
+		}
 		proxyMetrics.upstreamErrorTotal.Add(1)
 		writeProxyError(w, protocol, http.StatusBadGateway, "api_error", fmt.Sprintf("上游转发失败: %v", err))
 		return

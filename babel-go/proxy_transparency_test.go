@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -914,5 +915,272 @@ func TestHealthzEndpointAndMetrics(t *testing.T) {
 	newServerMux().ServeHTTP(postRec, postReq)
 	if postRec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("POST /healthz status=%d; want 405", postRec.Code)
+	}
+}
+
+func TestProxyWarmupAdmissionFilterProtectsOneOffUserPrompts(t *testing.T) {
+	isolateDomainIntegration(t)
+	isolateCompilerState(t)
+	isolateProxyState(t)
+	resetProxySpeedVars(t)
+	proxyAsyncWarmup = true
+	proxyWarmupUserMinHits = 2
+
+	var genCalls atomic.Int32
+	compiler := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req compilerRequestBody
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if len(req.Messages) > 0 && req.Messages[0].Content == verifyGatePrompt {
+			writeModelContent(w, `{"pass":true,"missing":[]}`)
+			return
+		}
+		genCalls.Add(1)
+		writeModelContent(w, "压缩结果⇒更短")
+	}))
+	defer compiler.Close()
+	if err := writeConfigFile(Config{ActiveProfile: "compiler", Profiles: map[string]Profile{
+		"compiler": {Name: "compiler", APIKey: "gen-key", BaseURL: compiler.URL, Model: "gen"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { drainShadowWarmup(2 * time.Second) })
+
+	profile := getActiveProfile(loadConfig(), "compiler")
+	dialect := getDialect(defaultDialectName)
+
+	// High-reuse system prompt warms immediately on first hit.
+	sysText := "你是风控审核助手，必须严格核对每笔交易的限额、权限与留痕要求，不得跳过任何审批节点。"
+	translateMessageBlock("openai", "system", sysText, profile, dialect, nil, nil)
+	drainShadowWarmup(2 * time.Second)
+	if got := genCalls.Load(); got != 1 {
+		t.Fatalf("system block should warm immediately on 1st hit: genCalls=%d", got)
+	}
+
+	// One-off user prompt is skipped on 1st hit when proxyWarmupUserMinHits=2.
+	userText := "请帮我核对今天下午三点提交的采购申请单，确认所有金额、审批人与附件字段是否完整。"
+	translateMessageBlock("openai", "user", userText, profile, dialect, nil, nil)
+	drainShadowWarmup(2 * time.Second)
+	if got := genCalls.Load(); got != 1 {
+		t.Fatalf("one-off user prompt should not burn compiler quota on 1st hit: genCalls=%d", got)
+	}
+
+	// Seeing the same user prompt a 2nd time triggers warmup.
+	translateMessageBlock("openai", "user", userText, profile, dialect, nil, nil)
+	drainShadowWarmup(2 * time.Second)
+	if got := genCalls.Load(); got != 2 {
+		t.Fatalf("repeated user prompt should warm on 2nd hit: genCalls=%d", got)
+	}
+
+	// Setting proxyWarmupUserMinHits=0 disables user warmup completely.
+	proxyWarmupUserMinHits = 0
+	otherUser := "另一段完全不同的用户消息，用来确认当阈值为零时即使多次出现也不会进入后台预热队列。"
+	for i := 0; i < 3; i++ {
+		translateMessageBlock("openai", "user", otherUser, profile, dialect, nil, nil)
+	}
+	drainShadowWarmup(2 * time.Second)
+	if got := genCalls.Load(); got != 2 {
+		t.Fatalf("user warmup should stay disabled when min hits=0: genCalls=%d", got)
+	}
+}
+
+func TestProxyChunkedOversizeStreamsAndOverHardCapReturns413(t *testing.T) {
+	isolateDomainIntegration(t)
+	isolateProxyState(t)
+	t.Setenv("BABEL_PROXY_MAX_BODY_BYTES", "4096")
+	t.Setenv("BABEL_PROXY_MAX_COMPILE_BYTES", "256")
+
+	var compilerCalls atomic.Int32
+	compiler := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		compilerCalls.Add(1)
+		writeModelContent(w, "short")
+	}))
+	defer compiler.Close()
+
+	var gotBody []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	if err := writeConfigFile(Config{ActiveProfile: "fixture", Profiles: map[string]Profile{
+		"fixture": {Name: "fixture", APIKey: "k", BaseURL: compiler.URL, UpstreamURL: upstream.URL, Model: "m"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Chunked (ContentLength = -1) body > compileLimit (256) and <= hardCap (4096):
+	// must stream directly upstream with X-Babel-Status: oversize and 0 compiler calls.
+	payload := []byte(`{"model":"consumer","messages":[{"role":"user","content":"` + strings.Repeat("B", 1024) + `"}]}`)
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8080/v1/chat/completions", bytes.NewReader(payload))
+	req.ContentLength = -1
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer consumer-key")
+	rec := httptest.NewRecorder()
+	guardedLocalHandler(t).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || rec.Header().Get("X-Babel-Status") != "oversize" {
+		t.Fatalf("chunked oversize passthrough failed: status=%d header=%q body=%s", rec.Code, rec.Header().Get("X-Babel-Status"), rec.Body.String())
+	}
+	if compilerCalls.Load() != 0 || !bytes.Equal(gotBody, payload) {
+		t.Fatalf("chunked oversize body altered or compiled: calls=%d len=%d/%d", compilerCalls.Load(), len(gotBody), len(payload))
+	}
+
+	// Chunked body exceeding hardCap (4096) while still below compileLimit (set compileLimit=8192, hardCap=512):
+	// must return 413 Request Entity Too Large (not 400).
+	t.Setenv("BABEL_PROXY_MAX_BODY_BYTES", "512")
+	t.Setenv("BABEL_PROXY_MAX_COMPILE_BYTES", "8192")
+	tooBig := []byte(`{"model":"consumer","messages":[{"role":"user","content":"` + strings.Repeat("C", 1024) + `"}]}`)
+	req2 := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8080/v1/chat/completions", bytes.NewReader(tooBig))
+	req2.ContentLength = -1
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("Authorization", "Bearer consumer-key")
+	rec2 := httptest.NewRecorder()
+	guardedLocalHandler(t).ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("chunked body over hard cap returned %d; want 413 (body=%s)", rec2.Code, rec2.Body.String())
+	}
+}
+
+func TestValidateAPIHonorsAuditProfile(t *testing.T) {
+	isolateDomainIntegration(t)
+	isolateCompilerState(t)
+
+	var compilerCalls, auditorCalls atomic.Int32
+	compilerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		compilerCalls.Add(1)
+		writeModelContent(w, `{"pass":true,"missing":[]}`)
+	}))
+	defer compilerSrv.Close()
+
+	auditorSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auditorCalls.Add(1)
+		writeModelContent(w, `{"pass":true,"missing":[]}`)
+	}))
+	defer auditorSrv.Close()
+
+	if err := writeConfigFile(Config{ActiveProfile: "compiler", Profiles: map[string]Profile{
+		"compiler": {Name: "compiler", APIKey: "gen-key", BaseURL: compilerSrv.URL, Model: "gen-model", AuditProfile: "auditor"},
+		"auditor":  {Name: "auditor", APIKey: "audit-key", BaseURL: auditorSrv.URL, Model: "audit-model"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := `{"profile":"compiler","text":"订单金额大于100元时必须审批。","candidate":"金额>100元⇒须审批"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/validate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	newServerMux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/api/validate status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if auditorCalls.Load() != 1 || compilerCalls.Load() != 0 {
+		t.Fatalf("/api/validate ignored audit_profile: auditorCalls=%d compilerCalls=%d", auditorCalls.Load(), compilerCalls.Load())
+	}
+}
+
+func TestCompileStreamRewriteNoDuplicateDeltaAndBoundsRawBytes(t *testing.T) {
+	isolateCompilerState(t)
+
+	// 1. Multi-section input triggers one structural rewrite; streamed deltas must NOT duplicate candidate.
+	source := "你是售后助理，处理退款且每步留痕。\n一、受理资格\n1. 只有订单已签收且商品未拆封，才允许退款。\n二、执行流程\n1. 先锁单，再优先原路退款；锁定期间禁止并发修改金额。\n三、记录要求\n1. 所有写操作保留前后快照，含订单号和金额，保留不少于180天。"
+	flatDraft := "一、受理资格\n仅签收且未拆封可退\n二、执行流程\n先锁单再原路退款\n三、记录要求\n所有写操作保留快照180天"
+	if len(babelStructureIssues(source, flatDraft)) == 0 {
+		t.Fatal("test fixture flatDraft did not trigger babelStructureIssues")
+	}
+	var callNum atomic.Int32
+	rewrittenPart1 := "role:售后助理\n├许可only if已签收∧未拆封\n"
+	rewrittenPart2 := "└flow:锁单→原路退款; ∀写操作保留快照≥180天"
+	compiler := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := callNum.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if n == 1 {
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":" + mustJSON(flatDraft) + "},\"finish_reason\":\"stop\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			return
+		}
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":" + mustJSON(rewrittenPart1) + "}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":" + mustJSON(rewrittenPart2) + "},\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer compiler.Close()
+
+	p := Profile{Name: "test", APIKey: "k", BaseURL: compiler.URL, Model: "m"}
+	dialect, err := composeDialect(defaultDialectName, nil, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var displayed strings.Builder
+	got, err := generateBabelCandidateStream(context.Background(), p, dialect, source, streamHooks{
+		onReset: func() { displayed.Reset() },
+		onDelta: func(chunk string) { displayed.WriteString(chunk) },
+	})
+	if err != nil {
+		t.Fatalf("generateBabelCandidateStream failed: %v", err)
+	}
+	want := rewrittenPart1 + rewrittenPart2
+	if got != want || displayed.String() != want {
+		t.Fatalf("rewrite stream duplicated or altered deltas:\n  got=%q\n  displayed=%q\n  want=%q", got, displayed.String(), want)
+	}
+
+	// 2. Oversized raw SSE comments (no delta.content) must still be bounded by maxModelResponseBytes.
+	commentFlood := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		line := strings.Repeat(": keepalive ", 100) + "\n"
+		for sent := 0; sent <= maxModelResponseBytes+4096; sent += len(line) {
+			if _, err := w.Write([]byte(line)); err != nil {
+				return
+			}
+		}
+	}))
+	defer commentFlood.Close()
+	floodProfile := Profile{Name: "flood", APIKey: "k", BaseURL: commentFlood.URL, Model: "m"}
+	_, _, err = callLLMStreamContext(context.Background(), floodProfile, "sys", "user", 0, 0, nil)
+	if err == nil || !strings.Contains(err.Error(), "上限") {
+		t.Fatalf("expected raw SSE byte-limit error, got err=%v", err)
+	}
+}
+
+func mustJSON(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
+func TestParallelChunkCompileIsolatedFromProxySemaphore(t *testing.T) {
+	isolateCompilerState(t)
+
+	compiler := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeModelContent(w, "├规则⇒执行\n└异常⇒拒绝")
+	}))
+	defer compiler.Close()
+
+	// Completely saturate proxyCompileSem (1/1 held): chunk compilation must use
+	// chunkCompileSem and never self-deadlock waiting on proxyCompileSem.
+	oldSem := proxyCompileSem
+	proxyCompileSem = newCompileSemaphore(1)
+	proxyCompileSem.slots <- struct{}{}
+	t.Cleanup(func() {
+		<-proxyCompileSem.slots
+		proxyCompileSem = oldSem
+	})
+
+	paragraph := "审批流程要求在提交之前完成全部检查，并在执行之后记录结果，确保每个环节都能追溯到责任人。\n\n"
+	source := strings.Repeat(paragraph, 45)
+	p := Profile{Name: "chunk", APIKey: "k", BaseURL: compiler.URL, Model: "m"}
+	dialect, _ := composeDialect(defaultDialectName, nil, source)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := generateBabelCandidateParallel(context.Background(), p, dialect, source)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("parallel chunk compile failed under saturated proxyCompileSem: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("parallel chunk compile deadlocked on saturated proxyCompileSem")
 	}
 }

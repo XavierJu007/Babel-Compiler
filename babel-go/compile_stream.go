@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // streamHooks 让生成流水线把进度推给 SSE 连接，同时保持与
@@ -74,9 +75,17 @@ func callLLMStreamContext(ctx context.Context, p Profile, sysPrompt, userPrompt 
 	var content strings.Builder
 	finishReason := ""
 	total := 0
-	reader := bufio.NewReaderSize(resp.Body, 64*1024)
+	rawBytesRead := 0
+	// Bound total raw bytes read from the upstream SSE stream so an unterminated
+	// line or endless comments cannot exceed maxModelResponseBytes in memory.
+	limitedBody := io.LimitReader(resp.Body, maxModelResponseBytes+1)
+	reader := bufio.NewReaderSize(limitedBody, 64*1024)
 	for {
 		line, readErr := reader.ReadString('\n')
+		rawBytesRead += len(line)
+		if rawBytesRead > maxModelResponseBytes {
+			return content.String(), finishReason, fmt.Errorf("模型响应超过 %d 字节上限，未解析或采用", maxModelResponseBytes)
+		}
 		if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "data:") {
 			payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
 			if payload == "[DONE]" {
@@ -165,7 +174,12 @@ func generateBabelCandidateStream(ctx context.Context, p Profile, dialect Dialec
 		return candidate, fmt.Errorf("重组服务返回空候选")
 	}
 	candidate = rewritten
-	if hooks.onDelta != nil {
+	// callLLMStreamContext already streamed every delta of raw. Only replace the
+	// displayed text if compactDSL unwrapped an outer fence envelope.
+	if candidate != raw && hooks.onDelta != nil {
+		if hooks.onReset != nil {
+			hooks.onReset()
+		}
 		hooks.onDelta(candidate)
 	}
 	if issues := babelStructureIssues(original, candidate); len(issues) > 0 {
@@ -239,6 +253,10 @@ func compileStreamHandler(w http.ResponseWriter, r *http.Request) {
 
 	if strings.TrimSpace(req.Text) == "" {
 		fail("编译文本不能为空", "", ValidationResult{})
+		return
+	}
+	if !utf8.ValidString(req.Text) {
+		fail("编译文本不是有效 UTF-8", "", ValidationResult{})
 		return
 	}
 	cfg := loadConfig()
@@ -318,7 +336,9 @@ func compileStreamHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stream.emit("stage", map[string]string{"stage": "validating"})
+	if !cacheHit {
+		stream.emit("stage", map[string]string{"stage": "validating"})
+	}
 	out, err = validateCompileResponse(r.Context(), req, p, auditor, reader, out)
 	if err != nil {
 		var validationErr *ValidationError

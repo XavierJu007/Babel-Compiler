@@ -49,6 +49,11 @@ func candidateValidationHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(http.StatusBadRequest, err)
 		return
 	}
+	auditor, err := resolveAuditProfile(cfg, p, "")
+	if err != nil {
+		writeError(http.StatusBadRequest, err)
+		return
+	}
 	var result ValidationResult
 	if p.ValidationMode == "blind" {
 		reader, err := resolveReaderProfile(cfg, p)
@@ -56,9 +61,9 @@ func candidateValidationHandler(w http.ResponseWriter, r *http.Request) {
 			writeError(http.StatusBadRequest, err)
 			return
 		}
-		result = runBlindValidationContext(r.Context(), reader, p, req.Text, req.Candidate, req.RequiredKeywords)
+		result = runBlindValidationContext(r.Context(), reader, auditor, req.Text, req.Candidate, req.RequiredKeywords)
 	} else {
-		result = runValidationContext(r.Context(), p, req.Text, req.Candidate, req.RequiredKeywords)
+		result = runValidationContext(r.Context(), auditor, req.Text, req.Candidate, req.RequiredKeywords)
 	}
 	if result.Status == "error" {
 		w.WriteHeader(http.StatusBadGateway)
