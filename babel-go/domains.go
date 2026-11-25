@@ -43,10 +43,12 @@ type DomainEntry struct {
 	Symbols        []DomainSymbol  `json:"symbols,omitempty"`
 	Examples       []DomainExample `json:"examples,omitempty"`
 
-	// normTerms / normSymbols 是加载期预计算的小写去重快照，
-	// 供 domainEntryScore 在热路径直接复用，避免每次现场分配 map 与小写化。
-	normTerms   []string
-	normSymbols []string
+	// normTerms / normSymbols / guidanceSnippet 是加载期预计算快照，
+	// 供 domainEntryScore 与 selectDomainGuidance 在热路径直接复用，避免重复序列化。
+	normTerms       []string
+	normSymbols     []string
+	guidanceSnippet string
+	guidanceRunes   int
 }
 
 type DomainPack struct {
@@ -196,13 +198,30 @@ func cloneDomainPack(p DomainPack) DomainPack {
 			entry.Examples = append([]DomainExample(nil), entry.Examples...)
 			entry.normTerms = append([]string(nil), entry.normTerms...)
 			entry.normSymbols = append([]string(nil), entry.normSymbols...)
+			// Cloned packs are mutable; drop precomputed guidance so in-memory edits
+			// cannot serve stale snippets if prepareDomainPack is not re-run.
+			entry.guidanceSnippet = ""
+			entry.guidanceRunes = 0
 			cloned.Entries[i] = entry
 		}
 	}
 	return cloned
 }
 
-// prepareDomainPack 预计算只读快照：规范指纹 + 小写去重词表。
+func formatDomainEntryGuidance(e DomainEntry) (string, int) {
+	// Match-only metadata and internal IDs are not necessary in the prompt.
+	snippet, _ := json.Marshal(struct {
+		Canonical      string          `json:"公开表达"`
+		UseWhen        []string        `json:"适用条件"`
+		Preserve       []string        `json:"原文有则保留"`
+		DoNotMergeWith []string        `json:"不可混淆"`
+		Symbols        []DomainSymbol  `json:"公开符号,omitempty"`
+		Examples       []DomainExample `json:"示例,omitempty"`
+	}{e.Canonical, e.UseWhen, e.Preserve, e.DoNotMergeWith, e.Symbols, e.Examples})
+	return string(snippet), utf8.RuneCount(snippet) + 1
+}
+
+// prepareDomainPack 预计算只读快照：规范指纹 + 小写去重词表 + 指导文本 JSON 片段。
 func prepareDomainPack(p DomainPack) DomainPack {
 	canonical := p
 	canonical.Source, canonical.FilePath = "", ""
@@ -228,6 +247,7 @@ func prepareDomainPack(p DomainPack) DomainPack {
 			for _, symbol := range entry.Symbols {
 				entry.normSymbols = append(entry.normSymbols, strings.ToLower(symbol.Symbol))
 			}
+			entry.guidanceSnippet, entry.guidanceRunes = formatDomainEntryGuidance(entry)
 			entries[i] = entry
 		}
 		p.Entries = entries
@@ -557,6 +577,9 @@ func domainEntryScore(e DomainEntry, text string) int {
 }
 
 func selectDomainGuidance(packs []DomainPack, text string) string {
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
 	type candidate struct {
 		domain string
 		entry  DomainEntry
@@ -591,22 +614,16 @@ func selectDomainGuidance(packs []DomainPack, text string) string {
 		if len(selected) >= maxSelectedDomainEntries {
 			break
 		}
-		// Match-only metadata and internal IDs are not necessary in the prompt.
 		e := candidate.entry
-		snippet, _ := json.Marshal(struct {
-			Canonical      string          `json:"公开表达"`
-			UseWhen        []string        `json:"适用条件"`
-			Preserve       []string        `json:"原文有则保留"`
-			DoNotMergeWith []string        `json:"不可混淆"`
-			Symbols        []DomainSymbol  `json:"公开符号,omitempty"`
-			Examples       []DomainExample `json:"示例,omitempty"`
-		}{e.Canonical, e.UseWhen, e.Preserve, e.DoNotMergeWith, e.Symbols, e.Examples})
-		size := utf8.RuneCount(snippet) + 1
+		snippet, size := e.guidanceSnippet, e.guidanceRunes
+		if snippet == "" {
+			snippet, size = formatDomainEntryGuidance(e)
+		}
 		if total+size > maxDomainGuidanceRunes {
 			continue
 		}
 		total += size
-		selected = append(selected, string(snippet))
+		selected = append(selected, snippet)
 	}
 	return strings.Join(selected, "\n")
 }

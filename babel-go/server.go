@@ -320,7 +320,7 @@ func newServerMux() *http.ServeMux {
 			prof.Model = model
 		}
 
-		json.NewEncoder(w).Encode(probeProfile(prof))
+		json.NewEncoder(w).Encode(probeProfileContext(r.Context(), prof))
 	})
 
 	mux.HandleFunc("/api/compile", func(w http.ResponseWriter, r *http.Request) {
@@ -368,9 +368,7 @@ func newServerMux() *http.ServeMux {
 	mux.HandleFunc("/api/logs", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == "DELETE" {
-			logsMutex.Lock()
-			proxyLogs = nil
-			logsMutex.Unlock()
+			clearProxyLogs()
 			json.NewEncoder(w).Encode(map[string]string{"status": "cleared"})
 			return
 		}

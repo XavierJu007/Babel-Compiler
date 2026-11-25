@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 var proxyLogSequence atomic.Uint64
@@ -46,6 +47,7 @@ type proxyLogEventKind int
 const (
 	proxyLogEventAppend proxyLogEventKind = iota
 	proxyLogEventUsage
+	proxyLogEventClear
 	proxyLogEventBarrier
 )
 
@@ -75,6 +77,13 @@ func startAsyncLogRedaction() {
 					insertProxyLog(redactProxyLog(ev.entry))
 				case proxyLogEventUsage:
 					applyUpstreamUsageSync(ev.logIDs, ev.estOrigTotal, ev.estCompTotal, ev.realPromptTokens)
+				case proxyLogEventClear:
+					logsMutex.Lock()
+					proxyLogs = nil
+					logsMutex.Unlock()
+					if ev.done != nil {
+						close(ev.done)
+					}
 				case proxyLogEventBarrier:
 					if ev.done != nil {
 						close(ev.done)
@@ -84,6 +93,18 @@ func startAsyncLogRedaction() {
 		}()
 	})
 	logRedactAsync.Store(true)
+}
+
+func clearProxyLogs() {
+	if logRedactAsync.Load() && logRedactQueue != nil {
+		done := make(chan struct{})
+		logRedactQueue <- proxyLogEvent{kind: proxyLogEventClear, done: done}
+		<-done
+		return
+	}
+	logsMutex.Lock()
+	proxyLogs = nil
+	logsMutex.Unlock()
 }
 
 func drainAsyncLogRedaction(timeout time.Duration) {
@@ -268,7 +289,7 @@ func translateMessageBlockContext(ctx context.Context, protocol, role, text stri
 	if ctx.Err() != nil {
 		return text, "", origTok, origTok
 	}
-	if len([]rune(strings.TrimSpace(text))) < proxyMinRunes {
+	if utf8.RuneCountInString(strings.TrimSpace(text)) < proxyMinRunes {
 		return text, "", origTok, origTok
 	}
 	// 纯 JSON 或整体代码围栏对模型没有压缩价值，本地直接跳过。
@@ -277,10 +298,12 @@ func translateMessageBlockContext(ctx context.Context, protocol, role, text stri
 	}
 
 	var activeKeywords []string
-	textLower := strings.ToLower(text)
-	for _, kw := range reqKeywords {
-		if kw != "" && strings.Contains(textLower, strings.ToLower(kw)) {
-			activeKeywords = append(activeKeywords, kw)
+	if len(reqKeywords) > 0 {
+		textLower := strings.ToLower(text)
+		for _, kw := range reqKeywords {
+			if kw != "" && strings.Contains(textLower, strings.ToLower(kw)) {
+				activeKeywords = append(activeKeywords, kw)
+			}
 		}
 	}
 
@@ -452,7 +475,7 @@ func cacheKeyHasCandidate(cacheKey string) bool {
 // proxyCachedAdoption 是纯内存快路径：生成缓存命中、且同一策略指纹下的校验
 // 结论为 passed 时，直接采用候选，不占信号量、不碰熔断器，也不上报成功探针。
 func proxyCachedAdoption(protocol, role, text string, p Profile, dialect Dialect, domains, keywords []string, cacheKey string) (string, string, int, bool) {
-	if proxyValidationCacheTTL <= 0 || !cacheKeyHasCandidate(cacheKey) {
+	if proxyValidationCacheTTL <= 0 {
 		return "", "", 0, false
 	}
 	cacheMutex.RLock()
@@ -490,6 +513,15 @@ func proxyCachedAdoption(protocol, role, text string, p Profile, dialect Dialect
 	after, err := measureTokens(entry.Compiled, p.TokenEncoding)
 	if err != nil || after.Tokens >= before.Tokens {
 		return "", "", 0, false
+	}
+	now := time.Now().Unix()
+	if now-entry.LastAccess >= 30 {
+		cacheMutex.Lock()
+		if current, exists := diskCache[cacheKey]; exists && current.Compiled != "" {
+			current.LastAccess = now
+			diskCache[cacheKey] = current
+		}
+		cacheMutex.Unlock()
 	}
 	compTok := estimateTokensBPE(entry.Compiled)
 	label := "估算"
@@ -533,7 +565,7 @@ type proxyBlockResult struct {
 
 // appendProxyTextBlock 只把够长的文本加入编译队列；短文本按原文计入统计。
 func appendProxyTextBlock(blocks *[]proxyTextBlock, role, text string, reqKeywords []string, apply func(string), estOrig, estComp *int) {
-	if len([]rune(strings.TrimSpace(text))) < proxyMinRunes {
+	if utf8.RuneCountInString(strings.TrimSpace(text)) < proxyMinRunes {
 		t := estimateTokensBPE(text)
 		*estOrig += t
 		*estComp += t
@@ -1096,7 +1128,9 @@ func handleStructuredProxy(w http.ResponseWriter, r *http.Request, adapter proxy
 	}
 
 	flusher, canFlush := w.(http.Flusher)
-	buf := make([]byte, 4096)
+	bufPtr := proxyStreamBufPool.Get().(*[]byte)
+	defer proxyStreamBufPool.Put(bufPtr)
+	buf := *bufPtr
 	var sampler *sseUsageSampler
 	if !hasEncodedBody {
 		sampler = adapter.newSSESampler()

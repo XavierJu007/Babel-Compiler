@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -282,6 +283,10 @@ type ProbeResult struct {
 // probeProfile 向配置的请求 URL 发送一次最小 OpenAI 兼容请求。
 // 与 callLLM 共享精确地址规则；试连成功只说明本次最小请求成功。
 func probeProfile(p Profile) ProbeResult {
+	return probeProfileContext(context.Background(), p)
+}
+
+func probeProfileContext(ctx context.Context, p Profile) ProbeResult {
 	p = effectiveCompilerProfile(p)
 	model := strings.TrimSpace(p.Model)
 	res := ProbeResult{Model: model, TargetURL: compilerRequestURL(p.BaseURL)}
@@ -304,7 +309,7 @@ func probeProfile(p Profile) ProbeResult {
 		return res
 	}
 
-	req, err := http.NewRequest("POST", res.TargetURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", res.TargetURL, bytes.NewReader(body))
 	if err != nil {
 		res.Detail = "目标 URL 无效: " + err.Error()
 		res.Hint = "填写服务商实际接收 POST 的 http(s) 请求 URL；只填到 /v1 时自动补 /chat/completions"

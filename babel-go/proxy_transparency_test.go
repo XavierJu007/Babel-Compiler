@@ -1761,3 +1761,108 @@ func TestOpenAIResponsesSkipCacheControlProtectsInputPrefix(t *testing.T) {
 		t.Fatalf("uncached trailing input was not compressed: got %q", gotUncached)
 	}
 }
+
+func TestProxyCachedAdoptionRefreshesDiskCacheLRU(t *testing.T) {
+	isolateDomainIntegration(t)
+	isolateCompilerState(t)
+	isolateProxyState(t)
+	resetProxySpeedVars(t)
+	proxyValidationCacheTTL = 10 * time.Minute
+
+	const source = "Please review the supplied document and summarize every operational requirement, condition and exception clearly."
+	const shorter = "Review doc; summarize requirements, conditions, exceptions."
+	p := Profile{Name: "fixture", APIKey: "k", BaseURL: "https://compiler.example/v1/chat/completions", Model: "m"}
+	dialect, err := composeDialect(defaultDialectName, nil, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ck := makeCacheKey(dialect, p, source)
+	oldAccess := time.Now().Unix() - 120
+	cacheMutex.Lock()
+	diskCache[ck] = CacheEntry{Compiled: shorter, Model: p.Model, Mode: defaultDialectName, LastAccess: oldAccess}
+	cacheMutex.Unlock()
+
+	vk := makeValidationCacheKey(CompileReq{Text: source}, p.ValidationMode, p, p, shorter)
+	validationCache.Put(vk, newValidation("passed", "llm_compare"), time.Minute)
+
+	out, logID, _, hit := proxyCachedAdoption("openai", "user", source, p, dialect, nil, nil, ck)
+	if !hit || out != shorter || logID == "" {
+		t.Fatalf("expected fast-path cached adoption hit; got hit=%t out=%q logID=%q", hit, out, logID)
+	}
+
+	cacheMutex.RLock()
+	updatedAccess := diskCache[ck].LastAccess
+	cacheMutex.RUnlock()
+	if updatedAccess <= oldAccess {
+		t.Fatalf("proxyCachedAdoption did not refresh diskCache LastAccess: old=%d updated=%d", oldAccess, updatedAccess)
+	}
+}
+
+func TestClearProxyLogsOrderedAfterAsyncAppend(t *testing.T) {
+	isolateProxyState(t)
+	oldAsync := logRedactAsync.Load()
+	startAsyncLogRedaction()
+	t.Cleanup(func() {
+		drainAsyncLogRedaction(2 * time.Second)
+		logRedactAsync.Store(oldAsync)
+	})
+
+	for i := 0; i < 20; i++ {
+		appendProxyLog(ProxyLog{ID: "pre-clear-" + string(rune('a'+i)), Original: "sk-abcdefghijklmnopqrstuv", Compiled: "ok"})
+	}
+	clearProxyLogs()
+	drainAsyncLogRedaction(2 * time.Second)
+
+	logsMutex.RLock()
+	count := len(proxyLogs)
+	logsMutex.RUnlock()
+	if count != 0 {
+		t.Fatalf("stale async log entries survived clearProxyLogs: count=%d", count)
+	}
+}
+
+func TestProbeProfileContextRespectsCancellation(t *testing.T) {
+	started := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		select {
+		case <-time.After(3 * time.Second):
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	begin := time.Now()
+	res := probeProfileContext(ctx, Profile{Name: "slow", APIKey: "k", BaseURL: srv.URL, Model: "m"})
+	elapsed := time.Since(begin)
+	if res.OK {
+		t.Fatal("expected canceled probeProfileContext to fail")
+	}
+	if elapsed > time.Second {
+		t.Fatalf("probeProfileContext ignored context deadline: elapsed=%v", elapsed)
+	}
+}
+
+func TestSelectDomainGuidanceEmptyTextAndPrecomputedSnippet(t *testing.T) {
+	packs, err := resolveDomainPacks(defaultDialectName, []string{"api-contract"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := selectDomainGuidance(packs, "   "); got != "" {
+		t.Fatalf("expected empty guidance for blank text, got %q", got)
+	}
+	got := selectDomainGuidance(packs, "POST /orders 必须携带 Idempotency-Key")
+	if got == "" {
+		t.Fatal("expected non-empty guidance for matching api-contract text")
+	}
+	for _, p := range packs {
+		for _, e := range p.Entries {
+			if e.guidanceSnippet == "" || e.guidanceRunes <= 0 {
+				t.Fatalf("domain entry %s missing precomputed guidance snippet", e.ID)
+			}
+		}
+	}
+}

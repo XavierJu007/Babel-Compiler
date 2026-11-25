@@ -11,8 +11,16 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 )
+
+var proxyStreamBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 4096)
+		return &b
+	},
+}
 
 type proxyRuntimeMetrics struct {
 	requestsTotal      atomic.Uint64
@@ -464,7 +472,9 @@ func streamPassthroughBodyWithStatus(w http.ResponseWriter, r *http.Request, pro
 
 	if isEventStreamResponse(resp) {
 		flusher, canFlush := w.(http.Flusher)
-		buf := make([]byte, 4096)
+		bufPtr := proxyStreamBufPool.Get().(*[]byte)
+		defer proxyStreamBufPool.Put(bufPtr)
+		buf := *bufPtr
 		for {
 			n, readErr := resp.Body.Read(buf)
 			if n > 0 {
