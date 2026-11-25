@@ -258,7 +258,8 @@ func isBabelControlHeader(key string) bool {
 // copyProxyRequestHeaders implements blacklist-based transparent forwarding:
 // client headers (OpenAI-Organization, OpenAI-Beta, User-Agent, Accept,
 // traceparent, custom routing headers, etc.) are preserved while hop-by-hop
-// headers, framing/encoding headers, and Babel control headers are stripped.
+// headers, framing/encoding headers, local browser Origin/Sec-Fetch-* headers,
+// and Babel control headers are stripped.
 func copyProxyRequestHeaders(dst, src http.Header) {
 	connTokens := connectionHeaderTokens(src)
 	for k, vals := range src {
@@ -266,7 +267,7 @@ func copyProxyRequestHeaders(dst, src http.Header) {
 		if isHopByHopHeader(ck, connTokens) || isBabelControlHeader(ck) {
 			continue
 		}
-		if ck == "Host" || ck == "Content-Length" || ck == "Accept-Encoding" {
+		if ck == "Host" || ck == "Content-Length" || ck == "Accept-Encoding" || ck == "Origin" || strings.HasPrefix(ck, "Sec-Fetch-") {
 			continue
 		}
 		for _, v := range vals {
@@ -377,13 +378,20 @@ func proxyMaxCompileBodyLimit() int64 {
 }
 
 // buildV1PassthroughURL maps an arbitrary /v1/... request path onto upstreamBase
-// without duplicating /v1 when the configured base already ends with /v1.
+// without duplicating /v1 or appending onto a configured chat/messages endpoint.
 func buildV1PassthroughURL(upstreamBase, reqPath, rawQuery string) (string, error) {
 	u, err := url.Parse(strings.TrimSpace(upstreamBase))
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return "", fmt.Errorf("上游地址不是有效的 HTTP(S) URL")
 	}
 	basePath := strings.TrimRight(u.Path, "/")
+	lowerBase := strings.ToLower(basePath)
+	for _, suffix := range []string{"/chat/completions", "/responses", "/messages"} {
+		if strings.HasSuffix(lowerBase, suffix) {
+			basePath = basePath[:len(basePath)-len(suffix)]
+			break
+		}
+	}
 	relPath := reqPath
 	if isAPIBasePath(basePath) && (strings.HasPrefix(strings.ToLower(relPath), "/v1/") || strings.EqualFold(relPath, "/v1")) {
 		relPath = relPath[3:]

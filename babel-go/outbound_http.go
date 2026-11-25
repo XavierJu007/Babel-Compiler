@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -106,13 +107,20 @@ func newSecureOutboundTransportWithHeaderTimeout(responseHeaderTimeout time.Dura
 	}}
 }
 
+func proxyUpstreamHeaderTimeout() time.Duration {
+	if raw, ok := os.LookupEnv("BABEL_PROXY_UPSTREAM_HEADER_TIMEOUT"); ok {
+		return parseProxyDuration(raw)
+	}
+	return 300 * time.Second
+}
+
 // Reuse connections while keeping our security policy independent of mutable
 // package-wide http.DefaultTransport settings. There is no insecure TLS mode.
 var sharedOutboundTransport = newSecureOutboundTransport()
 
 // Proxy forwarding uses ResponseHeaderTimeout instead of http.Client.Timeout so
 // long-running SSE streams (e.g. reasoning models) are never cut off mid-stream.
-var sharedProxyOutboundTransport = newSecureOutboundTransportWithHeaderTimeout(300 * time.Second)
+var sharedProxyOutboundTransport = newSecureOutboundTransportWithHeaderTimeout(proxyUpstreamHeaderTimeout())
 
 // A configured endpoint is the complete destination. Replaying prompts or keys
 // at a provider-supplied Location crosses that boundary, even if Go strips some

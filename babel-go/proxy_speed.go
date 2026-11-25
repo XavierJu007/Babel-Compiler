@@ -307,7 +307,7 @@ func runShadowWarmup(job shadowWarmupJob) {
 	if compilerCB.IsOpen() {
 		return
 	}
-	allowed, probeID := compilerCB.Acquire()
+	allowed, _ := compilerCB.Acquire()
 	if !allowed {
 		return
 	}
@@ -331,7 +331,9 @@ func runShadowWarmup(job shadowWarmupJob) {
 		preparedCacheKey:      key,
 	})
 	if ctx.Err() != nil {
-		compilerCB.ReleaseProbe(probeID)
+		// shadowWarmupTimeout is an internal compiler timeout, not a caller
+		// cancellation. Record failure so a stalled compiler still trips the breaker.
+		compilerCB.RecordFailure()
 		return
 	}
 	storeNegative := func() {
@@ -346,7 +348,7 @@ func runShadowWarmup(job shadowWarmupJob) {
 		case errors.As(err, &measurementErr):
 			// 计数不可用与上游健康无关。
 			compilerCB.RecordSuccess()
-		case errors.As(err, &validationErr):
+		case errors.As(err, &validationErr) && validationErr.Validation.Status == "failed":
 			// 模型可达但候选未通过检查：不计失败，只有确定性低收益才写负缓存。
 			compilerCB.RecordSuccess()
 			storeNegative()

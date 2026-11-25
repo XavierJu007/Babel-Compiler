@@ -513,5 +513,7 @@ func startServer(preferredAddr string, autoOpen bool) {
 		<-errCh
 		drainShadowWarmup(3 * time.Second)
 		drainAsyncLogRedaction(2 * time.Second)
+		sharedOutboundTransport.CloseIdleConnections()
+		sharedProxyOutboundTransport.CloseIdleConnections()
 	}
 }

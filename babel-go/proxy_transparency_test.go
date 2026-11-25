@@ -1482,3 +1482,282 @@ func TestDiskCacheEvictsByByteLimitLRU(t *testing.T) {
 		t.Fatalf("LRU byte eviction kept wrong entries: count=%d hasOldest=%t hasNewest=%t", count, hasOldest, hasNewest)
 	}
 }
+
+func TestProxyCORSOverwritesUpstreamDuplicateACAOAndStripsOrigin(t *testing.T) {
+	isolateDomainIntegration(t)
+	isolateProxyState(t)
+	t.Setenv("BABEL_PROXY_ALLOWED_ORIGINS", "http://localhost:3000")
+
+	var upstreamHeaders http.Header
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHeaders = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		w.Header().Set("Vary", "Origin")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+	if err := writeConfigFile(Config{ActiveProfile: "fixture", Profiles: map[string]Profile{
+		"fixture": {Name: "fixture", APIKey: "k", BaseURL: upstream.URL, UpstreamURL: upstream.URL, Model: "m"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8080/v1/messages", strings.NewReader(`{"model":"claude","messages":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", "anth-key")
+	req.Header.Set("Origin", "http://localhost:3000")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("HTTP-Referer", "https://myapp.example")
+	req.Header.Set("X-Title", "MyLocalApp")
+	rec := httptest.NewRecorder()
+	guardedLocalHandler(t).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("CORS proxy request failed: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Values("Access-Control-Allow-Origin"); len(got) != 1 || got[0] != "http://localhost:3000" {
+		t.Fatalf("Access-Control-Allow-Origin duplicated or wrong: %#v", got)
+	}
+	if rec.Header().Get("Access-Control-Allow-Credentials") != "" {
+		t.Fatalf("Access-Control-Allow-Credentials should be stripped: %q", rec.Header().Get("Access-Control-Allow-Credentials"))
+	}
+	varyOriginCount := 0
+	for _, v := range rec.Header().Values("Vary") {
+		for _, part := range strings.Split(v, ",") {
+			if strings.EqualFold(strings.TrimSpace(part), "Origin") {
+				varyOriginCount++
+			}
+		}
+	}
+	if varyOriginCount != 1 {
+		t.Fatalf("expected exactly 1 Vary: Origin token, got %d (%#v)", varyOriginCount, rec.Header().Values("Vary"))
+	}
+	if upstreamHeaders.Get("Origin") != "" || upstreamHeaders.Get("Sec-Fetch-Site") != "" || upstreamHeaders.Get("Sec-Fetch-Mode") != "" {
+		t.Fatalf("upstream leaked browser Origin/Sec-Fetch headers: %#v", upstreamHeaders)
+	}
+	if upstreamHeaders.Get("HTTP-Referer") != "https://myapp.example" || upstreamHeaders.Get("X-Title") != "MyLocalApp" {
+		t.Fatalf("upstream lost HTTP-Referer/X-Title: %#v", upstreamHeaders)
+	}
+}
+
+func TestBuildV1PassthroughURLStripsEndpointSuffix(t *testing.T) {
+	for _, tc := range []struct {
+		base, reqPath, want string
+	}{
+		{"https://api.openai.com/v1/chat/completions", "/v1/models", "https://api.openai.com/v1/models"},
+		{"https://api.anthropic.com/v1/messages", "/v1/messages/count_tokens", "https://api.anthropic.com/v1/messages/count_tokens"},
+		{"https://api.openai.com/v1/responses", "/v1/embeddings", "https://api.openai.com/v1/embeddings"},
+		{"https://gateway.example/openai/v1/chat/completions", "/v1/models", "https://gateway.example/openai/v1/models"},
+	} {
+		got, err := buildV1PassthroughURL(tc.base, tc.reqPath, "")
+		if err != nil {
+			t.Fatalf("buildV1PassthroughURL(%q, %q) unexpected error: %v", tc.base, tc.reqPath, err)
+		}
+		if got != tc.want {
+			t.Errorf("buildV1PassthroughURL(%q, %q) = %q; want %q", tc.base, tc.reqPath, got, tc.want)
+		}
+	}
+}
+
+func TestProxyCompileBlocksDeduplicatesIdenticalBlocksInProductionMode(t *testing.T) {
+	isolateDomainIntegration(t)
+	isolateCompilerState(t)
+	isolateProxyState(t)
+	resetProxySpeedVars(t)
+
+	// 1. With validation cache enabled, 4 identical tool descriptions must generate once and audit once.
+	proxyValidationCacheTTL = 10 * time.Minute
+	var genCalls, auditCalls atomic.Int32
+	const desc = "Inspect the supplied tenant identifier and enforce strict permission verification across all workspace resources."
+	const descShort = "Inspect tenant ID; enforce strict workspace permission checks."
+	compiler := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req compilerRequestBody
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if len(req.Messages) > 0 && req.Messages[0].Content == verifyGatePrompt {
+			auditCalls.Add(1)
+			writeModelContent(w, `{"pass":true,"missing":[]}`)
+			return
+		}
+		genCalls.Add(1)
+		writeModelContent(w, descShort)
+	}))
+	defer compiler.Close()
+	if err := writeConfigFile(Config{ActiveProfile: "fixture", Profiles: map[string]Profile{
+		"fixture": {Name: "fixture", APIKey: "k", BaseURL: compiler.URL, Model: "m"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	profile := getActiveProfile(loadConfig(), "fixture")
+	dialect := getDialect(defaultDialectName)
+
+	outputs := make([]string, 4)
+	var blocks []proxyTextBlock
+	var estOrig, estComp int
+	for i := 0; i < 4; i++ {
+		idx := i
+		appendProxyTextBlock(&blocks, "tool:t"+string(rune('0'+i)), desc, nil, func(v string) { outputs[idx] = v }, &estOrig, &estComp)
+	}
+	var logIDs []string
+	mutated := compileProxyBlocks(context.Background(), "openai", blocks, profile, dialect, nil, &logIDs, &estOrig, &estComp)
+	if !mutated || genCalls.Load() != 1 || auditCalls.Load() != 1 || len(logIDs) != 1 {
+		t.Fatalf("in-request dedup failed: mutated=%t gen=%d audit=%d logIDs=%d", mutated, genCalls.Load(), auditCalls.Load(), len(logIDs))
+	}
+	for i, out := range outputs {
+		if out != descShort {
+			t.Fatalf("slot %d was not populated with deduped result: %q", i, out)
+		}
+	}
+
+	// 2. With async warmup and user min hits = 2, 2 identical user blocks in ONE request must count as 1 hit.
+	resetProxySpeedVars(t)
+	isolateProxyState(t)
+	proxyAsyncWarmup = true
+	proxyWarmupUserMinHits = 2
+	t.Cleanup(func() { drainShadowWarmup(2 * time.Second) })
+	genCalls.Store(0)
+
+	const userText = "Please summarize all operational requirements, boundary conditions and approval rules in this document."
+	var userBlocks []proxyTextBlock
+	userOuts := make([]string, 2)
+	estOrig, estComp = 0, 0
+	for i := 0; i < 2; i++ {
+		idx := i
+		appendProxyTextBlock(&userBlocks, "user", userText, nil, func(v string) { userOuts[idx] = v }, &estOrig, &estComp)
+	}
+	logIDs = nil
+	compileProxyBlocks(context.Background(), "openai", userBlocks, profile, dialect, nil, &logIDs, &estOrig, &estComp)
+	drainShadowWarmup(2 * time.Second)
+	if genCalls.Load() != 0 {
+		t.Fatalf("2 identical user blocks in 1 request bypassed warmup admission threshold: genCalls=%d", genCalls.Load())
+	}
+}
+
+func TestShadowWarmupAuditErrorAndTimeoutRecordFailure(t *testing.T) {
+	isolateDomainIntegration(t)
+	isolateCompilerState(t)
+	isolateProxyState(t)
+	resetProxySpeedVars(t)
+
+	// Auditor returns 502 (ValidationError with Status=="error").
+	// Circuit breaker must record failure, NOT reset to CLOSED.
+	compilerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req compilerRequestBody
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if len(req.Messages) > 0 && req.Messages[0].Content == verifyGatePrompt {
+			http.Error(w, "audit unavailable", http.StatusBadGateway)
+			return
+		}
+		writeModelContent(w, "短")
+	}))
+	defer compilerSrv.Close()
+
+	if err := writeConfigFile(Config{ActiveProfile: "fixture", Profiles: map[string]Profile{
+		"fixture": {Name: "fixture", APIKey: "k", BaseURL: compilerSrv.URL, Model: "m"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	profile := getActiveProfile(loadConfig(), "fixture")
+	dialect := getDialect(defaultDialectName)
+
+	// Start with 1 existing failure (threshold=3). After audit 502 error in warmup,
+	// failures must increase to 2 (NOT reset to 0).
+	compilerCB = newCircuitBreaker(3, time.Minute)
+	compilerCB.RecordFailure()
+	shadowWarmupPending.Add(1)
+	runShadowWarmup(shadowWarmupJob{
+		protocol: "openai",
+		role:     "system",
+		text:     "请严格执行所有的审批流程，确保在满足条件时留下完整的审计追踪信息。",
+		profile:  profile,
+		dialect:  dialect,
+	})
+	status := compilerCB.Status()
+	if failures, _ := status["failures"].(int); failures != 2 {
+		t.Fatalf("shadow warmup audit 502 did not increment circuit breaker failures: status=%#v", status)
+	}
+}
+
+func TestOpenAIResponsesSkipCacheControlProtectsInputPrefix(t *testing.T) {
+	isolateDomainIntegration(t)
+	isolateProxyState(t)
+	resetProxySpeedVars(t)
+
+	const cachedInput = "Cached prefix input item marked with cache_control that must remain completely untouched for prompt caching."
+	const uncachedInput = "Uncached trailing user input asking to summarize every operational requirement, condition and exception."
+	const uncachedShort = "Summarize all operational requirements, conditions, exceptions."
+
+	compiler := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req compilerRequestBody
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if len(req.Messages) > 0 && req.Messages[0].Content == verifyGatePrompt {
+			writeModelContent(w, `{"pass":true,"missing":[]}`)
+			return
+		}
+		orig := decodeCompilerInput(t, req.Messages[1].Content).Original
+		if orig == uncachedInput {
+			writeModelContent(w, uncachedShort)
+			return
+		}
+		t.Errorf("compiler received cache_control-protected Responses input: %q", orig)
+		writeModelContent(w, orig)
+	}))
+	defer compiler.Close()
+
+	var forwarded map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		forwarded, _ = decodeProxyPayload(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","usage":{"input_tokens":42}}`))
+	}))
+	defer upstream.Close()
+
+	if err := writeConfigFile(Config{ActiveProfile: "fixture", Profiles: map[string]Profile{
+		"fixture": {Name: "fixture", APIKey: "k", BaseURL: compiler.URL, UpstreamURL: upstream.URL, Model: "m"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	payload := map[string]any{
+		"model": "gpt-5",
+		"input": []any{
+			map[string]any{
+				"type": "message",
+				"role": "user",
+				"content": []any{
+					map[string]any{"type": "input_text", "text": cachedInput, "cache_control": map[string]any{"type": "ephemeral"}},
+				},
+			},
+			map[string]any{
+				"type": "message",
+				"role": "user",
+				"content": []any{
+					map[string]any{"type": "input_text", "text": uncachedInput},
+				},
+			},
+		},
+	}
+	raw, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer consumer-key")
+	req.Header.Set("X-Babel-Skip-Cache-Control", "true")
+	rec := httptest.NewRecorder()
+	newServerMux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/v1/responses failed: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	inputs := forwarded["input"].([]any)
+	gotCached := inputs[0].(map[string]any)["content"].([]any)[0].(map[string]any)["text"]
+	gotUncached := inputs[1].(map[string]any)["content"].([]any)[0].(map[string]any)["text"]
+	if gotCached != cachedInput {
+		t.Fatalf("cached input prefix was mutated: got %q", gotCached)
+	}
+	if gotUncached != uncachedShort {
+		t.Fatalf("uncached trailing input was not compressed: got %q", gotUncached)
+	}
+}

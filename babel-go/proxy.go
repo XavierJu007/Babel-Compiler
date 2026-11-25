@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -682,44 +683,100 @@ func collectToolsBlocks(tools []any, blocks *[]proxyTextBlock, estOrig, estComp 
 	collectToolsBlocksWithOptions(tools, false, blocks, estOrig, estComp)
 }
 
-// compileProxyBlocks 把一次请求里的文本块做有界并行编译，然后按原顺序写回。
-// 写回与统计累加都发生在 wg.Wait() 之后，保证 payload 无并发写、结果可复现。
-func compileProxyBlocks(ctx context.Context, protocol string, blocks []proxyTextBlock, p Profile, dialect Dialect, domains []string, logIDs *[]string, estOrig, estComp *int) bool {
-	if len(blocks) == 0 {
-		return false
-	}
+func runProxyBlockTranslations(ctx context.Context, protocol string, blocks []proxyTextBlock, p Profile, dialect Dialect, domains []string) []proxyBlockResult {
 	results := make([]proxyBlockResult, len(blocks))
 	if len(blocks) == 1 {
 		b := blocks[0]
 		comp, id, oTok, cTok := translateMessageBlockContext(ctx, protocol, b.role, b.text, p, dialect, b.reqKeywords, domains)
 		results[0] = proxyBlockResult{compiled: comp, logID: id, origTok: oTok, compTok: cTok}
-	} else {
-		workers := proxyBlockConcurrency
-		if workers <= 0 {
-			workers = 1
-		}
-		if workers > len(blocks) {
-			workers = len(blocks)
-		}
-		var nextIdx atomic.Int64
-		var wg sync.WaitGroup
-		wg.Add(workers)
-		for w := 0; w < workers; w++ {
-			go func() {
-				defer wg.Done()
-				for {
-					idx := int(nextIdx.Add(1) - 1)
-					if idx >= len(blocks) {
-						return
-					}
-					b := blocks[idx]
-					comp, id, oTok, cTok := translateMessageBlockContext(ctx, protocol, b.role, b.text, p, dialect, b.reqKeywords, domains)
-					results[idx] = proxyBlockResult{compiled: comp, logID: id, origTok: oTok, compTok: cTok}
-				}
-			}()
-		}
-		wg.Wait()
+		return results
 	}
+	workers := proxyBlockConcurrency
+	if workers <= 0 {
+		workers = 1
+	}
+	if workers > len(blocks) {
+		workers = len(blocks)
+	}
+	var nextIdx atomic.Int64
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		go func() {
+			defer wg.Done()
+			for {
+				idx := int(nextIdx.Add(1) - 1)
+				if idx >= len(blocks) {
+					return
+				}
+				b := blocks[idx]
+				comp, id, oTok, cTok := translateMessageBlockContext(ctx, protocol, b.role, b.text, p, dialect, b.reqKeywords, domains)
+				results[idx] = proxyBlockResult{compiled: comp, logID: id, origTok: oTok, compTok: cTok}
+			}
+		}()
+	}
+	wg.Wait()
+	return results
+}
+
+// compileProxyBlocks 把一次请求里的文本块做有界并行编译，然后按原顺序写回。
+// 启用代理缓存或预热时先对相同文本做请求内去重，避免重复校验与绕过预热频次阈值。
+// 写回与统计累加都发生在 wg.Wait() 之后，保证 payload 无并发写、结果可复现。
+func compileProxyBlocks(ctx context.Context, protocol string, blocks []proxyTextBlock, p Profile, dialect Dialect, domains []string, logIDs *[]string, estOrig, estComp *int) bool {
+	if len(blocks) == 0 {
+		return false
+	}
+	if (proxyValidationCacheTTL > 0 || proxyAsyncWarmup) && len(blocks) > 1 {
+		type blockGroup struct {
+			rep     proxyTextBlock
+			indices []int
+		}
+		var groups []blockGroup
+		groupIdxByKey := make(map[string]int, len(blocks))
+		for i, b := range blocks {
+			var kwKey string
+			if len(b.reqKeywords) > 0 {
+				kws := append([]string(nil), b.reqKeywords...)
+				sort.Strings(kws)
+				kwKey = strings.Join(kws, "\x00")
+			}
+			key := b.text + "\x00" + kwKey
+			if gIdx, exists := groupIdxByKey[key]; exists {
+				if groups[gIdx].rep.role == "user" && b.role != "user" {
+					groups[gIdx].rep.role = b.role
+				}
+				groups[gIdx].indices = append(groups[gIdx].indices, i)
+			} else {
+				groupIdxByKey[key] = len(groups)
+				groups = append(groups, blockGroup{rep: b, indices: []int{i}})
+			}
+		}
+		if len(groups) < len(blocks) {
+			reps := make([]proxyTextBlock, len(groups))
+			for i, g := range groups {
+				reps[i] = g.rep
+			}
+			repResults := runProxyBlockTranslations(ctx, protocol, reps, p, dialect, domains)
+			mutated := false
+			for gIdx, g := range groups {
+				r := repResults[gIdx]
+				for _, idx := range g.indices {
+					b := blocks[idx]
+					if r.compiled != b.text {
+						mutated = true
+					}
+					b.apply(r.compiled)
+					*estOrig += r.origTok
+					*estComp += r.compTok
+				}
+				if r.logID != "" {
+					*logIDs = append(*logIDs, r.logID)
+				}
+			}
+			return mutated
+		}
+	}
+	results := runProxyBlockTranslations(ctx, protocol, blocks, p, dialect, domains)
 	mutated := false
 	for i, b := range blocks {
 		r := results[i]
@@ -1016,8 +1073,15 @@ func handleStructuredProxy(w http.ResponseWriter, r *http.Request, adapter proxy
 	setDiagnosticHeader(w.Header(), "X-Babel-Compile-Ms", fmt.Sprintf("%d", compileElapsedMS))
 	w.WriteHeader(resp.StatusCode)
 
+	hasEncodedBody := strings.TrimSpace(resp.Header.Get("Content-Encoding")) != ""
 	useSSE := isEventStreamResponse(resp) || (isStream && resp.StatusCode >= 200 && resp.StatusCode < 300)
 	if !useSSE {
+		if hasEncodedBody {
+			if _, copyErr := io.Copy(w, resp.Body); copyErr != nil && r.Context().Err() == nil {
+				panic(http.ErrAbortHandler)
+			}
+			return
+		}
 		respBytes, copyErr := forwardProxyResponseBody(w, resp.Body)
 		if copyErr != nil {
 			if r.Context().Err() == nil {
@@ -1033,7 +1097,10 @@ func handleStructuredProxy(w http.ResponseWriter, r *http.Request, adapter proxy
 
 	flusher, canFlush := w.(http.Flusher)
 	buf := make([]byte, 4096)
-	sampler := adapter.newSSESampler()
+	var sampler *sseUsageSampler
+	if !hasEncodedBody {
+		sampler = adapter.newSSESampler()
+	}
 	for {
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
@@ -1044,7 +1111,9 @@ func handleStructuredProxy(w http.ResponseWriter, r *http.Request, adapter proxy
 			if canFlush {
 				flusher.Flush()
 			}
-			sampler.Write(chunk)
+			if sampler != nil {
+				sampler.Write(chunk)
+			}
 		}
 		if readErr != nil {
 			if !errors.Is(readErr, io.EOF) && r.Context().Err() == nil {
@@ -1054,8 +1123,10 @@ func handleStructuredProxy(w http.ResponseWriter, r *http.Request, adapter proxy
 		}
 	}
 
-	if realTokens := sampler.Tokens(); realTokens > 0 {
-		applyUpstreamUsage(logIDs, estOrigTotal, estCompTotal, realTokens)
+	if sampler != nil {
+		if realTokens := sampler.Tokens(); realTokens > 0 {
+			applyUpstreamUsage(logIDs, estOrigTotal, estCompTotal, realTokens)
+		}
 	}
 }
 
@@ -1349,7 +1420,15 @@ var openAIResponsesProxyAdapter = proxyProtocolAdapter{
 			target := payload
 			appendProxyTextBlock(blocks, "user", inputVal, reqKeywords, func(v string) { target["input"] = v }, estOrig, estComp)
 		case []any:
-			for _, item := range inputVal {
+			lastCachedInputIdx := -1
+			if opts.skipCacheControl {
+				for i, item := range inputVal {
+					if itemMap, ok := item.(map[string]any); ok && messageHasCacheControl(itemMap) {
+						lastCachedInputIdx = i
+					}
+				}
+			}
+			for i, item := range inputVal {
 				itemMap, ok := item.(map[string]any)
 				if !ok {
 					continue
@@ -1370,10 +1449,24 @@ var openAIResponsesProxyAdapter = proxyProtocolAdapter{
 				}
 				switch content := itemMap["content"].(type) {
 				case string:
+					if i <= lastCachedInputIdx {
+						t := estimateTokensBPE(content)
+						*estOrig += t
+						*estComp += t
+						continue
+					}
 					target := itemMap
 					appendProxyTextBlock(blocks, role, content, reqKeywords, func(v string) { target["content"] = v }, estOrig, estComp)
 				case []any:
-					for _, part := range content {
+					lastCachedPartIdx := -1
+					if opts.skipCacheControl {
+						for j, part := range content {
+							if partMap, ok := part.(map[string]any); ok && hasCacheControl(partMap) {
+								lastCachedPartIdx = j
+							}
+						}
+					}
+					for j, part := range content {
 						partMap, ok := part.(map[string]any)
 						if !ok {
 							continue
@@ -1381,6 +1474,12 @@ var openAIResponsesProxyAdapter = proxyProtocolAdapter{
 						partType, _ := partMap["type"].(string)
 						if partType == "input_text" || partType == "text" {
 							if txt, ok := partMap["text"].(string); ok {
+								if i < lastCachedInputIdx || j <= lastCachedPartIdx {
+									t := estimateTokensBPE(txt)
+									*estOrig += t
+									*estComp += t
+									continue
+								}
 								target := partMap
 								appendProxyTextBlock(blocks, role, txt, reqKeywords, func(v string) { target["text"] = v }, estOrig, estComp)
 							}

@@ -92,9 +92,7 @@ func (g *localHTTPGuard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if allowedProxyOrigin != "" {
-		protected.Header().Set("Access-Control-Allow-Origin", allowedProxyOrigin)
-		protected.Header().Add("Vary", "Origin")
-		protected.Header().Set("Access-Control-Expose-Headers", "X-Babel-Status, X-Babel-Compile-Ms")
+		protected.corsOrigin = allowedProxyOrigin
 		if r.Method == http.MethodOptions {
 			protected.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 			reqHeaders := sanitizeCORSRequestHeaders(r.Header.Get("Access-Control-Request-Headers"))
@@ -218,10 +216,22 @@ func sanitizeCORSRequestHeaders(raw string) string {
 }
 
 // Set headers at the actual commit point so an upstream response cannot replace
-// the local browser boundary with its own HTML policy or sniffing behavior.
+// the local browser boundary with its own HTML policy, sniffing, or duplicate CORS headers.
 type localResponseWriter struct {
 	http.ResponseWriter
 	page, wroteHeader bool
+	corsOrigin        string
+}
+
+func headerContainsToken(values []string, token string) bool {
+	for _, val := range values {
+		for _, part := range strings.Split(val, ",") {
+			if strings.EqualFold(strings.TrimSpace(part), token) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (w *localResponseWriter) WriteHeader(status int) {
@@ -237,6 +247,16 @@ func (w *localResponseWriter) WriteHeader(status int) {
 		policy = localPageCSP
 	}
 	w.Header().Set("Content-Security-Policy", policy)
+	if w.corsOrigin != "" {
+		// Replace any upstream Access-Control-* headers so browsers never see
+		// duplicate Access-Control-Allow-Origin values (which Fetch rejects).
+		w.Header().Set("Access-Control-Allow-Origin", w.corsOrigin)
+		w.Header().Del("Access-Control-Allow-Credentials")
+		w.Header().Set("Access-Control-Expose-Headers", "X-Babel-Status, X-Babel-Compile-Ms")
+		if !headerContainsToken(w.Header().Values("Vary"), "Origin") {
+			w.Header().Add("Vary", "Origin")
+		}
+	}
 	w.wroteHeader = true
 	w.ResponseWriter.WriteHeader(status)
 }
