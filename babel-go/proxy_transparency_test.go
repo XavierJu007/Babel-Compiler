@@ -3,11 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1864,5 +1868,198 @@ func TestSelectDomainGuidanceEmptyTextAndPrecomputedSnippet(t *testing.T) {
 				t.Fatalf("domain entry %s missing precomputed guidance snippet", e.ID)
 			}
 		}
+	}
+}
+
+func TestRedactSecretsFastPathMatchesRawRegexes(t *testing.T) {
+	rawRedact := func(text string) string {
+		res := text
+		for _, p := range secretPatterns {
+			res = p.re.ReplaceAllString(res, p.repl)
+		}
+		return res
+	}
+
+	samples := []string{
+		"Normal prompt without any secrets, keys or tokens.",
+		"Contains colon: https://example.com/v1 and equal x = 1 + 2 without secret keys.",
+		"OpenAI key sk-1234567890abcdef1234 and sk-proj-abcdefghijklmnopqr and sk-ant-abcdefghijklmnopqr.",
+		"AWS key AKIAIOSFODNN7EXAMPLE in config.",
+		"GitHub tokens ghp_1234567890abcdefghij and gho_1234567890abcdefghij.",
+		"JWT eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U.",
+		"Header BeArEr AbCdEf1234567890== in logs.",
+		"Mixed creds API_KEY=\"mySecret123\" PassWd: supersecret99 secret-key=abcDEF123 access_token='tok_987654' auth-token: myAuthToken1 pwd=hunter22.",
+		"中文提示词：请检查订单金额、权限和日志，不包含密钥；但这里有个 key: notsecret 和 Bearer short.",
+	}
+	for i, sample := range samples {
+		got := redactSecrets(sample)
+		want := rawRedact(sample)
+		if got != want {
+			t.Fatalf("sample %d mismatch:\n  got:  %q\n  want: %q", i, got, want)
+		}
+	}
+
+	// Verify kept_original deduplication in redactProxyLog produces identical output and marks Redacted.
+	isolateProxyState(t)
+	setLogRedactEnabled(true)
+	secretLine := "Please keep token sk-abcdefghijklmnopqrstuv safe."
+	entry := redactProxyLog(ProxyLog{Original: secretLine, Compiled: secretLine, Reason: "Bearer topsecrettoken123"})
+	if !entry.Redacted || entry.Original != entry.Compiled || strings.Contains(entry.Original, "sk-abcdef") || strings.Contains(entry.Reason, "topsecrettoken123") {
+		t.Fatalf("redactProxyLog did not redact kept_original entry properly: %+v", entry)
+	}
+}
+
+func TestAsyncLogRedactionKeepsUpWithHighConcurrency(t *testing.T) {
+	isolateProxyState(t)
+	oldAsync := logRedactAsync.Load()
+	startAsyncLogRedaction()
+	t.Cleanup(func() {
+		drainAsyncLogRedaction(2 * time.Second)
+		logRedactAsync.Store(oldAsync)
+	})
+
+	beforeAsync := proxyMetrics.redactAsyncTotal.Load()
+	beforeFallback := proxyMetrics.redactSyncFallbackTotal.Load()
+
+	const workers = 16
+	const perWorker = 32 // 512 total concurrent appends (< queue cap 2048)
+	cleanBody := strings.Repeat("用户请求检查审批条件、订单状态和库存限制，不含任何敏感凭据。\n", 120)
+	secretBody := strings.Repeat("正常业务说明文本。\n", 100) + "Authorization: Bearer supersecret_token_value_12345"
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		workerID := w
+		go func() {
+			defer wg.Done()
+			for i := 0; i < perWorker; i++ {
+				body := cleanBody
+				if i%4 == 0 {
+					body = secretBody
+				}
+				appendProxyLog(ProxyLog{
+					ID:       fmt.Sprintf("conc-%d-%d", workerID, i),
+					Original: body,
+					Compiled: body,
+				})
+			}
+		}()
+	}
+	wg.Wait()
+	drainAsyncLogRedaction(3 * time.Second)
+
+	afterAsync := proxyMetrics.redactAsyncTotal.Load()
+	afterFallback := proxyMetrics.redactSyncFallbackTotal.Load()
+	if afterFallback != beforeFallback {
+		t.Fatalf("async redaction fell back to sync under 512-item burst: fallback %d -> %d", beforeFallback, afterFallback)
+	}
+	if afterAsync-beforeAsync != workers*perWorker {
+		t.Fatalf("unexpected async count delta: %d; want %d", afterAsync-beforeAsync, workers*perWorker)
+	}
+	logsMutex.RLock()
+	defer logsMutex.RUnlock()
+	for _, entry := range proxyLogs {
+		if strings.HasPrefix(entry.ID, "conc-") && strings.Contains(entry.Original, "supersecret_token_value_12345") {
+			t.Fatalf("secret leaked unredacted in log %s", entry.ID)
+		}
+	}
+}
+
+func TestShardedTokenCountCacheConcurrentAccuracy(t *testing.T) {
+	const workers = 16
+	const iterations = 25
+	samples := []string{
+		"订单处于待审核状态时，必须由主管批准后才能继续处理。",
+		"POST /orders requires Idempotency-Key and retains responses for 24h.",
+		"role:售后助理\n├scope:退款\n└flow:锁单→退款",
+		"Verify payment signature and check order_id, amount before updating state.",
+	}
+	expected := make([]int, len(samples))
+	for i, s := range samples {
+		cnt, err := measureTokens(s, "o200k_base")
+		if err != nil {
+			t.Fatalf("measureTokens baseline failed: %v", err)
+		}
+		expected[i] = cnt.Tokens
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		go func(seed int) {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				idx := (seed + i) % len(samples)
+				cnt, err := measureTokens(samples[idx], "o200k_base")
+				if err != nil || cnt.Tokens != expected[idx] {
+					t.Errorf("concurrent measureTokens mismatch: got=%d want=%d err=%v", cnt.Tokens, expected[idx], err)
+					return
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+}
+
+func TestMakeCacheKeyPrecomputedHashesMatchRaw(t *testing.T) {
+	p := Profile{Name: "fixture", APIKey: "k-123", BaseURL: "https://api.openai.com/v1/chat/completions", Model: "gpt-4o-mini"}
+	dialect, err := composeDialect(defaultDialectName, nil, "hello world")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := makeCacheKey(dialect, p, "hello world")
+
+	rawHash := func(s string) string {
+		sum := sha256.Sum256([]byte(s))
+		return hex.EncodeToString(sum[:])
+	}
+	identity := struct {
+		Version          string
+		Endpoint         string
+		Model            string
+		Dialect          string
+		PromptVersion    string
+		PromptSHA256     string
+		GuidanceSHA256   string
+		CredentialSHA256 string
+		Text             string
+	}{
+		Version:          candidateCacheVersion,
+		Endpoint:         compilerRequestURL(p.BaseURL),
+		Model:            p.Model,
+		Dialect:          dialect.Name,
+		PromptVersion:    dialect.PromptHash,
+		PromptSHA256:     rawHash(dialect.Prompt),
+		GuidanceSHA256:   rawHash(dialect.Guidance),
+		CredentialSHA256: rawHash(p.APIKey),
+		Text:             "hello world",
+	}
+	raw, _ := json.Marshal(identity)
+	sum := sha256.Sum256(raw)
+	want := hex.EncodeToString(sum[:])
+	if got != want {
+		t.Fatalf("makeCacheKey digest changed: got %s want %s", got, want)
+	}
+}
+
+func BenchmarkRedactSecretsCleanProse(b *testing.B) {
+	text := strings.Repeat("你是售后助理，处理退款且每步留痕。只有订单已签收且商品未拆封，才允许退款；禁止重复发起退款。\n", 40)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = redactSecrets(text)
+	}
+}
+
+func BenchmarkRedactSecretsRawRegexes(b *testing.B) {
+	text := strings.Repeat("你是售后助理，处理退款且每步留痕。只有订单已签收且商品未拆封，才允许退款；禁止重复发起退款。\n", 40)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		res := text
+		for _, p := range secretPatterns {
+			res = p.re.ReplaceAllString(res, p.repl)
+		}
+		_ = res
 	}
 }

@@ -260,6 +260,10 @@ func scheduleDiskCacheSave() {
 	}
 }
 
+const emptyStringSHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+var composedCompilerPromptSHA256 = sha256Hex(composedCompilerPrompt)
+
 func makeCacheKey(dialect Dialect, p Profile, text string) string {
 	p = effectiveCompilerProfile(p)
 	// Domain guidance is untrusted user-message data, but still affects the
@@ -267,9 +271,18 @@ func makeCacheKey(dialect Dialect, p Profile, text string) string {
 	// different tenants, so isolate both persisted candidates and singleflight.
 	// Only irreversible digests enter the identity; never persist a raw key.
 	// Do not trim source text: whitespace can be part of a protected literal.
-	promptHash := sha256.Sum256([]byte(dialect.Prompt))
-	guidanceHash := sha256.Sum256([]byte(dialect.Guidance))
-	credentialHash := sha256.Sum256([]byte(p.APIKey))
+	promptDigest := composedCompilerPromptSHA256
+	if dialect.Prompt != composedCompilerPrompt {
+		promptDigest = sha256Hex(dialect.Prompt)
+	}
+	guidanceDigest := emptyStringSHA256
+	if dialect.Guidance != "" {
+		guidanceDigest = sha256Hex(dialect.Guidance)
+	}
+	credentialDigest := emptyStringSHA256
+	if p.APIKey != "" {
+		credentialDigest = sha256Hex(p.APIKey)
+	}
 	identity := struct {
 		Version          string
 		Endpoint         string
@@ -281,8 +294,8 @@ func makeCacheKey(dialect Dialect, p Profile, text string) string {
 		CredentialSHA256 string
 		Text             string
 	}{Version: candidateCacheVersion, Endpoint: compilerRequestURL(p.BaseURL), Model: p.Model,
-		Dialect: dialect.Name, PromptVersion: dialect.PromptHash, PromptSHA256: hex.EncodeToString(promptHash[:]),
-		GuidanceSHA256: hex.EncodeToString(guidanceHash[:]), CredentialSHA256: hex.EncodeToString(credentialHash[:]), Text: text}
+		Dialect: dialect.Name, PromptVersion: dialect.PromptHash, PromptSHA256: promptDigest,
+		GuidanceSHA256: guidanceDigest, CredentialSHA256: credentialDigest, Text: text}
 	raw, _ := json.Marshal(identity)
 	h := sha256.Sum256(raw)
 	return hex.EncodeToString(h[:])

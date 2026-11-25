@@ -23,26 +23,34 @@ var proxyStreamBufPool = sync.Pool{
 }
 
 type proxyRuntimeMetrics struct {
-	requestsTotal      atomic.Uint64
-	adoptedTotal       atomic.Uint64
-	passthroughTotal   atomic.Uint64
-	bypassTotal        atomic.Uint64
-	oversizeTotal      atomic.Uint64
-	budgetTimeoutTotal atomic.Uint64
-	upstreamErrorTotal atomic.Uint64
+	requestsTotal           atomic.Uint64
+	adoptedTotal            atomic.Uint64
+	fastPathHitTotal        atomic.Uint64
+	passthroughTotal        atomic.Uint64
+	bypassTotal             atomic.Uint64
+	oversizeTotal           atomic.Uint64
+	budgetTimeoutTotal      atomic.Uint64
+	upstreamErrorTotal      atomic.Uint64
+	redactAsyncTotal        atomic.Uint64
+	redactSyncFallbackTotal atomic.Uint64
+	redactMatchedTotal      atomic.Uint64
 }
 
 var proxyMetrics proxyRuntimeMetrics
 
 func proxyMetricsSnapshot() map[string]uint64 {
 	return map[string]uint64{
-		"requests_total":       proxyMetrics.requestsTotal.Load(),
-		"adopted_total":        proxyMetrics.adoptedTotal.Load(),
-		"passthrough_total":    proxyMetrics.passthroughTotal.Load(),
-		"bypass_total":         proxyMetrics.bypassTotal.Load(),
-		"oversize_total":       proxyMetrics.oversizeTotal.Load(),
-		"budget_timeout_total": proxyMetrics.budgetTimeoutTotal.Load(),
-		"upstream_error_total": proxyMetrics.upstreamErrorTotal.Load(),
+		"requests_total":             proxyMetrics.requestsTotal.Load(),
+		"adopted_total":              proxyMetrics.adoptedTotal.Load(),
+		"fast_path_hit_total":        proxyMetrics.fastPathHitTotal.Load(),
+		"passthrough_total":          proxyMetrics.passthroughTotal.Load(),
+		"bypass_total":               proxyMetrics.bypassTotal.Load(),
+		"oversize_total":             proxyMetrics.oversizeTotal.Load(),
+		"budget_timeout_total":       proxyMetrics.budgetTimeoutTotal.Load(),
+		"upstream_error_total":       proxyMetrics.upstreamErrorTotal.Load(),
+		"redact_async_total":         proxyMetrics.redactAsyncTotal.Load(),
+		"redact_sync_fallback_total": proxyMetrics.redactSyncFallbackTotal.Load(),
+		"redact_matched_total":       proxyMetrics.redactMatchedTotal.Load(),
 	}
 }
 

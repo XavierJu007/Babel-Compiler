@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -62,9 +63,47 @@ var tokenCodecs = map[string]*tokenCodecState{
 
 // tokenCountCache 缓存确定性的精确计数：同一段文本在同一编码下重复分词是纯浪费。
 // 键为文本 SHA256 + 编码；只缓存 exact 结果，估算与失败都不入缓存。
-var tokenCountCache = newTTLLRU[string, TokenCount](4096)
+// 采用 16 分片避免高并发代理计数争抢同一把锁。
+const (
+	tokenCountCacheShards = 16
+	tokenCountCacheTTL    = 24 * time.Hour
+)
 
-const tokenCountCacheTTL = 24 * time.Hour
+type shardedTokenCountCache struct {
+	shards [tokenCountCacheShards]*ttlLRU[string, TokenCount]
+}
+
+func newShardedTokenCountCache(capacity int) *shardedTokenCountCache {
+	cache := &shardedTokenCountCache{}
+	perShard := capacity / tokenCountCacheShards
+	if perShard < 16 {
+		perShard = 16
+	}
+	for i := range cache.shards {
+		cache.shards[i] = newTTLLRU[string, TokenCount](perShard)
+	}
+	return cache
+}
+
+func (c *shardedTokenCountCache) shardFor(key string) *ttlLRU[string, TokenCount] {
+	index := 0
+	if key != "" {
+		if value, err := strconv.ParseUint(string(key[0]), 16, 8); err == nil {
+			index = int(value) % tokenCountCacheShards
+		}
+	}
+	return c.shards[index]
+}
+
+func (c *shardedTokenCountCache) Get(key string) (TokenCount, bool) {
+	return c.shardFor(key).Get(key)
+}
+
+func (c *shardedTokenCountCache) Put(key string, value TokenCount, ttl time.Duration) {
+	c.shardFor(key).Put(key, value, ttl)
+}
+
+var tokenCountCache = newShardedTokenCountCache(4096)
 
 func measureTokens(text, encoding string) (TokenCount, error) {
 	encoding = normalizeTokenEncoding(encoding)

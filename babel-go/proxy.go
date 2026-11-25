@@ -19,21 +19,88 @@ import (
 
 var proxyLogSequence atomic.Uint64
 
+func containsASCIIFold(s, lowerNeedle string) bool {
+	n := len(lowerNeedle)
+	if n == 0 {
+		return true
+	}
+	if len(s) < n {
+		return false
+	}
+	first := lowerNeedle[0]
+	limit := len(s) - n
+	for i := 0; i <= limit; i++ {
+		b := s[i]
+		if b >= 'A' && b <= 'Z' {
+			b |= 0x20
+		}
+		if b != first {
+			continue
+		}
+		matched := true
+		for j := 1; j < n; j++ {
+			c := s[i+j]
+			if c >= 'A' && c <= 'Z' {
+				c |= 0x20
+			}
+			if c != lowerNeedle[j] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
 var secretPatterns = []struct {
-	re   *regexp.Regexp
-	repl string
+	re         *regexp.Regexp
+	repl       string
+	maybeMatch func(string) bool
 }{
-	{regexp.MustCompile(`\bsk-(?:ant-|proj-)?[a-zA-Z0-9_-]{16,}\b`), `sk-***[REDACTED]`},
-	{regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`), `AKIA***[REDACTED]`},
-	{regexp.MustCompile(`\bgh[pousr]_[a-zA-Z0-9]{20,}\b`), `gh*_***[REDACTED]`},
-	{regexp.MustCompile(`\beyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\b`), `eyJ***[JWT_REDACTED]`},
-	{regexp.MustCompile(`(?i)(\bBearer\s+)[a-zA-Z0-9._\-+/=]{12,}`), `${1}***[REDACTED]`},
-	{regexp.MustCompile(`(?i)((?:api[_-]?key|secret[_-]?key|password|passwd|pwd|access[_-]?token|auth[_-]?token)\s*[:=]\s*["']?)[a-zA-Z0-9._\-+/=!@#$%^&*]{6,}(["']?)`), `${1}***[REDACTED]${2}`},
+	{
+		re:         regexp.MustCompile(`\bsk-(?:ant-|proj-)?[a-zA-Z0-9_-]{16,}\b`),
+		repl:       `sk-***[REDACTED]`,
+		maybeMatch: func(s string) bool { return strings.Contains(s, "sk-") },
+	},
+	{
+		re:         regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`),
+		repl:       `AKIA***[REDACTED]`,
+		maybeMatch: func(s string) bool { return strings.Contains(s, "AKIA") },
+	},
+	{
+		re:         regexp.MustCompile(`\bgh[pousr]_[a-zA-Z0-9]{20,}\b`),
+		repl:       `gh*_***[REDACTED]`,
+		maybeMatch: func(s string) bool { return strings.Contains(s, "gh") && strings.Contains(s, "_") },
+	},
+	{
+		re:         regexp.MustCompile(`\beyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\b`),
+		repl:       `eyJ***[JWT_REDACTED]`,
+		maybeMatch: func(s string) bool { return strings.Contains(s, "eyJ") && strings.Contains(s, ".") },
+	},
+	{
+		re:         regexp.MustCompile(`(?i)(\bBearer\s+)[a-zA-Z0-9._\-+/=]{12,}`),
+		repl:       `${1}***[REDACTED]`,
+		maybeMatch: func(s string) bool { return containsASCIIFold(s, "bearer") },
+	},
+	{
+		re:   regexp.MustCompile(`(?i)((?:api[_-]?key|secret[_-]?key|password|passwd|pwd|access[_-]?token|auth[_-]?token)\s*[:=]\s*["']?)[a-zA-Z0-9._\-+/=!@#$%^&*]{6,}(["']?)`),
+		repl: `${1}***[REDACTED]${2}`,
+		maybeMatch: func(s string) bool {
+			return strings.IndexAny(s, ":=") >= 0 &&
+				(containsASCIIFold(s, "key") || containsASCIIFold(s, "pass") || containsASCIIFold(s, "pwd") || containsASCIIFold(s, "token"))
+		},
+	},
 }
 
 func redactSecrets(text string) string {
 	res := text
 	for _, p := range secretPatterns {
+		if p.maybeMatch != nil && !p.maybeMatch(res) {
+			continue
+		}
 		res = p.re.ReplaceAllString(res, p.repl)
 	}
 	return res
@@ -69,7 +136,7 @@ var (
 
 func startAsyncLogRedaction() {
 	logRedactOnce.Do(func() {
-		logRedactQueue = make(chan proxyLogEvent, 512)
+		logRedactQueue = make(chan proxyLogEvent, 2048)
 		go func() {
 			for ev := range logRedactQueue {
 				switch ev.kind {
@@ -130,9 +197,13 @@ func redactProxyLog(entry ProxyLog) ProxyLog {
 		return entry
 	}
 	redactedOrig := redactSecrets(entry.Original)
-	redactedComp := redactSecrets(entry.Compiled)
+	redactedComp := redactedOrig
+	if entry.Compiled != entry.Original {
+		redactedComp = redactSecrets(entry.Compiled)
+	}
 	if redactedOrig != entry.Original || redactedComp != entry.Compiled {
 		entry.Redacted = true
+		proxyMetrics.redactMatchedTotal.Add(1)
 	}
 	entry.Original = redactedOrig
 	entry.Compiled = redactedComp
@@ -155,8 +226,10 @@ func appendProxyLog(entry ProxyLog) {
 	if logRedactAsync.Load() && logRedactQueue != nil {
 		select {
 		case logRedactQueue <- proxyLogEvent{kind: proxyLogEventAppend, entry: entry}:
+			proxyMetrics.redactAsyncTotal.Add(1)
 			return
 		default: // 队列满时退回同步路径，绝不阻塞请求
+			proxyMetrics.redactSyncFallbackTotal.Add(1)
 		}
 	}
 	insertProxyLog(redactProxyLog(entry))
@@ -285,6 +358,10 @@ func translateMessageBlock(protocol, role, text string, p Profile, dialect Diale
 }
 
 func translateMessageBlockContext(ctx context.Context, protocol, role, text string, p Profile, dialect Dialect, reqKeywords, domains []string) (string, string, int, int) {
+	return translateMessageBlockWithConfig(ctx, protocol, role, text, p, dialect, reqKeywords, domains, nil)
+}
+
+func translateMessageBlockWithConfig(ctx context.Context, protocol, role, text string, p Profile, dialect Dialect, reqKeywords, domains []string, preloadedCfg *Config) (string, string, int, int) {
 	origTok := estimateTokensBPE(text)
 	if ctx.Err() != nil {
 		return text, "", origTok, origTok
@@ -334,7 +411,7 @@ func translateMessageBlockContext(ctx context.Context, protocol, role, text stri
 	}
 
 	// 纯内存快路径：生成缓存 + 校验缓存双命中时，完全不碰信号量与熔断器。
-	if compiled, logID, compTok, hit := proxyCachedAdoption(protocol, role, text, p, blockDialect, domains, activeKeywords, cacheKey); hit {
+	if compiled, logID, compTok, hit := proxyCachedAdoptionWithConfig(protocol, role, text, p, blockDialect, domains, activeKeywords, cacheKey, preloadedCfg); hit {
 		return compiled, logID, origTok, compTok
 	}
 
@@ -475,6 +552,10 @@ func cacheKeyHasCandidate(cacheKey string) bool {
 // proxyCachedAdoption 是纯内存快路径：生成缓存命中、且同一策略指纹下的校验
 // 结论为 passed 时，直接采用候选，不占信号量、不碰熔断器，也不上报成功探针。
 func proxyCachedAdoption(protocol, role, text string, p Profile, dialect Dialect, domains, keywords []string, cacheKey string) (string, string, int, bool) {
+	return proxyCachedAdoptionWithConfig(protocol, role, text, p, dialect, domains, keywords, cacheKey, nil)
+}
+
+func proxyCachedAdoptionWithConfig(protocol, role, text string, p Profile, dialect Dialect, domains, keywords []string, cacheKey string, preloadedCfg *Config) (string, string, int, bool) {
 	if proxyValidationCacheTTL <= 0 {
 		return "", "", 0, false
 	}
@@ -488,7 +569,12 @@ func proxyCachedAdoption(protocol, role, text string, p Profile, dialect Dialect
 		return "", "", 0, false
 	}
 
-	cfg := loadConfig()
+	var cfg Config
+	if preloadedCfg != nil {
+		cfg = *preloadedCfg
+	} else {
+		cfg = loadConfig()
+	}
 	reader := p
 	if p.ValidationMode == "blind" {
 		resolved, err := resolveReaderProfile(cfg, p)
@@ -532,6 +618,7 @@ func proxyCachedAdoption(protocol, role, text string, p Profile, dialect Dialect
 	if before.Tokens > 0 {
 		percent = (1.0 - float64(after.Tokens)/float64(before.Tokens)) * 100
 	}
+	proxyMetrics.fastPathHitTotal.Add(1)
 	logID := fmt.Sprintf("%d-%d", time.Now().UnixNano(), proxyLogSequence.Add(1))
 	appendProxyLog(ProxyLog{
 		ID: logID, Timestamp: time.Now().Format("15:04:05"),
@@ -715,11 +802,11 @@ func collectToolsBlocks(tools []any, blocks *[]proxyTextBlock, estOrig, estComp 
 	collectToolsBlocksWithOptions(tools, false, blocks, estOrig, estComp)
 }
 
-func runProxyBlockTranslations(ctx context.Context, protocol string, blocks []proxyTextBlock, p Profile, dialect Dialect, domains []string) []proxyBlockResult {
+func runProxyBlockTranslations(ctx context.Context, protocol string, blocks []proxyTextBlock, p Profile, dialect Dialect, domains []string, preloadedCfg *Config) []proxyBlockResult {
 	results := make([]proxyBlockResult, len(blocks))
 	if len(blocks) == 1 {
 		b := blocks[0]
-		comp, id, oTok, cTok := translateMessageBlockContext(ctx, protocol, b.role, b.text, p, dialect, b.reqKeywords, domains)
+		comp, id, oTok, cTok := translateMessageBlockWithConfig(ctx, protocol, b.role, b.text, p, dialect, b.reqKeywords, domains, preloadedCfg)
 		results[0] = proxyBlockResult{compiled: comp, logID: id, origTok: oTok, compTok: cTok}
 		return results
 	}
@@ -742,7 +829,7 @@ func runProxyBlockTranslations(ctx context.Context, protocol string, blocks []pr
 					return
 				}
 				b := blocks[idx]
-				comp, id, oTok, cTok := translateMessageBlockContext(ctx, protocol, b.role, b.text, p, dialect, b.reqKeywords, domains)
+				comp, id, oTok, cTok := translateMessageBlockWithConfig(ctx, protocol, b.role, b.text, p, dialect, b.reqKeywords, domains, preloadedCfg)
 				results[idx] = proxyBlockResult{compiled: comp, logID: id, origTok: oTok, compTok: cTok}
 			}
 		}()
@@ -751,10 +838,14 @@ func runProxyBlockTranslations(ctx context.Context, protocol string, blocks []pr
 	return results
 }
 
-// compileProxyBlocks 把一次请求里的文本块做有界并行编译，然后按原顺序写回。
+func compileProxyBlocks(ctx context.Context, protocol string, blocks []proxyTextBlock, p Profile, dialect Dialect, domains []string, logIDs *[]string, estOrig, estComp *int) bool {
+	return compileProxyBlocksWithConfig(ctx, protocol, blocks, p, dialect, domains, nil, logIDs, estOrig, estComp)
+}
+
+// compileProxyBlocksWithConfig 把一次请求里的文本块做有界并行编译，然后按原顺序写回。
 // 启用代理缓存或预热时先对相同文本做请求内去重，避免重复校验与绕过预热频次阈值。
 // 写回与统计累加都发生在 wg.Wait() 之后，保证 payload 无并发写、结果可复现。
-func compileProxyBlocks(ctx context.Context, protocol string, blocks []proxyTextBlock, p Profile, dialect Dialect, domains []string, logIDs *[]string, estOrig, estComp *int) bool {
+func compileProxyBlocksWithConfig(ctx context.Context, protocol string, blocks []proxyTextBlock, p Profile, dialect Dialect, domains []string, preloadedCfg *Config, logIDs *[]string, estOrig, estComp *int) bool {
 	if len(blocks) == 0 {
 		return false
 	}
@@ -788,7 +879,7 @@ func compileProxyBlocks(ctx context.Context, protocol string, blocks []proxyText
 			for i, g := range groups {
 				reps[i] = g.rep
 			}
-			repResults := runProxyBlockTranslations(ctx, protocol, reps, p, dialect, domains)
+			repResults := runProxyBlockTranslations(ctx, protocol, reps, p, dialect, domains, preloadedCfg)
 			mutated := false
 			for gIdx, g := range groups {
 				r := repResults[gIdx]
@@ -808,7 +899,7 @@ func compileProxyBlocks(ctx context.Context, protocol string, blocks []proxyText
 			return mutated
 		}
 	}
-	results := runProxyBlockTranslations(ctx, protocol, blocks, p, dialect, domains)
+	results := runProxyBlockTranslations(ctx, protocol, blocks, p, dialect, domains, preloadedCfg)
 	mutated := false
 	for i, b := range blocks {
 		r := results[i]
@@ -1044,7 +1135,7 @@ func handleStructuredProxy(w http.ResponseWriter, r *http.Request, adapter proxy
 	if budget := resolveRequestCompileBudget(r); budget > 0 {
 		compileCtx, cancelCompile = context.WithTimeout(r.Context(), budget)
 	}
-	mutated := compileProxyBlocks(compileCtx, adapter.protocol, blocks, p, dialect, domains, &logIDs, &estOrigTotal, &estCompTotal)
+	mutated := compileProxyBlocksWithConfig(compileCtx, adapter.protocol, blocks, p, dialect, domains, &cfg, &logIDs, &estOrigTotal, &estCompTotal)
 	budgetExceeded := cancelCompile != nil && compileCtx.Err() != nil && r.Context().Err() == nil
 	if cancelCompile != nil {
 		cancelCompile()

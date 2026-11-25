@@ -161,9 +161,9 @@ func loadConfig() Config {
 		absPath = path
 	}
 	envKey := configEnvFingerprint()
+	fi, statErr := os.Stat(absPath)
 
 	configMutex.RLock()
-	fi, statErr := os.Stat(absPath)
 	if configCacheFreshLocked(absPath, envKey, fi, statErr) {
 		cached := cloneConfig(configCache.cfg)
 		configMutex.RUnlock()
