@@ -168,7 +168,7 @@ test('starting a new request clears prior success; HTTP 422 shows a failed candi
     context.navigator.clipboard.writeText = async text => { copied = text; };
     await context.copyResult();
     assert.equal(copied, candidate);
-    assert.equal(get('copyBtn').textContent, '已复制候选 ✓');
+    assert.equal(get('copyBtn').textContent, '已复制候选');
     assert.equal(get('invariantCapsules').dataset.validationStatus, 'failed');
     assert.equal(get('candidateBadge').classList.contains('inv-pill-fail'), true);
     resetLabel();
@@ -485,7 +485,7 @@ test('copy reports success only after the exact result reaches the clipboard', a
     assert.equal(get('copyBtn').disabled, true);
     resolve();
     await pending;
-    assert.equal(get('copyBtn').textContent, '已复制 ✓');
+    assert.equal(get('copyBtn').textContent, '已复制');
     assert.equal(get('copyBtn').disabled, false);
     resetLabel();
     assert.equal(get('copyBtn').textContent, '复制结果');
@@ -505,7 +505,7 @@ test('clipboard denial or absence preserves and selects the result for manual co
         assert.equal(get('copyBtn').disabled, false);
         context.navigator.clipboard = { writeText: async value => { assert.equal(value, text); } };
         await context.copyResult();
-        assert.equal(get('copyBtn').textContent, '已复制 ✓');
+        assert.equal(get('copyBtn').textContent, '已复制');
     }
 });
 
@@ -1384,4 +1384,21 @@ test('dry-run proxy logs render banner, ROI chips, policy updates, and redacted 
     assert.equal(get('dryRunBanner').classList.contains('hidden'), true);
     assert.equal(get('policyDryRunCheck').checked, false);
     assert.equal(get('policyCompileBudgetSelect').value, '30s');
+});
+
+test('frontend stays free of pictograph emojis and exposes clean endpoint copy + status labels', async () => {
+    assert.equal(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{23F0}-\u{23FF}]/u.test(html), false, 'index.html must not contain pictograph emojis');
+    const { context, get } = setup();
+    get('proxyEndpointOpenAI').textContent = 'http://127.0.0.1:8080/v1';
+    let copiedEndpoint = '';
+    context.navigator.clipboard.writeText = async text => { copiedEndpoint = text; };
+    const copyBtn = { textContent: '复制' };
+    await context.copyEndpoint('proxyEndpointOpenAI', copyBtn);
+    assert.equal(copiedEndpoint, 'http://127.0.0.1:8080/v1');
+    assert.equal(copyBtn.textContent, '已复制');
+
+    context.renderCircuitStatus({ state: 'CLOSED', failures: 0, threshold: 3 });
+    assert.equal(get('circuitStatusPill').textContent, '熔断器 CLOSED (0/3)');
+    context.renderCircuitStatus({ state: 'OPEN', remaining_sec: 42 });
+    assert.equal(get('circuitStatusPill').textContent, '熔断直通 OPEN (剩余 42s)');
 });
