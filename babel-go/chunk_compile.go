@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,9 +18,22 @@ const (
 	autoSectionChunkThreshold  = 900
 	autoSectionTargetRunes     = 420
 	autoSectionMinRunes        = 240
+	parallelChunkThresholdEN   = 5000
+	chunkTargetRunesEN         = 2500
+	chunkMinRunesEN            = 1400
+	autoSectionChunkThresholdEN = 2800
+	autoSectionTargetRunesEN   = 1200
+	autoSectionMinRunesEN      = 600
 	parallelChunkWorkers       = 6
 	defaultChunkMaxConcurrency = 16
 )
+
+func chunkParamsForText(text string) (int, int, int, int, int, int) {
+	if isEnglishOnlySource(text) {
+		return parallelChunkThresholdEN, autoSectionChunkThresholdEN, autoSectionTargetRunesEN, autoSectionMinRunesEN, chunkTargetRunesEN, chunkMinRunesEN
+	}
+	return parallelChunkThreshold, autoSectionChunkThreshold, autoSectionTargetRunes, autoSectionMinRunes, chunkTargetRunes, chunkMinRunes
+}
 
 // chunkCompileSem isolates chunked sub-tasks from proxyCompileSem so a caller
 // already holding a proxyCompileSem slot can never self-deadlock on nested acquire.
@@ -27,8 +42,9 @@ var chunkCompileSem = newCompileSemaphore(envPositiveInt("BABEL_CHUNK_MAX_CONCUR
 func enableAutoParallelChunks(req CompileReq) CompileReq {
 	switch normalizeCompileStrategy(req.Strategy) {
 	case "auto", "deep":
+		pThresh, secThresh, secTarget, secMin, _, _ := chunkParamsForText(req.Text)
 		runes := utf8.RuneCountInString(req.Text)
-		if runes > parallelChunkThreshold || (runes > autoSectionChunkThreshold && len(splitSectionChunks(req.Text, autoSectionTargetRunes, autoSectionMinRunes)) >= 2) {
+		if runes > pThresh || (runes > secThresh && len(splitSectionChunks(req.Text, secTarget, secMin)) >= 2) {
 			req.ParallelChunks = true
 		}
 	}
@@ -42,20 +58,23 @@ func shouldCompileInChunks(req CompileReq) bool {
 	if s == "local" {
 		return false
 	}
+	pThresh, secThresh, secTarget, secMin, _, _ := chunkParamsForText(req.Text)
 	runes := utf8.RuneCountInString(req.Text)
 	if s == "auto" || s == "deep" {
 		if !req.ParallelChunks {
 			return false
 		}
-		if runes > parallelChunkThreshold {
+		if runes > pThresh {
 			return true
 		}
-		return runes > autoSectionChunkThreshold && len(splitSectionChunks(req.Text, autoSectionTargetRunes, autoSectionMinRunes)) >= 2
+		return runes > secThresh && len(splitSectionChunks(req.Text, secTarget, secMin)) >= 2
 	}
 	return req.ParallelChunks && runes > parallelChunkThreshold
 }
 
-// splitSectionChunks 仅在代码围栏/引文之外的空行边界(\n\n)按目标尺寸切分，
+var topLevelSectionHeadingRE = regexp.MustCompile(`^(?:#{1,3}\s|[一二三四五六七八九十]+、|第[一二三四五六七八九十\d]+[章节部分])`)
+
+// splitSectionChunks 仅在代码围栏/引文之外的空行边界(\n\n)或顶层章节标题行处按目标尺寸切分，
 // 用于中等长度多章节文本并行提速且绝不把同一章节或列表从中间劈开。
 func splitSectionChunks(text string, target, minTail int) []string {
 	if target <= 0 {
@@ -97,6 +116,20 @@ func splitSectionChunks(text string, target, minTail int) []string {
 					continue
 				}
 			}
+			if !isBlankSep && runes >= target && nextIdx < len(text) && (nextIdx >= len(mask) || !mask[nextIdx]) {
+				rest := text[nextIdx:]
+				if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
+					rest = rest[:nl]
+				}
+				rest = strings.TrimRight(rest, "\r")
+				if topLevelSectionHeadingRE.MatchString(rest) {
+					chunks = append(chunks, text[chunkStart:nextIdx])
+					chunkStart = nextIdx
+					runes = 0
+					i = nextIdx
+					continue
+				}
+			}
 		}
 		i = last + 1
 	}
@@ -119,8 +152,15 @@ func splitSectionChunks(text string, target, minTail int) []string {
 // splitCompileChunks 只在「代码围栏/引文之外」的换行处切分，
 // 目标大小约 1000 runes，绝不把受保护片段切开。
 func splitCompileChunks(text string, target int) []string {
+	return splitCompileChunksWithMin(text, target, chunkMinRunes)
+}
+
+func splitCompileChunksWithMin(text string, target, minTail int) []string {
 	if target <= 0 {
 		target = chunkTargetRunes
+	}
+	if minTail <= 0 {
+		minTail = chunkMinRunes
 	}
 	if utf8.RuneCountInString(text) <= target {
 		return []string{text}
@@ -155,7 +195,7 @@ func splitCompileChunks(text string, target int) []string {
 		return []string{text}
 	}
 	// 尾块过短时并回前一块：省掉一次带完整系统提示词的 LLM 往返。
-	if len(chunks) >= 2 && utf8.RuneCountInString(chunks[len(chunks)-1]) < chunkMinRunes {
+	if len(chunks) >= 2 && utf8.RuneCountInString(chunks[len(chunks)-1]) < minTail {
 		chunks[len(chunks)-2] += chunks[len(chunks)-1]
 		chunks = chunks[:len(chunks)-1]
 	}
@@ -171,10 +211,14 @@ func generateBabelCandidateParallel(ctx context.Context, p Profile, dialect Dial
 
 func selectChunksForReq(req CompileReq) []string {
 	s := normalizeCompileStrategy(req.Strategy)
-	if (s == "auto" || s == "deep") && utf8.RuneCountInString(req.Text) <= parallelChunkThreshold {
-		if sec := splitSectionChunks(req.Text, autoSectionTargetRunes, autoSectionMinRunes); len(sec) >= 2 {
+	pThresh, _, secTarget, secMin, chunkTarget, chunkMin := chunkParamsForText(req.Text)
+	if (s == "auto" || s == "deep") && utf8.RuneCountInString(req.Text) <= pThresh {
+		if sec := splitSectionChunks(req.Text, secTarget, secMin); len(sec) >= 2 {
 			return sec
 		}
+	}
+	if s == "auto" || s == "deep" {
+		return splitCompileChunksWithMin(req.Text, chunkTarget, chunkMin)
 	}
 	return splitCompileChunks(req.Text, chunkTargetRunes)
 }
@@ -198,6 +242,7 @@ func runParallelChunkGeneration(ctx context.Context, p Profile, dialect Dialect,
 	if workers > len(chunks) {
 		workers = len(chunks)
 	}
+	englishOnly := isEnglishOnlySource(original)
 	var next atomic.Int64
 	var wg sync.WaitGroup
 	wg.Add(workers)
@@ -215,7 +260,11 @@ func runParallelChunkGeneration(ctx context.Context, p Profile, dialect Dialect,
 				}
 				chunkDialect := dialect
 				if continuationHint && idx > 0 {
-					chunkDialect.Prompt = dialect.Prompt + fmt.Sprintf("\n\n【分块续写】本段是长文档第 %d/%d 部分：仅精炼本段规则并用 `├` / `╰` 分支承接上文，禁止重复整篇总标题或前文共同主体。", idx+1, len(chunks))
+					if englishOnly {
+						chunkDialect.Prompt = dialect.Prompt + fmt.Sprintf("\n\n[Chunk Continuation] Part %d/%d: compress only this section in terse telegraphic English (ZERO Chinese characters); do not repeat the global document header.", idx+1, len(chunks))
+					} else {
+						chunkDialect.Prompt = dialect.Prompt + fmt.Sprintf("\n\n【分块续写】本段是长文档第 %d/%d 部分：仅精炼本段规则并用 `├` / `╰` 分支承接上文，禁止重复整篇总标题或前文共同主体。", idx+1, len(chunks))
+					}
 				}
 				// 使用独立的分块信号量，避免与外层 proxyCompileSem 形成嵌套死锁。
 				release, acquired, canceled := chunkCompileSem.Acquire(chunkCtx, proxyCompileQueueTimeout)
@@ -240,10 +289,20 @@ func runParallelChunkGeneration(ctx context.Context, p Profile, dialect Dialect,
 		}()
 	}
 	wg.Wait()
+	firstCanceledIdx := -1
 	for idx, err := range errs {
-		if err != nil {
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, context.Canceled) {
 			return "", fmt.Errorf("第 %d 块编译失败: %w", idx+1, err)
 		}
+		if firstCanceledIdx < 0 {
+			firstCanceledIdx = idx
+		}
+	}
+	if firstCanceledIdx >= 0 {
+		return "", fmt.Errorf("第 %d 块编译失败: %w", firstCanceledIdx+1, errs[firstCanceledIdx])
 	}
 	return strings.Join(results, "\n"), nil
 }

@@ -16,6 +16,7 @@ var outlineMarkdownHeadingRE = regexp.MustCompile(`^#{1,6}[ \t]+`)
 var outlineTreeNumberRE = regexp.MustCompile(`^(?:[0-9]{1,3}|[一二三四五六七八九十百零〇]+)[ \t]+(.+)$`)
 var outlineFenceRE = regexp.MustCompile("(?m)^ {0,3}(`{3,}|~{3,})[^\\r\\n]*")
 var outlineReferenceRE = regexp.MustCompile(`(?i)\b(?:step|section|chapter|item|rule|clause|paragraph|point)\s+(?:no\.?\s*)?[0-9]+|第\s*[0-9一二三四五六七八九十百零〇]+\s*(?:步|章|节|条|项|段|句|部分)|(?:步骤|章节|条款)\s*[0-9一二三四五六七八九十百零〇]+|(?:参见|详见|见)\s*[(（]?[0-9一二三四五六七八九十百零〇]+[.、)）]|\b(?:see|refer\s+to)\s+[(#]?[0-9]+(?:[.)]|$)`)
+var outlineSectionHeadingPrefixRE = regexp.MustCompile(`(?i)^[ \t]*(?:#{1,6}[ \t]+)?(?:第\s*[0-9一二三四五六七八九十百零〇]+\s*[章节条部分]|(?:chapter|section|part|article)\s+(?:no\.?\s*)?[0-9]+)(?:[ \t]*[:：.\-][ \t]*|[ \t]+)(.+)$`)
 var outlinePreserveRE = regexp.MustCompile(`(?i)(?:原样保留|保留原|保持原|维持原|沿用原|必须保留|须保留|保留全部|保留所有).{0,12}(?:编号|序号|章节|提纲)|(?:不要|不得|禁止)(?:修改|改变|更改|删除|重排).{0,12}(?:编号|序号|章节)|(?:输出|回答|返回)(?:的)?(?:格式|模板|结构)\s*[:：]|(?:按|按照)(?:以下|下面|原有|指定).{0,12}(?:格式|模板).{0,8}(?:输出|回答|返回)|\b(?:preserve|retain|keep)\s+(?:the\s+)?(?:original\s+)?(?:numbering|numbers|section\s+numbers|outline)|\b(?:output|response|return)\s+(?:format|template|schema)\s*:`)
 var outlineDateOrUnitRE = regexp.MustCompile(`(?i)^(?:january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)(?:\b|\.)|^(?:元|万元|秒|分钟|小时|天|月|年|次|件|笔|位|毫秒|kg|g|ms|seconds?|minutes?|hours?|days?|mb|gb|tb|usd|cny)(?:$|\s)`)
 var outlineActionRE = regexp.MustCompile(`(?i)^(?:if|when|unless|only|must|shall|please|check|verify|run|execute|send|wait|record|return|use|keep|preserve|ensure|allow|deny|open|save|read|write|delete|clear|retry)\b|^(?:如果|仅当|否则|必须|不得|允许|禁止|请|若|先|再|打开|保存|读取|写入|检查|校验|验证|记录|调用|发送|等待|修改|删除|重试|将)`)
@@ -272,6 +273,24 @@ func standaloneOutlineTitle(body string) string {
 	return strings.ToLower(strings.Join(strings.Fields(body), " "))
 }
 
+func stripStandaloneSectionHeadingLines(unquoted string) string {
+	lines := strings.Split(unquoted, "\n")
+	changed := false
+	for i, raw := range lines {
+		line := strings.TrimSuffix(raw, "\r")
+		if m := outlineSectionHeadingPrefixRE.FindStringSubmatch(line); len(m) == 2 {
+			if standaloneOutlineTitle(outlineHeadingLabel(strings.TrimSpace(m[1]))) != "" {
+				lines[i] = ""
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return unquoted
+	}
+	return strings.Join(lines, "\n")
+}
+
 func outlineLabelsProtected(text string) bool {
 	mask := outlineLiteralMask(text)
 	unquoted := []byte(text)
@@ -280,7 +299,8 @@ func outlineLabelsProtected(text string) bool {
 			unquoted[i] = ' '
 		}
 	}
-	return outlineReferenceRE.Match(unquoted) || outlinePreserveRE.Match(unquoted)
+	refText := stripStandaloneSectionHeadingLines(string(unquoted))
+	return outlineReferenceRE.MatchString(refText) || outlinePreserveRE.Match(unquoted)
 }
 
 func outlineSpanProtected(mask []bool, start, end int) bool {

@@ -269,3 +269,27 @@ func TestOutlineRecognitionLeavesBusinessNumbersAndCompactInputsAlone(t *testing
 		}
 	}
 }
+
+func TestStandaloneArticleHeadingsDoNotProtectSequentialLists(t *testing.T) {
+	const zhContract = "第一条 主体资质\n1. 提交营业执照。\n2. 成立满 180 天。\n第二条 结算周期\n1. 延迟超过 15 天。\n2. 预付款不超过 20%。"
+	if got := structuralNumberSpans(zhContract); len(got) != 4 {
+		t.Fatalf("standalone article headings falsely protected sequential list labels: %v", got)
+	}
+	var values []string
+	for _, n := range numberOccurrences(zhContract) {
+		values = append(values, n.Value)
+	}
+	if !reflect.DeepEqual(values, []string{"180", "15", "20%"}) {
+		t.Fatalf("unexpected business numbers for zhContract: %v", values)
+	}
+
+	const enSections = "Section 1: Auth\n1. Require HMAC.\n2. Reject skew > 300s."
+	if got := structuralNumberSpans(enSections); len(got) != 2 {
+		t.Fatalf("standalone Section heading falsely protected sequential list labels: %v", got)
+	}
+
+	const withInlineRef = zhContract + "\n违反第一条规定须承担责任。"
+	if got := structuralNumberSpans(withInlineRef); got != nil {
+		t.Fatalf("inline article reference lost protection: %v", got)
+	}
+}

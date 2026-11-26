@@ -267,3 +267,88 @@ func TestSplitSectionChunksRespectsBlankLinesAndAutoParallel(t *testing.T) {
 		t.Fatal("expected auto strategy with multi-section 900+ rune text to enable parallel chunking")
 	}
 }
+
+func TestSplitSectionChunksSplitsTopLevelHeadingsWithoutBlankLines(t *testing.T) {
+	sec1 := "## 变更冻结窗口\n" + strings.Repeat("发布窗口与灰度验证规则说明用于达到章节切分目标长度。\n", 18)
+	sec2 := "## 故障分级与响应 SLA\n" + strings.Repeat("核心链路异常必须在五分钟内响应并同步值班群与工单系统。\n", 18) +
+		"```sh\n# inside code fence must never split\necho ok\n```\n"
+	sec3 := "## 事后复盘要求\n" + strings.Repeat("故障恢复后二十四小时内完成根因分析与改进项跟踪。\n", 12)
+	doc := sec1 + sec2 + sec3
+	runes := utf8.RuneCountInString(doc)
+	if runes <= autoSectionChunkThreshold || runes > parallelChunkThreshold {
+		t.Fatalf("unexpected fixture rune count: %d", runes)
+	}
+	chunks := splitSectionChunks(doc, autoSectionTargetRunes, autoSectionMinRunes)
+	if len(chunks) < 2 {
+		t.Fatalf("expected heading-based split without blank lines, got %d chunk(s)", len(chunks))
+	}
+	if strings.Join(chunks, "") != doc {
+		t.Fatal("heading section chunking changed source bytes")
+	}
+	for idx, chunk := range chunks {
+		if strings.Count(chunk, "```")%2 != 0 {
+			t.Fatalf("chunk %d split a fenced code block: %q", idx, chunk)
+		}
+	}
+	req := enableAutoParallelChunks(CompileReq{Text: doc, Strategy: "auto"})
+	if !shouldCompileInChunks(req) {
+		t.Fatal("expected auto strategy with Markdown heading sections to enable parallel chunking")
+	}
+}
+
+func TestEnglishChunkThresholdsAvoidOverSplittingShortEnglishDocs(t *testing.T) {
+	shortEN := strings.Repeat("Validate HMAC signatures and reject expired timestamps cleanly.\n\n", 36)
+	if r := utf8.RuneCountInString(shortEN); r <= parallelChunkThreshold || r > autoSectionChunkThresholdEN {
+		t.Fatalf("unexpected shortEN fixture rune count: %d", r)
+	}
+	if req := enableAutoParallelChunks(CompileReq{Text: shortEN, Strategy: "auto"}); shouldCompileInChunks(req) {
+		t.Fatal("expected ~2300-char pure English doc to stay single-shot rather than over-splitting")
+	}
+
+	sec1 := "## Authentication & Tenant Isolation\n" + strings.Repeat("Enforce strict tenant matching and reject malformed payloads immediately.\n", 22)
+	sec2 := "## Rate Limiting & Retries\n" + strings.Repeat("Apply token-bucket throttling and bounded exponential backoff for retries.\n", 22)
+	longSectionEN := sec1 + "\n" + sec2
+	if r := utf8.RuneCountInString(longSectionEN); r <= autoSectionChunkThresholdEN || r > parallelChunkThresholdEN {
+		t.Fatalf("unexpected longSectionEN fixture rune count: %d", r)
+	}
+	if req := enableAutoParallelChunks(CompileReq{Text: longSectionEN, Strategy: "auto"}); !shouldCompileInChunks(req) {
+		t.Fatal("expected 2800+ char multi-section English doc to enable parallel chunking")
+	}
+	if chunks := selectChunksForReq(CompileReq{Text: longSectionEN, Strategy: "auto"}); len(chunks) != 2 {
+		t.Fatalf("expected 2 English section chunks, got %d", len(chunks))
+	}
+}
+
+func TestParallelChunkReportsNonCanceledRootError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body compilerRequestBody
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if len(body.Messages) > 1 && strings.Contains(body.Messages[1].Content, "CHUNK_ONE_SLOW") {
+			<-r.Context().Done()
+			http.Error(w, "canceled", http.StatusRequestTimeout)
+			return
+		}
+		http.Error(w, "502 Bad Gateway", http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	dialect, err := composeDialect("", nil, "CHUNK_ONE_SLOW CHUNK_TWO_FAIL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prof := Profile{Name: "test", APIKey: "k", BaseURL: srv.URL, Model: "m"}
+	_, err = runParallelChunkGeneration(
+		context.Background(),
+		prof,
+		dialect,
+		"CHUNK_ONE_SLOW\n\nCHUNK_TWO_FAIL",
+		[]string{"CHUNK_ONE_SLOW", "CHUNK_TWO_FAIL"},
+		true,
+	)
+	if err == nil {
+		t.Fatal("expected error from failing chunk")
+	}
+	if !strings.Contains(err.Error(), "第 2 块编译失败") || strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("expected chunk 2 root error rather than context canceled, got: %v", err)
+	}
+}

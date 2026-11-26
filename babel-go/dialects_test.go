@@ -156,3 +156,26 @@ func TestCompileAPIDefaultAndAliasesShareFixedCandidate(t *testing.T) {
 		t.Fatalf("aliases caused %d generation calls, want 1", calls.Load())
 	}
 }
+
+func TestComposeDialectSelectsEnglishPromptForPureEnglish(t *testing.T) {
+	isolateCompilerLibraries(t)
+	en, err := composeDialect("", nil, "Always validate inbound HMAC signatures and reject expired timestamps with HTTP 401.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if en.Prompt != composedEnglishCompilerPrompt {
+		t.Fatal("expected pure English source to select composedEnglishCompilerPrompt")
+	}
+	for _, r := range en.Prompt {
+		if r >= 0x4e00 && r <= 0x9fff {
+			t.Fatalf("English compiler prompt contained Han character: %q", r)
+		}
+	}
+	zh, err := composeDialect("", nil, "Always validate HMAC 签名并检查时间戳。")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if zh.Prompt != composedCompilerPrompt {
+		t.Fatal("expected Chinese/mixed source to keep composedCompilerPrompt")
+	}
+}
