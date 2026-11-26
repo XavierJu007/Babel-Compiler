@@ -112,8 +112,8 @@ func TestAuditProfileSeparatesValidationFromCompilerAndBlocksDelete(t *testing.T
 	if got := auditBody["model"]; got != "audit-model" {
 		t.Errorf("audit model=%v; want audit-model", got)
 	}
-	if got, _ := auditBody["max_tokens"].(float64); got != 512 {
-		t.Errorf("audit max_tokens=%v; want 512", auditBody["max_tokens"])
+	if got, _ := auditBody["max_tokens"].(float64); got != 2048 {
+		t.Errorf("audit max_tokens=%v; want 2048", auditBody["max_tokens"])
 	}
 
 	// 被引用的校验方案不可删除，且错误信息要指出是「校验方案」引用。

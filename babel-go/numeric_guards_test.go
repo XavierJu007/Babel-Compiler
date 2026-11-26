@@ -133,3 +133,27 @@ func TestNumericGuardReorderingReachesBlindReaderAndComparator(t *testing.T) {
 		t.Fatalf("numeric helper broke blind grounding: reader=%d comparator=%d result=%+v", readerCalls.Load(), comparatorCalls.Load(), result)
 	}
 }
+
+func TestNumericGuardRateUnits(t *testing.T) {
+	source := "已知的系统限流阈值为每秒 20 次请求，超过按指数退避，最长等待 120 秒。"
+	for _, equiv := range []string{
+		"限流阈值20req/s，超限指数退避≤120s。",
+		"限流阈值 20 qps，超限指数退避<=120秒。",
+		"限流阈值 20次/s，超限指数退避<=120s。",
+		"限流阈值 20次/秒，超限指数退避<=120s。",
+	} {
+		if failures := checkDeterministicInvariants(source, equiv, nil); len(failures) != 0 {
+			t.Fatalf("equivalent rate expression rejected: %q -> %v\nsource: %+v\ncand: %+v",
+				equiv, failures, numberOccurrences(source), numberOccurrences(equiv))
+		}
+	}
+	for _, mutated := range []string{
+		"限流阈值10req/s，超限指数退避≤120s。",
+		"限流阈值20分钟，超限指数退避≤120s。",
+	} {
+		if failures := checkDeterministicInvariants(source, mutated, nil); len(failures) == 0 {
+			t.Fatalf("mutated rate/unit unexpectedly passed: %q", mutated)
+		}
+	}
+}
+

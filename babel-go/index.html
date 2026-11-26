@@ -1766,7 +1766,7 @@
                 <div class="pane-actions">
                     <button id="clearInputBtn" type="button" class="btn" onclick="clearCompileInput()" title="清空输入与当前结果">清空</button>
                     <button id="pasteCompileBtn" type="button" class="btn" onclick="pasteAndCompile()" title="从剪贴板粘贴并立即编译">粘贴并编译</button>
-                    <select id="compileStrategy" class="select-dark" onchange="updateCompileOptionsHint()" title="auto：短文本(<180字或<80tok)与JSON走<1ms本地策略，长文本(>1200字)自动并行；local：<1ms零LLM；deep：强制LLM" style="padding: 4px 8px; font-size: 12px;">
+                    <select id="compileStrategy" class="select-dark" onchange="updateCompileOptionsHint()" title="auto：短文本(<180字或<80tok)与JSON走<1ms本地策略，超长文本(>2000字)自动并行；local：<1ms零LLM；deep：强制LLM" style="padding: 4px 8px; font-size: 12px;">
                         <option value="auto" selected>自动策略 · 短直通/长并行</option>
                         <option value="local">极速本地 · &lt;1ms</option>
                         <option value="deep">深度语义 · LLM</option>
@@ -3322,9 +3322,10 @@
         if (strategy === 'local') {
             return { label: '预计：极速本地无损 (<1ms)', kind: 'is-fast' };
         }
+        const hasSectionBlanks = /\n\s*\n/.test(text);
         if (strategy === 'deep') {
-            return runes > 1200
-                ? { label: '预计：并行分块深度编译', kind: 'is-parallel' }
+            return (runes > 2000 || (runes > 900 && hasSectionBlanks))
+                ? { label: '预计：分段并行深度编译', kind: 'is-parallel' }
                 : { label: '预计：单次深度编译', kind: 'is-llm' };
         }
         if (looksLikeNonProseClient(text)) {
@@ -3333,8 +3334,8 @@
         if (runes < 180 || estTok < 80) {
             return { label: '预计：短文本直通/本地 (<1ms，防膨胀)', kind: 'is-fast' };
         }
-        if (runes > 1200) {
-            return { label: '预计：并行分块编译', kind: 'is-parallel' };
+        if (runes > 2000 || (runes > 900 && hasSectionBlanks)) {
+            return { label: '预计：分段并行编译', kind: 'is-parallel' };
         }
         return { label: '预计：单次语义编译', kind: 'is-llm' };
     }

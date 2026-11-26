@@ -201,3 +201,28 @@ func TestQuotedStructuredValuesAndEmbeddedIdentifiersRemainProtected(t *testing.
 		})
 	}
 }
+
+func TestTechnicalTokenBoundariesAcrossSlashAndCJK(t *testing.T) {
+	for _, test := range []struct{ name, original, candidate string }{
+		{"slash-joined identifiers", "接口用请求参数里的 userId、orderId、tenantId 判断归属。", "req参数userId/orderId/tenantId判归属"},
+		{"CJK-adjacent scheme path", "XXE 的盲打外带与 php://filter 读源码。", "XXE: 盲打外带|php://filter读源码"},
+	} {
+		t.Run("pass/"+test.name, func(t *testing.T) {
+			if issues := checkLiteralInvariants(test.original, test.candidate); len(issues) != 0 {
+				t.Fatalf("unexpected missing technical literal: %v", issues)
+			}
+		})
+	}
+
+	for _, test := range []struct{ name, original, candidate string }{
+		{"path suffix extension", "Use /v2/orders endpoint.", "Use /v2/orders/cancel endpoint."},
+		{"path prefix mutation", "Use /v2/orders endpoint.", "Use /api/v2/orders endpoint."},
+		{"identifier suffix mutation", "检查 user_id 后再更新。", "先校验 user_ids→再更新"},
+	} {
+		t.Run("fail/"+test.name, func(t *testing.T) {
+			if issues := checkLiteralInvariants(test.original, test.candidate); len(issues) == 0 {
+				t.Fatal("mutated path or identifier escaped technical token guard")
+			}
+		})
+	}
+}

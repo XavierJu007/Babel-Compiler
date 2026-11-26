@@ -137,7 +137,7 @@ func runBlindValidationContext(ctx context.Context, reader, comparator Profile, 
 		Reading  BlindReading `json:"reading"`
 	}{orig, reading})
 	started = time.Now()
-	raw, err = callLLMContextLimit(ctx, comparator, blindComparatorPrompt, string(comparatorInput), 0.0, 512)
+	raw, err = callLLMContextLimit(ctx, comparator, blindComparatorPrompt, string(comparatorInput), 0.0, 2048)
 	result.Stages[2].DurationMS = time.Since(started).Milliseconds()
 	if err != nil {
 		return finish(2, "error", "独立阅读对照服务异常: "+err.Error())

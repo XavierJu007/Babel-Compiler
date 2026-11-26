@@ -245,3 +245,25 @@ func TestSplitCompileChunksMergesShortTail(t *testing.T) {
 		t.Fatal("tail merge changed source bytes")
 	}
 }
+
+func TestSplitSectionChunksRespectsBlankLinesAndAutoParallel(t *testing.T) {
+	sec1 := "总则：处理订单时每步保留操作日志。\n\n一、资格\n1. 已签收未超过 7 天且未拆封可自助退款。\n" + strings.Repeat("补充条款说明内容用于达到章节分段门槛。\n", 18)
+	sec2 := "二、审批与限流\n1. 超过 2000 元禁止线上直接放款；限流每秒 20 次请求。\n" + strings.Repeat("补充执行规则条款说明用于达到章节阈值。\n", 18)
+	sec3 := "三、质检边界\n1. 所有写操作保留 180 天快照。\n" + strings.Repeat("职责边界条款说明用于构成完整尾段内容。\n", 14)
+	doc := sec1 + "\n" + sec2 + "\n" + sec3
+	runes := utf8.RuneCountInString(doc)
+	if runes <= autoSectionChunkThreshold || runes > parallelChunkThreshold {
+		t.Fatalf("unexpected fixture rune count: %d", runes)
+	}
+	chunks := splitSectionChunks(doc, autoSectionTargetRunes, autoSectionMinRunes)
+	if len(chunks) < 2 {
+		t.Fatalf("expected multi-section split, got %d chunk(s)", len(chunks))
+	}
+	if strings.Join(chunks, "") != doc {
+		t.Fatal("section chunking changed source bytes")
+	}
+	req := enableAutoParallelChunks(CompileReq{Text: doc, Strategy: "auto"})
+	if !shouldCompileInChunks(req) {
+		t.Fatal("expected auto strategy with multi-section 900+ rune text to enable parallel chunking")
+	}
+}

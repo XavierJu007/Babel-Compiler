@@ -314,7 +314,7 @@ func compileStreamHandler(w http.ResponseWriter, r *http.Request) {
 		stream.emit("stage", map[string]string{"stage": "generating"})
 		if shouldCompileInChunks(req) {
 			strategy = "llm_parallel"
-			candidate, genErr = generateBabelCandidateParallel(r.Context(), p, dialect, req.Text)
+			candidate, genErr = generateBabelCandidateParallelForReq(r.Context(), req, p, dialect, req.Text)
 			if genErr == nil {
 				stream.emit("delta", map[string]any{"chunk": candidate, "reset": false})
 			}

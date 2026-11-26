@@ -31,7 +31,13 @@ const verifyGatePrompt = `你是编译候选的语义对照审阅器。用户消
 4. 技术字面量、参数名、枚举、路径、代码、Payload、实际JSON字符串及明确要求原样的文本，禁止自动修正；普通自然语言条件或说明不会仅因加了引号就变成逐字契约，可以等义压成关系式或去掉装饰性空格/引号，但固定返回值不能改名，条件和作用域不得改变；
 5. 不新增需要私有词表才能读懂的代号，保留原有变量和公共术语。候选须包含理解其关系所需的上下文。
 候选可以是高密度关系式、短语或树形结构；不要求完整句子或与原文逐句同序。按候选自身的标题、缩进、括号及相邻关系读取共享主体、谓词和作用域；这些明确写出的上下文不属于信息缺失。公共符号、常用缩写、混合语言、紧凑枚举与省略虚词本身不是失败原因；仅用于组织段落的编号也不是新增业务数值。仍须核实分支、全称/存在、并行/顺序、必要/充分及模态；不能从原文替候选补齐含糊或缺失的关系，也不能用符号数量代替完整性判断。
-这次对照不是形式证明，也不是只见候选的独立阅读实验。无法确认时返回 false。
+以下巴别语等价简写不算歧义或缺失（不可因此拒判）：
+- <= / ≤ 等价于不超过/未超过/至多；>= / ≥ 等价于不低于/不少于/至少；> 等价于超过/高于；< 等价于低于；
+- ~ / - 等价于“至”（若原文自身未明示区间开闭端点，候选同形写成 A~B 或 A-B 不算缺失）；
+- 条件与枚举语境中 | 等价于“或”；∧ / & / + 等价于“且/与/并”；→ 等价于“则/时触发/导致”；
+- h / min / s / d / req/s 等价于小时/分钟/秒/天/每秒…次请求；禁 / 须 / 免批 分别等价于禁止·不得 / 必须·需 / 无需审批（原文事实性限制如“不修改/不介入”写为“不”或“禁”且动作对象未变时皆视为等价）。
+这次对照不是形式证明，也不是只见候选的独立阅读实验。仅当存在真实语义缺失、新增、冲突或歧义时返回 false。
+missing 数组只能写入真正导致 pass 为 false 的实质性缺陷（漏约束、改阈值、反否定、丢例外或擅改技术字面量）；绝不可把“已保留/等价/尚可/原文未明确”的逐条核对说明写入 missing。无实质缺陷时必须输出 {"pass": true, "missing": []}。
 只输出一个 JSON 对象；必须同时包含 boolean 类型的 pass 和 string[] 类型的 missing。不要代码围栏或其他文字：
 {"pass": true, "missing": []}
 或
@@ -40,7 +46,8 @@ const verifyGatePrompt = `你是编译候选的语义对照审阅器。用户消
 // Boundaries are inspected without consuming separators, so adjacent values such
 // as "1,2,3" are all checked. These are lexical guards, not relation proofs.
 var standaloneNumRegex = regexp.MustCompile(`[+-]?\d+(?:\.\d+)*(?:[eE][+-]?\d+)?%?`)
-var numberUnitRegex = regexp.MustCompile(`(?i)^\s*(milliseconds?|seconds?|minutes?|hours?|days?|bytes?|ms|min|sec|kb|mb|gb|tb|s|h|d|b|毫秒|分钟|小时|字节|秒|天|次|(?:千|万|亿)?元)`)
+var numberUnitRegex = regexp.MustCompile(`(?i)^\s*(milliseconds?|seconds?|minutes?|hours?|days?|bytes?|reqs/s|req/s|ops/s|次/秒|次/s|kbps|mbps|gbps|bps|qps|rps|tps|rpm|fps|khz|mhz|ghz|reqs|req|hz|px|pt|rem|em|ms|min|sec|kb|mb|gb|tb|usd|cny|rmb|eur|gbp|jpy|s|h|d|b|毫秒|分钟|小时|字节|秒|天|次|(?:千|万|亿)?元)`)
+var perSecondPrefixRE = regexp.MustCompile(`(?i)(?:每秒|per\s+second|/\s*s)$`)
 var numberOperatorRegex = regexp.MustCompile(`(?i)([<>=!≤≥≠+\-]+|大于(?:或)?等于|小于(?:或)?等于|不低于|不少于|至少|不超过|至多|超过|大于|小于|等于|\b(?:at\s+least|at\s+most|greater\s+than(?:\s+or\s+equal\s+to)?|less\s+than(?:\s+or\s+equal\s+to)?))\s*$`)
 var numberTrailingOperatorRegex = regexp.MustCompile(`^\s*([<>=!≤≥≠+\-]+)`)
 
@@ -188,6 +195,8 @@ func normalizeNumberUnit(unit string) string {
 		return "d"
 	case "byte", "bytes", "字节":
 		return "byte"
+	case "req/s", "reqs/s", "qps", "rps", "次/秒", "次/s":
+		return "req/s"
 	default:
 		return unit // Case can distinguish bytes from bits; do not fold it.
 	}
@@ -228,7 +237,14 @@ func numberOccurrences(s string) []numberOccurrence {
 			continue
 		}
 		op := adjacentNumberOperator(s[:start], s[unitEnd:])
-		result = append(result, numberOccurrence{Value: s[start:end], Operator: op, Unit: normalizeNumberUnit(unit)})
+		normUnit := normalizeNumberUnit(unit)
+		if normUnit == "次" {
+			prefixTrimmed := strings.TrimSpace(s[:start])
+			if strings.HasSuffix(prefixTrimmed, "每秒") || perSecondPrefixRE.MatchString(prefixTrimmed) {
+				normUnit = "req/s"
+			}
+		}
+		result = append(result, numberOccurrence{Value: s[start:end], Operator: op, Unit: normUnit})
 	}
 	return result
 }
@@ -781,6 +797,36 @@ func containsLiteral(s, literal string) bool {
 	return false
 }
 
+func containsTechnicalToken(s, token string) bool {
+	if token == "" {
+		return false
+	}
+	if !strings.ContainsAny(token, "/\\") {
+		return containsLiteral(s, token)
+	}
+	const leftDelims = " \t\r\n|,;([{\"'`+="
+	const rightDelims = " \t\r\n|,;)]}\"'`+"
+	const dotFollowDelims = " \t\r\n|,;)]}\"'`"
+	for offset := 0; offset <= len(s)-len(token); {
+		found := strings.Index(s[offset:], token)
+		if found < 0 {
+			return false
+		}
+		start, end := offset+found, offset+found+len(token)
+		leftOK := start == 0 || s[start-1] >= 0x80 ||
+			strings.ContainsRune(leftDelims, rune(s[start-1])) ||
+			(s[start-1] == ':' && !strings.HasPrefix(token, "/") && !strings.HasPrefix(token, "\\"))
+		rightOK := end == len(s) || s[end] >= 0x80 ||
+			strings.ContainsRune(rightDelims, rune(s[end])) ||
+			(s[end] == '.' && (end+1 == len(s) || s[end+1] >= 0x80 || strings.ContainsRune(dotFollowDelims, rune(s[end+1]))))
+		if leftOK && rightOK {
+			return true
+		}
+		offset = start + 1
+	}
+	return false
+}
+
 func checkLiteralInvariants(orig, comp string) []string {
 	var failures []string
 	missing := make(map[string]bool)
@@ -821,7 +867,7 @@ func checkLiteralInvariants(orig, comp string) []string {
 	}
 	sort.Strings(originalTokens)
 	for _, token := range originalTokens {
-		if !candidateTokens[token] {
+		if !candidateTokens[token] && !containsTechnicalToken(comp, token) {
 			reportMissing(token)
 		}
 	}
@@ -984,7 +1030,7 @@ func runValidationContext(ctx context.Context, p Profile, orig, comp string, req
 		return newValidation("failed", "local_checks", failures...)
 	}
 	data, _ := json.Marshal(map[string]string{"original": orig, "candidate": comp})
-	raw, err := callLLMContextLimit(ctx, p, verifyGatePrompt, string(data), 0.0, 512)
+	raw, err := callLLMContextLimit(ctx, p, verifyGatePrompt, string(data), 0.0, 2048)
 	if err != nil {
 		return newValidation("error", "llm_compare", err.Error())
 	}
@@ -1270,7 +1316,7 @@ func doCompileContext(ctx context.Context, req CompileReq) (CompileResp, error) 
 		strategy := "llm_compile"
 		if shouldCompileInChunks(req) {
 			strategy = "llm_parallel"
-			compiled, genErr = generateBabelCandidateParallel(generationContext, p, dialect, req.Text)
+			compiled, genErr = generateBabelCandidateParallelForReq(generationContext, req, p, dialect, req.Text)
 		} else {
 			compiled, genErr = generateBabelCandidate(generationContext, p, dialect, req.Text)
 		}

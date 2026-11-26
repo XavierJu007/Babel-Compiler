@@ -1574,7 +1574,17 @@ test('route preview and multi-scenario demo presets reflect short, JSON, and par
     assert.equal(get('routePreviewBadge').classList.contains('is-llm'), true);
 
     context.fillDemoText('sop');
-    assert.match(get('routePreviewBadge').textContent, /并行分块编译/);
+    assert.match(get('routePreviewBadge').textContent, /分段并行编译/);
+    assert.equal(get('routePreviewBadge').classList.contains('is-parallel'), true);
+
+    get('rawInput').value = '单段规则约束。'.repeat(200);
+    context.updateInputCount();
+    assert.match(get('routePreviewBadge').textContent, /单次语义编译/);
+    assert.equal(get('routePreviewBadge').classList.contains('is-llm'), true);
+
+    get('rawInput').value = '规则约束。'.repeat(500);
+    context.updateInputCount();
+    assert.match(get('routePreviewBadge').textContent, /分段并行编译/);
     assert.equal(get('routePreviewBadge').classList.contains('is-parallel'), true);
 
     context.toggleOperatorBar();
