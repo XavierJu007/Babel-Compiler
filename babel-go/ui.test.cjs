@@ -79,12 +79,18 @@ function setup(responses = []) {
             if (response instanceof Error) throw response;
             if (!response) throw new Error('Unexpected fetch');
             const status = response.status || 200;
-            return { status, ok: status >= 200 && status < 300,
-                text: async () => response.raw ?? JSON.stringify(response.data) };
+            return {
+                status,
+                ok: status >= 200 && status < 300,
+                headers: response.headers,
+                body: response.body,
+                text: async () => response.raw ?? JSON.stringify(response.data)
+            };
         },
         setTimeout: () => {},
         confirm: () => true,
         navigator: { clipboard: { writeText: async () => {} } },
+        TextDecoder,
         alert: message => { throw new Error(`Unexpected alert: ${message}`); }
     });
     vm.runInContext(app, context);
@@ -1401,4 +1407,121 @@ test('frontend stays free of pictograph emojis and exposes clean endpoint copy +
     assert.equal(get('circuitStatusPill').textContent, '熔断器 CLOSED (0/3)');
     context.renderCircuitStatus({ state: 'OPEN', remaining_sec: 42 });
     assert.equal(get('circuitStatusPill').textContent, '熔断直通 OPEN (剩余 42s)');
+});
+
+test('model config saves audit_profile, disable_thinking, and reasoning_effort', async () => {
+    const saved = configFixture({ audit_profile: 'reader', disable_thinking: true, reasoning_effort: 'none' });
+    const { context, get, requests, storage } = setup([
+        { data: configFixture({ audit_profile: 'reader', disable_thinking: false, reasoning_effort: 'low' }) },
+        { data: { success: true } },
+        { data: saved }
+    ]);
+    await context.loadInitConfig();
+    assert.equal(get('cfgAuditProfile').value, 'reader');
+    assert.equal(get('cfgDisableThinking').checked, false);
+    assert.equal(get('cfgReasoningEffort').value, 'low');
+
+    get('cfgDisableThinking').checked = true;
+    get('cfgReasoningEffort').value = 'none';
+    await context.saveProfileConfig();
+    const saveBody = JSON.parse(requests[1].options.body);
+    assert.equal(saveBody.audit_profile, 'reader');
+    assert.equal(saveBody.disable_thinking, true);
+    assert.equal(saveBody.reasoning_effort, 'none');
+
+    const backup = JSON.parse(storage.get('babel_dsl_backup_v2'));
+    assert.equal(backup.disable_thinking, true);
+    assert.equal(backup.reasoning_effort, 'none');
+    assert.equal(get('cfgDisableThinking').checked, true);
+    assert.equal(get('cfgReasoningEffort').value, 'none');
+});
+
+test('runCompile consumes SSE stream events and accepts local_fast auto short-circuits in strict mode', async () => {
+    const encoder = new TextEncoder();
+    const sseChunks = [
+        'event: stage\ndata: {"stage":"generating"}\n\n',
+        'event: delta\ndata: {"chunk":"draft1","reset":false}\n\n',
+        'event: delta\ndata: {"chunk":"∀req: check","reset":true}\n\n',
+        'event: stage\ndata: {"stage":"validating"}\n\n',
+        `event: result\ndata: ${JSON.stringify({
+            ...result({ compiled: '∀req: check', strategy: 'llm_parallel', elapsed_ms: 420 })
+        })}\n\n`
+    ];
+    let idx = 0;
+    const sseResponse = {
+        status: 200,
+        headers: { get: name => name.toLowerCase() === 'content-type' ? 'text/event-stream; charset=utf-8' : null },
+        body: {
+            getReader() {
+                return {
+                    async read() {
+                        if (idx >= sseChunks.length) return { done: true, value: undefined };
+                        return { done: false, value: encoder.encode(sseChunks[idx++]) };
+                    }
+                };
+            }
+        }
+    };
+    const fastShortCircuit = result({
+        compiled: '短文本原样',
+        strategy: 'passthrough',
+        reason: '短文本低于 LLM 压缩收益阈值（<180 字或 <80 token），原样直通（<1ms）',
+        elapsed_ms: 0,
+        validation: validation('passed', 'local_fast')
+    });
+    const { context, get, requests } = setup([sseResponse, { data: fastShortCircuit }]);
+    get('verifyCheck').checked = true;
+    get('compileStrategy').value = 'auto';
+
+    await context.runCompile();
+    assert.equal(requests[0].url, '/api/compile/stream');
+    assert.equal(get('dslOutput').value, '∀req: check');
+    assert.equal(get('invariantCapsules').dataset.validationStatus, 'passed');
+    assert.match(get('statsBadge').textContent, /并行编译 · 420ms/);
+
+    await context.runCompile();
+    assert.equal(get('dslOutput').value, '短文本原样');
+    assert.equal(get('invariantCapsules').dataset.validationStatus, 'passed');
+    assert.equal(get('copyBtn').textContent, '复制结果');
+    assert.match(get('statsBadge').textContent, /短文本直通 · 0ms/);
+    assert.match(get('auditBox').textContent, /短文本低于 LLM 压缩收益阈值/);
+});
+
+test('proxy renders local_fast decision badge and updates local_fast_path policy', async () => {
+    const { context, get, requests } = setup([
+        {
+            data: {
+                proxy_speed: {
+                    dry_run: false, skip_cache_control: false, compress_developer: false,
+                    async_warmup: true, local_fast_path: true, compile_budget: '5s', warmup_user_min_hits: 2
+                },
+                metrics: { requests_total: 1, adopted_total: 1, adopted_orig_tokens_total: 120, adopted_saved_tokens_total: 30 },
+                logs: [{
+                    id: 'lf-1', timestamp: '14:30:00', protocol: 'openai', dialect: 'mixed', role: 'user',
+                    decision: 'local_fast', reason: '本地无损压缩（<1ms）即时生效',
+                    validation_method: 'local_fast', original: 'raw   text', compiled: 'raw text',
+                    ratio: '文本 Token（估算）120→90 (减少25.0%)', measurement_kind: 'estimated'
+                }]
+            }
+        },
+        {
+            data: {
+                status: 'ok',
+                proxy_speed: {
+                    dry_run: false, skip_cache_control: false, compress_developer: false,
+                    async_warmup: true, local_fast_path: false, compile_budget: '5s', warmup_user_min_hits: 2
+                }
+            }
+        }
+    ]);
+    await context.loadLogs();
+    assert.equal(get('policyLocalFastCheck').checked, true);
+    assert.match(get('proxyMetricsBar').textContent, /本地快路径\(<1ms\)/);
+    assert.match(get('logsContainer').textContent, /本地无损压缩/);
+    assert.match(get('logsContainer').textContent, /实际发送：本地无损压缩/);
+    assert.match(get('logsContainer').textContent, /校验方式：本地快路径/);
+
+    await context.updateProxyPolicyField({ local_fast_path: false });
+    assert.deepEqual(JSON.parse(requests[1].options.body), { action: 'update_policy', local_fast_path: false });
+    assert.equal(get('policyLocalFastCheck').checked, false);
 });

@@ -10,10 +10,10 @@ import (
 )
 
 const (
-	parallelChunkThreshold     = 2000
-	chunkTargetRunes           = 1000
-	chunkMinRunes              = 700
-	parallelChunkWorkers       = 4
+	parallelChunkThreshold     = 1200
+	chunkTargetRunes           = 750
+	chunkMinRunes              = 450
+	parallelChunkWorkers       = 6
 	defaultChunkMaxConcurrency = 16
 )
 
@@ -21,9 +21,22 @@ const (
 // already holding a proxyCompileSem slot can never self-deadlock on nested acquire.
 var chunkCompileSem = newCompileSemaphore(envPositiveInt("BABEL_CHUNK_MAX_CONCURRENCY", defaultChunkMaxConcurrency))
 
-// shouldCompileInChunks 只在显式开启且确实超长时走分块路径；
-// 默认关闭，保证既有编译输出与测试完全不变。
+func enableAutoParallelChunks(req CompileReq) CompileReq {
+	switch normalizeCompileStrategy(req.Strategy) {
+	case "auto", "deep":
+		if utf8.RuneCountInString(req.Text) > parallelChunkThreshold {
+			req.ParallelChunks = true
+		}
+	}
+	return req
+}
+
+// shouldCompileInChunks 只在显式开启或 auto/deep 策略遇到超长文本时走分块并行；
+// 传统空策略仍保留显式开关语义，保证既有编译行为与测试完全兼容。
 func shouldCompileInChunks(req CompileReq) bool {
+	if normalizeCompileStrategy(req.Strategy) == "local" {
+		return false
+	}
 	return req.ParallelChunks && utf8.RuneCountInString(req.Text) > parallelChunkThreshold
 }
 

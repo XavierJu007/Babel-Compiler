@@ -25,6 +25,7 @@ var (
 	proxyCompressDeveloper  bool
 	proxyMinRunes           = 35
 	proxySkipNonProse       bool
+	proxyLocalFastPath      bool
 	proxyWarmupWorkers      = 2
 	// proxyWarmupUserMinHits 控制 user 角色文本进入后台异步预热前需被观测到的次数：
 	// 包级默认 1 保持单测零变化；服务端生产默认 2，避免一次性 user 提问白烧编译配额与污染 LRU。
@@ -108,6 +109,11 @@ func configureProxySpeedDefaults() {
 	} else {
 		proxySkipNonProse = true
 	}
+	if raw, ok := os.LookupEnv("BABEL_PROXY_LOCAL_FAST"); ok {
+		proxyLocalFastPath = parseProxyBool(raw, false)
+	} else {
+		proxyLocalFastPath = true
+	}
 	if raw, ok := os.LookupEnv("BABEL_PROXY_COMPILE_BUDGET"); ok {
 		proxyCompileBudget = parseProxyDuration(raw)
 	} else {
@@ -155,6 +161,7 @@ type proxyPolicySnapshot struct {
 	CompressDeveloper bool
 	AsyncWarmup       bool
 	SkipNonProse      bool
+	LocalFastPath     bool
 	CompileBudget     time.Duration
 	WarmupUserMinHits int
 	MinRunes          int
@@ -169,6 +176,7 @@ func snapshotProxyPolicy() proxyPolicySnapshot {
 		CompressDeveloper: proxyCompressDeveloper,
 		AsyncWarmup:       proxyAsyncWarmup,
 		SkipNonProse:      proxySkipNonProse,
+		LocalFastPath:     proxyLocalFastPath,
 		CompileBudget:     proxyCompileBudget,
 		WarmupUserMinHits: proxyWarmupUserMinHits,
 		MinRunes:          proxyMinRunes,
@@ -180,6 +188,7 @@ type proxyPolicyPatch struct {
 	SkipCacheControl  *bool
 	CompressDeveloper *bool
 	AsyncWarmup       *bool
+	LocalFastPath     *bool
 	CompileBudget     *string
 	WarmupUserMinHits *int
 }
@@ -223,6 +232,9 @@ func updateProxyPolicy(patch proxyPolicyPatch) error {
 	if patch.AsyncWarmup != nil {
 		proxyAsyncWarmup = *patch.AsyncWarmup
 	}
+	if patch.LocalFastPath != nil {
+		proxyLocalFastPath = *patch.LocalFastPath
+	}
 	if patch.CompileBudget != nil {
 		proxyCompileBudget = parsedBudget
 	}
@@ -253,6 +265,7 @@ func proxySpeedSummary() map[string]any {
 		"warmup_user_min_hits": snap.WarmupUserMinHits,
 		"min_runes":            snap.MinRunes,
 		"skip_non_prose":       snap.SkipNonProse,
+		"local_fast_path":      snap.LocalFastPath,
 		"warmup_workers":       proxyWarmupWorkers,
 	}
 }
@@ -418,6 +431,7 @@ func runShadowWarmup(job shadowWarmupJob) {
 		APIKey:                job.profile.APIKey,
 		BaseURL:               job.profile.BaseURL,
 		Model:                 job.profile.Model,
+		ParallelChunks:        true,
 		TokenEncoding:         job.profile.TokenEncoding,
 		ValidationMode:        job.profile.ValidationMode,
 		ReaderProfile:         &job.profile.ReaderProfile,

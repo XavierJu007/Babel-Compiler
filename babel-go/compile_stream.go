@@ -240,6 +240,7 @@ func compileStreamHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stream := newCompileStreamWriter(w)
+	startedAt := time.Now()
 	fail := func(message string, candidate string, validation ValidationResult) {
 		payload := map[string]any{"error": message}
 		if candidate != "" {
@@ -283,6 +284,16 @@ func compileStreamHandler(w http.ResponseWriter, r *http.Request) {
 		fail(err.Error(), "", ValidationResult{})
 		return
 	}
+	if fastResp, handled, fastErr := tryFastCompileStrategy(req, p, dialect); handled {
+		if fastErr != nil {
+			fail(fastErr.Error(), fastResp.Compiled, fastResp.Validation)
+			return
+		}
+		fastResp.ElapsedMs = time.Since(startedAt).Milliseconds()
+		stream.emit("result", fastResp)
+		return
+	}
+	req = enableAutoParallelChunks(req)
 
 	// 生成缓存命中时不做流式（没有可流的内容），直接进入校验并给结果。
 	cacheKey := makeCacheKey(dialect, p, req.Text)
@@ -295,12 +306,14 @@ func compileStreamHandler(w http.ResponseWriter, r *http.Request) {
 		cacheHit = candidate != "" && len(babelStructureIssues(req.Text, candidate)) == 0
 	}
 	var genErr error
+	strategy := "llm_compile"
 	if cacheHit {
 		stream.emit("stage", map[string]string{"stage": "validating"})
 	} else {
 		candidate = ""
 		stream.emit("stage", map[string]string{"stage": "generating"})
 		if shouldCompileInChunks(req) {
+			strategy = "llm_parallel"
 			candidate, genErr = generateBabelCandidateParallel(r.Context(), p, dialect, req.Text)
 			if genErr == nil {
 				stream.emit("delta", map[string]any{"chunk": candidate, "reset": false})
@@ -323,7 +336,7 @@ func compileStreamHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	out := CompileResp{Compiled: candidate, Dialect: dialect.Name, CacheHit: cacheHit}
+	out := CompileResp{Compiled: candidate, Dialect: dialect.Name, CacheHit: cacheHit, Strategy: strategy}
 	if genErr != nil {
 		out.Validation = newValidation("error", "none", genErr.Error())
 		var validationErr *ValidationError
@@ -339,7 +352,7 @@ func compileStreamHandler(w http.ResponseWriter, r *http.Request) {
 	if !cacheHit {
 		stream.emit("stage", map[string]string{"stage": "validating"})
 	}
-	out, err = validateCompileResponse(r.Context(), req, p, auditor, reader, out)
+	out, err = validateAndFinalizeCompileResponse(r.Context(), req, p, auditor, reader, out, startedAt)
 	if err != nil {
 		var validationErr *ValidationError
 		if errors.As(err, &validationErr) {

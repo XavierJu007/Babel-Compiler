@@ -381,6 +381,7 @@ func newServerMux() *http.ServeMux {
 				SkipCacheControl  *bool   `json:"skip_cache_control"`
 				CompressDeveloper *bool   `json:"compress_developer"`
 				AsyncWarmup       *bool   `json:"async_warmup"`
+				LocalFastPath     *bool   `json:"local_fast_path"`
 				CompileBudget     *string `json:"compile_budget"`
 				WarmupUserMinHits *int    `json:"warmup_user_min_hits"`
 			}
@@ -400,6 +401,7 @@ func newServerMux() *http.ServeMux {
 					SkipCacheControl:  req.SkipCacheControl,
 					CompressDeveloper: req.CompressDeveloper,
 					AsyncWarmup:       req.AsyncWarmup,
+					LocalFastPath:     req.LocalFastPath,
 					CompileBudget:     req.CompileBudget,
 					WarmupUserMinHits: req.WarmupUserMinHits,
 				}); err != nil {
@@ -501,9 +503,9 @@ func startServer(preferredAddr string, autoOpen bool) {
 	fmt.Printf("    - 代理并发控制:   全局上限 %d / 单请求块并发 %d / 队列超时 %v\n",
 		proxyCompileSem.Status()["limit"], proxyBlockConcurrency, proxyCompileQueueTimeout)
 	snap := snapshotProxyPolicy()
-	fmt.Printf("    - 代理策略:       Dry-Run %t / 校验缓存 %s / 负缓存 %s / 编译预算 %s / 异步预热 %t (user≥%d次) / 保护cache_control %t / 最小长度 %d / 跳过非散文 %t\n",
+	fmt.Printf("    - 代理策略:       Dry-Run %t / 校验缓存 %s / 负缓存 %s / 编译预算 %s / 异步预热 %t (user≥%d次) / 本地快路径 %t / 保护cache_control %t / 最小长度 %d / 跳过非散文 %t\n",
 		snap.DryRun, proxySpeedDurationLabel(proxyValidationCacheTTL), proxySpeedDurationLabel(proxyNegativeCacheTTL),
-		proxySpeedDurationLabel(snap.CompileBudget), snap.AsyncWarmup, snap.WarmupUserMinHits, snap.SkipCacheControl, snap.MinRunes, snap.SkipNonProse)
+		proxySpeedDurationLabel(snap.CompileBudget), snap.AsyncWarmup, snap.WarmupUserMinHits, snap.LocalFastPath, snap.SkipCacheControl, snap.MinRunes, snap.SkipNonProse)
 	fmt.Printf("    - Web 控制台:     %s\n", webURL)
 	fmt.Printf("    - 健康检查:       %s/healthz\n", webURL)
 	fmt.Printf("    - OpenAI 代理:    %s/v1/chat/completions · %s/v1/responses\n", webURL, webURL)

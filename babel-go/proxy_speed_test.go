@@ -23,6 +23,7 @@ func unsetProxySpeedEnv(t *testing.T) {
 		"BABEL_PROXY_ASYNC_WARMUP",
 		"BABEL_PROXY_MIN_RUNES",
 		"BABEL_PROXY_SKIP_NON_PROSE",
+		"BABEL_PROXY_LOCAL_FAST",
 	} {
 		old, existed := os.LookupEnv(name)
 		if err := os.Unsetenv(name); err != nil {
@@ -52,6 +53,7 @@ func resetProxySpeedVars(t *testing.T) {
 	proxyWarmupUserMinHits = 1
 	proxyMinRunes = 35
 	proxySkipNonProse = false
+	proxyLocalFastPath = false
 	proxyPolicyMu.Unlock()
 	validationCache.Reset()
 	negativeCache.Reset()
@@ -68,6 +70,7 @@ func resetProxySpeedVars(t *testing.T) {
 		proxyWarmupUserMinHits = 1
 		proxyMinRunes = 35
 		proxySkipNonProse = false
+		proxyLocalFastPath = false
 		proxyPolicyMu.Unlock()
 		validationCache.Reset()
 		negativeCache.Reset()
@@ -82,9 +85,9 @@ func TestProxySpeedProductionDefaultsAndExplicitOverrides(t *testing.T) {
 	unsetProxySpeedEnv(t)
 	configureProxySpeedDefaults()
 	if proxyValidationCacheTTL != 10*time.Minute || proxyNegativeCacheTTL != 10*time.Minute ||
-		!proxyAsyncWarmup || proxyMinRunes != 150 || !proxySkipNonProse {
-		t.Fatalf("production defaults not applied: ttl=%v/%v warmup=%t minRunes=%d skipNonProse=%t",
-			proxyValidationCacheTTL, proxyNegativeCacheTTL, proxyAsyncWarmup, proxyMinRunes, proxySkipNonProse)
+		!proxyAsyncWarmup || proxyMinRunes != 150 || !proxySkipNonProse || !proxyLocalFastPath {
+		t.Fatalf("production defaults not applied: ttl=%v/%v warmup=%t minRunes=%d skipNonProse=%t localFast=%t",
+			proxyValidationCacheTTL, proxyNegativeCacheTTL, proxyAsyncWarmup, proxyMinRunes, proxySkipNonProse, proxyLocalFastPath)
 	}
 
 	t.Setenv("BABEL_PROXY_VALIDATION_CACHE_TTL", "0")
@@ -92,11 +95,12 @@ func TestProxySpeedProductionDefaultsAndExplicitOverrides(t *testing.T) {
 	t.Setenv("BABEL_PROXY_ASYNC_WARMUP", "false")
 	t.Setenv("BABEL_PROXY_MIN_RUNES", "35")
 	t.Setenv("BABEL_PROXY_SKIP_NON_PROSE", "false")
+	t.Setenv("BABEL_PROXY_LOCAL_FAST", "false")
 	configureProxySpeedDefaults()
 	if proxyValidationCacheTTL != 0 || proxyNegativeCacheTTL != 0 ||
-		proxyAsyncWarmup || proxyMinRunes != 35 || proxySkipNonProse {
-		t.Fatalf("explicit overrides ignored: ttl=%v/%v warmup=%t minRunes=%d skipNonProse=%t",
-			proxyValidationCacheTTL, proxyNegativeCacheTTL, proxyAsyncWarmup, proxyMinRunes, proxySkipNonProse)
+		proxyAsyncWarmup || proxyMinRunes != 35 || proxySkipNonProse || proxyLocalFastPath {
+		t.Fatalf("explicit overrides ignored: ttl=%v/%v warmup=%t minRunes=%d skipNonProse=%t localFast=%t",
+			proxyValidationCacheTTL, proxyNegativeCacheTTL, proxyAsyncWarmup, proxyMinRunes, proxySkipNonProse, proxyLocalFastPath)
 	}
 
 	t.Setenv("BABEL_PROXY_VALIDATION_CACHE_TTL", "90s")

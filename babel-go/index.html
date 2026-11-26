@@ -1613,6 +1613,11 @@
                     <span id="inputCharCount" class="char-counter">0 chars</span>
                 </div>
                 <div class="pane-actions">
+                    <select id="compileStrategy" class="select-dark" onchange="updateCompileOptionsHint()" title="auto：短文本(<180字或<80tok)与JSON走<1ms本地策略，长文本(>1200字)自动并行；local：<1ms零LLM；deep：强制LLM" style="padding: 4px 8px; font-size: 12px;">
+                        <option value="auto" selected>自动策略 · 短直通/长并行</option>
+                        <option value="local">极速本地 · &lt;1ms</option>
+                        <option value="deep">深度语义 · LLM</option>
+                    </select>
                     <label class="checkbox-label" title="由后端执行本地检查及所选校验；未通过或异常时保留候选供检查，透明代理回退原文。通过不代表完整语义证明。">
                         <input id="verifyCheck" type="checkbox" checked onchange="updateCompileOptionsHint()"> 严格校验
                     </label>
@@ -1705,6 +1710,9 @@
             </label>
             <label class="checkbox-label" title="冷启动先原文直通并在后台异步预热缓存">
                 <input id="policyAsyncWarmupCheck" type="checkbox" checked onchange="updateProxyPolicyField({ async_warmup: this.checked })"> 异步预热
+            </label>
+            <label class="checkbox-label" title="冷启动与纯JSON先做<1ms本地无损压缩即时生效，同时后台预热深度编译">
+                <input id="policyLocalFastCheck" type="checkbox" checked onchange="updateProxyPolicyField({ local_fast_path: this.checked })"> 本地快路径(&lt;1ms)
             </label>
             <label class="policy-inline-field" for="policyCompileBudgetSelect">
                 <span>编译预算</span>
@@ -1933,9 +1941,33 @@
                 </select>
             </div>
         </div>
+        <div class="form-grid-2">
+            <div class="form-group">
+                <label for="cfgReaderProfile" class="form-label">盲读阅读器（已保存的模型方案）</label>
+                <select id="cfgReaderProfile" class="select-dark"><option value="">与编译方案相同</option></select>
+            </div>
+            <div class="form-group">
+                <label for="cfgAuditProfile" class="form-label">独立语义审计方案（可用极速小模型）</label>
+                <select id="cfgAuditProfile" class="select-dark"><option value="">与编译方案相同</option></select>
+            </div>
+        </div>
+        <div class="form-grid-2">
+            <div class="form-group">
+                <label for="cfgReasoningEffort" class="form-label">推理深度上限 (reasoning_effort)</label>
+                <select id="cfgReasoningEffort" class="select-dark">
+                    <option value="">默认不注入（保持上游默认）</option>
+                    <option value="none">none · 关闭推理</option>
+                    <option value="minimal">minimal · 极低</option>
+                    <option value="low">low · 低耗时</option>
+                </select>
+            </div>
+            <div class="form-group" style="display: flex; flex-direction: column; justify-content: flex-end; padding-bottom: 6px;">
+                <label class="checkbox-label" title="显式注入思考关闭开关以消除 reasoning token 长尾等待（部分网关兼容）">
+                    <input id="cfgDisableThinking" type="checkbox"> 关闭思考模式 (disable_thinking)
+                </label>
+            </div>
+        </div>
         <div class="form-group">
-            <label for="cfgReaderProfile" class="form-label">盲读阅读器（已保存的模型方案）</label>
-            <select id="cfgReaderProfile" class="select-dark"><option value="">与编译方案相同</option></select>
             <span id="cfgValidationHint" class="domain-note"></span>
             <span class="domain-note">目标编码与编译模型独立；不能把 OpenAI 编码默认用于 Qwen 或 Claude。计数仅含文本本体，不代表整次请求账单。</span>
         </div>
@@ -2698,6 +2730,7 @@
         const active = serverConfig.profiles[selectedCompileProfileName()] || {};
         const reader = document.getElementById('readerProfileSelect').value;
         const options = {
+            strategy: document.getElementById('compileStrategy')?.value || 'auto',
             token_encoding: document.getElementById('tokenEncodingSelect').value || active.token_encoding || 'estimate',
             validation_mode: document.getElementById('validationModeSelect').value || active.validation_mode || 'compare',
             effective_reader: reader === 'same' ? '' : reader.startsWith('profile:') ? reader.slice(8) : active.reader_profile || ''
@@ -2739,6 +2772,10 @@
         setSelectValue('cfgTokenEncoding', p.token_encoding || 'estimate');
         setSelectValue('cfgValidationMode', p.validation_mode || 'compare');
         populateReaderProfiles('cfgReaderProfile', p.reader_profile || '');
+        populateReaderProfiles('cfgAuditProfile', p.audit_profile || '');
+        setSelectValue('cfgReasoningEffort', p.reasoning_effort || '');
+        const disableThinkingEl = document.getElementById('cfgDisableThinking');
+        if (disableThinkingEl) disableThinkingEl.checked = Boolean(p.disable_thinking);
         updateConfigValidationHint();
         document.getElementById('cfgApiKey').value = '';
         document.getElementById('cfgApiKey').placeholder = p.has_api_key
@@ -2832,6 +2869,9 @@
         const tokenEncoding = document.getElementById('cfgTokenEncoding').value || 'estimate';
         const validationMode = document.getElementById('cfgValidationMode').value || 'compare';
         const readerProfile = document.getElementById('cfgReaderProfile').value;
+        const auditProfile = document.getElementById('cfgAuditProfile').value;
+        const disableThinking = Boolean(document.getElementById('cfgDisableThinking').checked);
+        const reasoningEffort = document.getElementById('cfgReasoningEffort').value;
 
         try {
             await fetchJSON('/api/config', {
@@ -2846,7 +2886,10 @@
                     upstream_url: upstreamUrl,
                     token_encoding: tokenEncoding,
                     validation_mode: validationMode,
-                    reader_profile: readerProfile
+                    reader_profile: readerProfile,
+                    audit_profile: auditProfile,
+                    disable_thinking: disableThinking,
+                    reasoning_effort: reasoningEffort
                 })
             });
             invalidateCompileContext(true);
@@ -2858,7 +2901,10 @@
                 upstream_url: upstreamUrl,
                 token_encoding: tokenEncoding,
                 validation_mode: validationMode,
-                reader_profile: readerProfile
+                reader_profile: readerProfile,
+                audit_profile: auditProfile,
+                disable_thinking: disableThinking,
+                reasoning_effort: reasoningEffort
             }));
 
             await loadInitConfig();
@@ -2911,7 +2957,7 @@
                 issues: ['后端未提供本次校验结果。'], stages: [] };
         }
         const statuses = ['not_run', 'passed', 'failed', 'error'];
-        const methods = ['none', 'local_checks', 'llm_compare', 'blind_read'];
+        const methods = ['none', 'local_checks', 'local_fast', 'llm_compare', 'blind_read'];
         const stages = validation.stages === undefined ? [] : validation.stages;
         const stagesValid = Array.isArray(stages) && stages.every(stage => stage &&
             ['local_checks', 'reader', 'comparator'].includes(stage.name) &&
@@ -2952,7 +2998,7 @@
         title.style.fontWeight = '600';
         title.textContent = '后端校验:';
         box.appendChild(title);
-        const methodLabel = { none: '未执行', local_checks: '本地检查', llm_compare: '模型对照', blind_read: '独立盲读对照' }[result.method];
+        const methodLabel = { none: '未执行', local_checks: '本地检查', local_fast: '本地快路径', llm_compare: '模型对照', blind_read: '独立盲读对照' }[result.method];
         const labels = { not_run: '未校验', passed: `${methodLabel}通过`, failed: '校验未通过', error: '校验异常' };
         const pill = document.createElement('span');
         pill.className = result.status === 'passed' ? 'inv-pill-ok' :
@@ -2964,6 +3010,7 @@
         const explanations = {
             not_run: '本次候选未完成校验，不能据此判断约束是否完整保留。',
             passed: result.method === 'local_checks' ? '仅通过已实现的本地检查项，尚未完成模型对照。' :
+                result.method === 'local_fast' ? '已由本地确定性规则/短文本策略快速放行（<1ms），零模型往返且字面约束完整保留。' :
                 result.method === 'blind_read' ? '阅读器只根据候选提取理解，随后与原文对照通过；这不保证任意模型都能正确理解。' :
                 '本次模型对照未发现问题；这不是完整语义保留或跨模型可读性的证明。',
             failed: '后端检测到缺失、冲突或歧义；本次候选未通过。',
@@ -3096,7 +3143,22 @@
 
         const badge = document.getElementById('statsBadge');
         const measurement = formatTokenMeasurement(data.stats);
-        badge.textContent = measurement.available ? measurement.text : '';
+        if (measurement.available) {
+            const strategyNames = {
+                local_fast: '本地无损',
+                passthrough: '短文本直通',
+                llm_parallel: '并行编译',
+                llm_compile: '语义编译'
+            };
+            const parts = [measurement.text];
+            if (strategyNames[data.strategy]) parts.push(strategyNames[data.strategy]);
+            if (Number.isFinite(data.elapsed_ms) && data.elapsed_ms >= 0) {
+                parts.push(data.elapsed_ms < 1000 ? `${data.elapsed_ms}ms` : `${(data.elapsed_ms / 1000).toFixed(2)}s`);
+            }
+            badge.textContent = parts.join(' · ');
+        } else {
+            badge.textContent = '';
+        }
         badge.title = measurement.available ? measurement.title : '';
         badge.classList.toggle('hidden', !measurement.available);
         document.getElementById('cacheBadge').classList.toggle('hidden', data.cache_hit !== true);
@@ -3189,12 +3251,105 @@
         updateInputCount();
     }
 
+    async function fetchCompileStream(url, options, callbacks = {}) {
+        const res = await fetch(url, options);
+        const contentType = res.headers && typeof res.headers.get === 'function'
+            ? (res.headers.get('content-type') || '')
+            : '';
+        const canStream = res.ok && res.body && typeof res.body.getReader === 'function' &&
+            contentType.includes('text/event-stream');
+        if (!canStream) {
+            const rawText = await res.text();
+            let data;
+            try {
+                data = JSON.parse(rawText);
+            } catch (e) {
+                const preview = rawText.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
+                const error = new Error(`HTTP ${res.status}：响应不是有效 JSON。\n响应摘要: ${preview}`);
+                error.status = res.status;
+                throw error;
+            }
+            if (!res.ok) {
+                const error = new Error(typeof data?.detail === 'string' ? data.detail : `请求失败 (HTTP ${res.status})`);
+                error.status = res.status;
+                error.validation = data?.validation;
+                error.data = data;
+                throw error;
+            }
+            return data;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let buffer = '';
+        let finalResult = null;
+        let streamErr = null;
+
+        const dispatchBlock = block => {
+            if (!block.trim()) return;
+            let eventName = 'message';
+            const dataLines = [];
+            for (const rawLine of block.split(/\r?\n/)) {
+                if (rawLine.startsWith('event:')) {
+                    eventName = rawLine.slice(6).trim();
+                } else if (rawLine.startsWith('data:')) {
+                    dataLines.push(rawLine.slice(5).trimStart());
+                }
+            }
+            if (!dataLines.length) return;
+            let payload;
+            try {
+                payload = JSON.parse(dataLines.join('\n'));
+            } catch (e) {
+                return;
+            }
+            if (eventName === 'stage') {
+                callbacks.onStage?.(payload.stage || '');
+            } else if (eventName === 'delta') {
+                callbacks.onDelta?.(payload.chunk || '', Boolean(payload.reset));
+            } else if (eventName === 'result') {
+                finalResult = payload;
+            } else if (eventName === 'error') {
+                const err = new Error(payload.error || '编译流失败');
+                err.status = payload.validation?.status === 'failed' ? 422 : 502;
+                err.validation = payload.validation;
+                if (payload.candidate) {
+                    err.data = { compiled: payload.candidate, validation: payload.validation };
+                }
+                streamErr = err;
+            }
+        };
+
+        while (true) {
+            const { value, done } = await reader.read();
+            if (value) {
+                buffer += decoder.decode(value, { stream: !done });
+                const parts = buffer.split(/\r?\n\r?\n/);
+                buffer = parts.pop() || '';
+                for (const part of parts) {
+                    dispatchBlock(part);
+                }
+            }
+            if (done) break;
+        }
+        buffer += decoder.decode();
+        if (buffer.trim()) {
+            for (const part of buffer.split(/\r?\n\r?\n/)) {
+                dispatchBlock(part);
+            }
+        }
+        if (streamErr) throw streamErr;
+        if (!finalResult) throw new Error('编译流意外中断，未收到完整结果。');
+        return finalResult;
+    }
+
     async function runCompile(noCache = false) {
         const text = document.getElementById('rawInput').value;
         if (!text.trim()) return;
         const requestSequence = ++compileRequestSequence;
         const btn = document.getElementById('runBtn');
         const forceBtn = document.getElementById('forceBtn');
+        const output = document.getElementById('dslOutput');
         resetCompileResult();
         btn.textContent = '编译中...';
         btn.disabled = true;
@@ -3208,13 +3363,15 @@
         lastCompileContext = requestContext;
 
         try {
-            const data = await fetchJSON('/api/compile', {
+            const data = await fetchCompileStream('/api/compile/stream', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     text,
                     ...(profile ? { profile } : {}),
                     domains: [...selectedDomains],
+                    strategy: options.strategy,
+                    parallel_chunks: options.strategy !== 'local',
                     token_encoding: options.token_encoding,
                     validation_mode: options.validation_mode,
                     ...(options.reader_profile !== undefined ? { reader_profile: options.reader_profile } : {}),
@@ -3222,6 +3379,17 @@
                     strict_gate: strictGate,
                     no_cache: noCache
                 })
+            }, {
+                onStage: stage => {
+                    if (!compileRequestIsCurrent(text, requestContext, requestSequence)) return;
+                    if (stage === 'generating') btn.textContent = '生成中...';
+                    else if (stage === 'validating') btn.textContent = '校验中...';
+                },
+                onDelta: (chunk, reset) => {
+                    if (!compileRequestIsCurrent(text, requestContext, requestSequence)) return;
+                    if (reset) output.value = '';
+                    if (chunk) output.value += chunk;
+                }
             });
 
             if (!compileRequestIsCurrent(text, requestContext, requestSequence)) return;
@@ -3230,18 +3398,21 @@
             }
             const validation = normalizeValidation(data.validation);
             const expectedMethod = options.validation_mode === 'blind' ? 'blind_read' : 'llm_compare';
-            if (strictGate && (validation.status !== 'passed' || validation.method !== expectedMethod)) {
+            const isFastShortCircuit = (options.strategy === 'auto' || options.strategy === 'local') &&
+                (data.strategy === 'local_fast' || data.strategy === 'passthrough') &&
+                validation.status === 'passed' && validation.method === 'local_fast';
+            if (strictGate && !isFastShortCircuit && (validation.status !== 'passed' || validation.method !== expectedMethod)) {
                 const error = new Error(`所选 ${options.validation_mode} 严格校验未通过验收，候选仅供检查。`);
                 error.validation = validation;
                 error.data = data;
                 throw error;
             }
-            const displayedValidation = !strictGate && !['failed', 'error'].includes(validation.status) ? {
+            const displayedValidation = !strictGate && !isFastShortCircuit && !['failed', 'error'].includes(validation.status) ? {
                 status: 'not_run', method: 'none', policy_version: 'semantic-gate-v2',
                 issues: ['本次未开启严格校验，未执行模型验收。']
             } : validation;
             renderCompileCandidate(data, displayedValidation);
-            renderValidation(displayedValidation);
+            renderValidation(displayedValidation, data.reason || '');
 
         } catch (err) {
             if (!compileRequestIsCurrent(text, requestContext, requestSequence)) return;
@@ -3459,6 +3630,7 @@
         setCheck('policySkipCacheCheck', speed.skip_cache_control);
         setCheck('policyCompressDevCheck', speed.compress_developer);
         setCheck('policyAsyncWarmupCheck', speed.async_warmup);
+        setCheck('policyLocalFastCheck', speed.local_fast_path);
 
         const budgetSelect = document.getElementById('policyCompileBudgetSelect');
         if (budgetSelect && speed.compile_budget) {
@@ -3601,6 +3773,7 @@
             if (speed.dry_run) addChip('Dry-Run 开', 'tag tag-dryrun');
             addChip(`编译预算 ${speed.compile_budget || 'off'}`);
             addChip(`异步预热 ${speed.async_warmup ? '开(user≥' + (speed.warmup_user_min_hits ?? 1) + ')' : '关'}`);
+            if (speed.local_fast_path) addChip('本地快路径(<1ms)');
             if (speed.skip_cache_control) addChip('保护 cache_control');
         }
         bar.classList.remove('hidden');
@@ -3667,15 +3840,16 @@
                 if (Array.isArray(item.domains) && item.domains.length) addTag(`领域：${item.domains.join(' · ')}`, 'tag tag-dialect');
                 addTag(item.role || '', roleClass);
                 const adopted = item.decision === 'adopted';
+                const localFast = item.decision === 'local_fast';
                 const dryRunWouldAdopt = item.decision === 'dry_run_would_adopt';
                 const keptOriginal = item.decision === 'kept_original';
                 addTag(
-                    adopted ? '已采用候选' : dryRunWouldAdopt ? 'Dry-Run 可省（原样转发）' : keptOriginal ? '已保留原文' : '决策未提供',
-                    adopted ? 'tag tag-dialect' : dryRunWouldAdopt ? 'tag tag-dryrun' : 'tag tag-role'
+                    adopted ? '已采用候选' : localFast ? '本地无损压缩' : dryRunWouldAdopt ? 'Dry-Run 可省（原样转发）' : keptOriginal ? '已保留原文' : '决策未提供',
+                    (adopted || localFast) ? 'tag tag-dialect' : dryRunWouldAdopt ? 'tag tag-dryrun' : 'tag tag-role'
                 );
                 const measurement = formatProxyMeasurement(item);
                 if (measurement) addTag(measurement, 'tag tag-estimated');
-                const validationLabel = { blind_read: '盲读对照', llm_compare: '模型对照', local_checks: '本地检查', cached: '缓存校验', none: '未执行校验' }[item.validation_method];
+                const validationLabel = { blind_read: '盲读对照', llm_compare: '模型对照', local_checks: '本地检查', local_fast: '本地快路径', cached: '缓存校验', none: '未执行校验' }[item.validation_method];
                 if (validationLabel) addTag(`校验方式：${validationLabel}`, 'tag tag-role');
                 const usage = formatProxyUsage(item);
                 if (usage) {
@@ -3722,11 +3896,13 @@
                 right.className = 'log-col';
                 const rightHeader = adopted
                     ? '实际发送：候选'
-                    : dryRunWouldAdopt
-                        ? 'Dry-Run 候选（实际已原样转发）'
-                        : keptOriginal
-                            ? '实际发送：原文'
-                            : '记录文本（决策未提供）';
+                    : localFast
+                        ? '实际发送：本地无损压缩'
+                        : dryRunWouldAdopt
+                            ? 'Dry-Run 候选（实际已原样转发）'
+                            : keptOriginal
+                                ? '实际发送：原文'
+                                : '记录文本（决策未提供）';
                 const rightHead = document.createElement('div');
                 rightHead.className = 'log-col-head';
                 rightHead.textContent = rightHeader;

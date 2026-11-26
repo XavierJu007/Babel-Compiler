@@ -366,6 +366,37 @@ func translateMessageBlockWithConfig(ctx context.Context, protocol, role, text s
 	return translateMessageBlockWithOptions(ctx, protocol, role, text, p, dialect, reqKeywords, domains, preloadedCfg, false)
 }
 
+func tryProxyLocalFastCompress(protocol, role, text string, p Profile, dialect Dialect, domains, activeKeywords []string, reasonWhenWarm, reasonDryRun string, dryRun bool) (string, string, int, bool) {
+	localComp, _, _, changed := localCompressDeterministic(text, p.TokenEncoding, activeKeywords)
+	if !changed || strings.TrimSpace(localComp) == "" {
+		return "", "", 0, false
+	}
+	resp, err := buildLocalFastCompileResp(text, localComp, dialect.Name, p.TokenEncoding, "local_fast", reasonWhenWarm, false)
+	if err != nil {
+		return "", "", 0, false
+	}
+	compTok := estimateTokensBPE(localComp)
+	logID := fmt.Sprintf("%d-%d", time.Now().UnixNano(), proxyLogSequence.Add(1))
+	decision := "local_fast"
+	reason := reasonWhenWarm
+	if dryRun {
+		decision = "dry_run_would_adopt"
+		reason = reasonDryRun
+	}
+	appendProxyLog(ProxyLog{
+		ID: logID, Timestamp: time.Now().Format("15:04:05"),
+		Protocol: protocol, Dialect: dialect.Name, Domains: domains, Role: role,
+		Original: text, Compiled: localComp,
+		Decision:            decision,
+		Reason:              reason,
+		Ratio:               resp.Stats.CompressionRatio,
+		MeasurementKind:     resp.Stats.MeasurementKind,
+		MeasurementEncoding: resp.Stats.MeasurementEncoding,
+		ValidationMethod:    "local_fast",
+	})
+	return localComp, logID, compTok, true
+}
+
 func translateMessageBlockWithOptions(ctx context.Context, protocol, role, text string, p Profile, dialect Dialect, reqKeywords, domains []string, preloadedCfg *Config, dryRun bool) (string, string, int, int) {
 	origTok := estimateTokensBPE(text)
 	if ctx.Err() != nil {
@@ -373,10 +404,6 @@ func translateMessageBlockWithOptions(ctx context.Context, protocol, role, text 
 	}
 	policy := snapshotProxyPolicy()
 	if utf8.RuneCountInString(strings.TrimSpace(text)) < policy.MinRunes {
-		return text, "", origTok, origTok
-	}
-	// 纯 JSON 或整体代码围栏对模型没有压缩价值，本地直接跳过。
-	if policy.SkipNonProse && isNonProsePayload(text) {
 		return text, "", origTok, origTok
 	}
 
@@ -388,6 +415,21 @@ func translateMessageBlockWithOptions(ctx context.Context, protocol, role, text 
 				activeKeywords = append(activeKeywords, kw)
 			}
 		}
+	}
+
+	// 纯 JSON 或整体代码围栏对模型没有压缩价值，本地直接跳过；开启本地快路径时可顺手无损压缩纯 JSON。
+	if policy.SkipNonProse && isNonProsePayload(text) {
+		if policy.LocalFastPath {
+			if compiled, logID, compTok, ok := tryProxyLocalFastCompress(
+				protocol, role, text, p, dialect, domains, activeKeywords,
+				"非散文/JSON 载荷本地无损压缩（<1ms），跳过模型往返",
+				"Dry-Run 观察模式：非散文/JSON 本地无损压缩可省 Token，实际已原样转发原文",
+				dryRun,
+			); ok {
+				return compiled, logID, origTok, compTok
+			}
+		}
+		return text, "", origTok, origTok
 	}
 
 	// 单块只组合一次 dialect 与缓存键，供快路径、预热判断和 doCompileContext 复用。
@@ -406,6 +448,7 @@ func translateMessageBlockWithOptions(ctx context.Context, protocol, role, text 
 		APIKey:                p.APIKey,
 		BaseURL:               p.BaseURL,
 		Model:                 p.Model,
+		ParallelChunks:        true,
 		TokenEncoding:         p.TokenEncoding,
 		ValidationMode:        p.ValidationMode,
 		ReaderProfile:         &p.ReaderProfile,
@@ -442,7 +485,9 @@ func translateMessageBlockWithOptions(ctx context.Context, protocol, role, text 
 	// 预热只覆盖「本地没有候选」的冷启动；已有缓存时走正常路径直接采用。
 	if policy.AsyncWarmup && !cacheKeyHasCandidate(cacheKey) {
 		reason := "已触发后台异步预热，本次保留原文直通"
+		warmed := true
 		if !shouldWarmupBlock(role, cacheKey) {
+			warmed = false
 			reason = "一次性 user 文本未达预热频次阈值，本次保留原文直通"
 		} else {
 			status := enqueueShadowWarmup(protocol, role, text, p, blockDialect, activeKeywords, domains)
@@ -451,6 +496,20 @@ func translateMessageBlockWithOptions(ctx context.Context, protocol, role, text 
 				reason = "该文本已在后台预热，本次保留原文直通"
 			case warmupQueueFull:
 				reason = "预热队列已满，本次保留原文直通"
+			}
+		}
+		if policy.LocalFastPath {
+			localReason := "本地无损压缩（<1ms）即时生效，同时后台预热深度编译"
+			if !warmed {
+				localReason = "一次性 user 文本本地无损压缩（<1ms）"
+			}
+			if compiled, logID, compTok, ok := tryProxyLocalFastCompress(
+				protocol, role, text, p, dialect, domains, activeKeywords,
+				localReason,
+				"Dry-Run 观察模式：本地无损压缩（<1ms）已测算可省 Token，实际已原样转发原文",
+				dryRun,
+			); ok {
+				return compiled, logID, origTok, compTok
 			}
 		}
 		logID := fmt.Sprintf("%d-%d", time.Now().UnixNano(), proxyLogSequence.Add(1))

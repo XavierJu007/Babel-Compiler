@@ -1004,6 +1004,9 @@ func runValidationContext(ctx context.Context, p Profile, orig, comp string, req
 func validationSummary(result ValidationResult) string {
 	switch result.Status {
 	case "passed":
+		if result.Method == "local_fast" {
+			return "[PASS] 本地确定性压缩/短文本直通放行，无需模型往返"
+		}
 		if result.Method == "blind_read" {
 			return "[PASS] 独立阅读与对照通过；不构成语义等价或跨模型保证"
 		}
@@ -1122,11 +1125,62 @@ func candidateCached(req CompileReq, p Profile) bool {
 	return cacheKeyHasCandidate(key)
 }
 
+func autoFallbackCompileResp(req CompileReq, p Profile, out CompileResp) CompileResp {
+	local, _, _, changed := localCompressDeterministic(req.Text, p.TokenEncoding, req.RequiredKeywords)
+	strategy := "passthrough"
+	compiled := req.Text
+	reason := "LLM 编译未产生净节省，已自动保留原文避免 token 膨胀"
+	if changed {
+		strategy = "local_fast"
+		compiled = local
+		reason = "LLM 编译未缩短，已自动回退为本地无损压缩"
+	}
+	fallback, err := buildLocalFastCompileResp(req.Text, compiled, out.Dialect, p.TokenEncoding, strategy, reason, out.CacheHit)
+	if err != nil {
+		out.Compiled = compiled
+		out.Strategy = strategy
+		out.Reason = reason
+		out.Validation = newValidation("passed", "local_fast")
+		out.Audit = validationSummary(out.Validation)
+		return out
+	}
+	return fallback
+}
+
+func validateAndFinalizeCompileResponse(ctx context.Context, req CompileReq, p, auditor, reader Profile, out CompileResp, startedAt time.Time) (CompileResp, error) {
+	if out.Strategy == "" {
+		if shouldCompileInChunks(req) {
+			out.Strategy = "llm_parallel"
+		} else {
+			out.Strategy = "llm_compile"
+		}
+	}
+	if normalizeCompileStrategy(req.Strategy) == "auto" {
+		if err := fillCompileStats(&out, req.Text, p.TokenEncoding); err != nil {
+			out.ElapsedMs = time.Since(startedAt).Milliseconds()
+			return out, err
+		}
+		if out.Stats.CompiledTokens >= out.Stats.OriginalTokens {
+			out = autoFallbackCompileResp(req, p, out)
+			out.ElapsedMs = time.Since(startedAt).Milliseconds()
+			return out, nil
+		}
+	}
+	validated, err := validateCompileResponse(ctx, req, p, auditor, reader, out)
+	if err == nil && normalizeCompileStrategy(req.Strategy) == "auto" &&
+		validated.Stats.OriginalTokens > 0 && validated.Stats.CompiledTokens >= validated.Stats.OriginalTokens {
+		validated = autoFallbackCompileResp(req, p, validated)
+	}
+	validated.ElapsedMs = time.Since(startedAt).Milliseconds()
+	return validated, err
+}
+
 func doCompile(req CompileReq) (CompileResp, error) {
 	return doCompileContext(context.Background(), req)
 }
 
 func doCompileContext(ctx context.Context, req CompileReq) (CompileResp, error) {
+	startedAt := time.Now()
 	if err := ctx.Err(); err != nil {
 		return CompileResp{}, err
 	}
@@ -1163,6 +1217,11 @@ func doCompileContext(ctx context.Context, req CompileReq) (CompileResp, error) 
 			return CompileResp{}, err
 		}
 	}
+	if fastResp, handled, fastErr := tryFastCompileStrategy(req, p, dialect); handled {
+		fastResp.ElapsedMs = time.Since(startedAt).Milliseconds()
+		return fastResp, fastErr
+	}
+	req = enableAutoParallelChunks(req)
 	if cacheKey == "" {
 		cacheKey = makeCacheKey(dialect, p, req.Text)
 	}
@@ -1187,12 +1246,12 @@ func doCompileContext(ctx context.Context, req CompileReq) (CompileResp, error) 
 		if len(babelStructureIssues(req.Text, cached.Compiled)) > 0 {
 			return CompileResp{}, false
 		}
-		out := CompileResp{Compiled: cached.Compiled, Dialect: dialect.Name, CacheHit: true}
+		out := CompileResp{Compiled: cached.Compiled, Dialect: dialect.Name, CacheHit: true, Strategy: "llm_compile"}
 		return out, true
 	}
 	if !req.NoCache {
 		if out, hit := readCandidate(); hit {
-			return validateCompileResponse(ctx, req, p, auditor, reader, out)
+			return validateAndFinalizeCompileResponse(ctx, req, p, auditor, reader, out, startedAt)
 		}
 	}
 
@@ -1208,12 +1267,14 @@ func doCompileContext(ctx context.Context, req CompileReq) (CompileResp, error) 
 		}
 		var compiled string
 		var genErr error
+		strategy := "llm_compile"
 		if shouldCompileInChunks(req) {
+			strategy = "llm_parallel"
 			compiled, genErr = generateBabelCandidateParallel(generationContext, p, dialect, req.Text)
 		} else {
 			compiled, genErr = generateBabelCandidate(generationContext, p, dialect, req.Text)
 		}
-		out := CompileResp{Compiled: compiled, Dialect: dialect.Name}
+		out := CompileResp{Compiled: compiled, Dialect: dialect.Name, Strategy: strategy}
 		if genErr != nil {
 			return out, genErr
 		}
@@ -1254,9 +1315,10 @@ func doCompileContext(ctx context.Context, req CompileReq) (CompileResp, error) 
 			// unavailable, leave its metadata empty rather than invent a count.
 			_ = fillCompileStats(&out, req.Text, p.TokenEncoding)
 		}
+		out.ElapsedMs = time.Since(startedAt).Milliseconds()
 		return out, err
 	}
 	// Only generation is shared. Every request satisfies its own current gate,
 	// including cache hits and followers of a non-verifying request.
-	return validateCompileResponse(ctx, req, p, auditor, reader, out)
+	return validateAndFinalizeCompileResponse(ctx, req, p, auditor, reader, out, startedAt)
 }
