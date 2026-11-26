@@ -1109,6 +1109,112 @@
             border-bottom: 1px solid rgba(186, 198, 245, 0.08);
         }
         .tag-redact { background: rgba(225, 29, 72, 0.16); color: #fecdd3; border: 1px solid rgba(251, 113, 133, 0.34); }
+        .tag-roi { background: rgba(16, 185, 129, 0.16); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.38); font-weight: 600; }
+        .tag-dryrun { background: rgba(234, 179, 8, 0.16); color: var(--gold-soft); border: 1px solid rgba(234, 179, 8, 0.4); font-weight: 600; }
+        .log-header-actions { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+        .dry-run-banner {
+            padding: 12px 18px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+            border-color: rgba(234, 179, 8, 0.42);
+            background: linear-gradient(135deg, rgba(234, 179, 8, 0.12), rgba(11, 18, 38, 0.9));
+            font-size: 12.5px;
+            color: var(--gold-soft);
+        }
+
+        .policy-bar {
+            padding: 12px 18px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px 18px;
+            flex-wrap: wrap;
+            font-size: 12px;
+            border-color: rgba(186, 198, 245, 0.18);
+        }
+        .policy-controls {
+            display: flex;
+            align-items: center;
+            gap: 10px 16px;
+            flex-wrap: wrap;
+        }
+        .policy-inline-field {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--text-secondary);
+            font-size: 12px;
+        }
+        .policy-mini-input {
+            background: rgba(5, 10, 24, 0.9);
+            border: 1px solid var(--border-subtle);
+            border-radius: 7px;
+            color: var(--text-primary);
+            padding: 3px 8px;
+            font-family: var(--font-mono);
+            font-size: 11.5px;
+        }
+
+        .quickstart-panel {
+            padding: 18px 20px;
+            border-color: rgba(125, 211, 252, 0.28);
+        }
+        .quickstart-title-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+        }
+        .quickstart-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px;
+            text-align: left;
+        }
+        @media (max-width: 860px) { .quickstart-grid { grid-template-columns: 1fr; } }
+        .quickstart-card {
+            background: rgba(5, 10, 24, 0.72);
+            border: 1px solid var(--border-subtle);
+            border-radius: 10px;
+            padding: 12px 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .quickstart-card-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+        .quickstart-card-title {
+            font-weight: 600;
+            color: var(--text-primary);
+            font-size: 12.5px;
+        }
+        .quickstart-card-note {
+            font-size: 11.5px;
+            color: var(--text-secondary);
+            line-height: 1.5;
+        }
+        .quickstart-code {
+            background: rgba(3, 7, 18, 0.92);
+            border: 1px solid rgba(186, 198, 245, 0.14);
+            border-radius: 8px;
+            padding: 9px 11px;
+            font-family: var(--font-mono);
+            font-size: 11.5px;
+            color: var(--accent-ice);
+            line-height: 1.55;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
 
         .log-diff {
             display: grid;
@@ -1594,7 +1700,7 @@
                 <button id="resetCircuitBtn" type="button" class="btn btn-danger hidden" onclick="resetCircuitBreaker()">立即恢复编译</button>
             </div>
             <p style="font-size: 12px; color: var(--text-secondary); line-height: 1.65;">
-                固定编译为高密度巴别语，校验通过且文本更短时才替换。支持 <code style="color: var(--accent-ice)">/v1/chat/completions</code>、<code style="color: var(--accent-ice)">/v1/responses</code>、<code style="color: var(--lilac-soft)">/v1/messages</code> 压缩及其他 <code style="color: var(--accent-ice)">/v1/*</code> 自动透传。<code style="color: var(--gold-soft)">X-Babel-Domains</code> 可选领域词典，<code style="color: var(--gold-soft)">X-Babel-Bypass: 1</code> 可单次直通。
+                固定编译为高密度巴别语，校验通过且文本更短时才替换。支持 <code style="color: var(--accent-ice)">/v1/chat/completions</code>、<code style="color: var(--accent-ice)">/v1/responses</code>、<code style="color: var(--lilac-soft)">/v1/messages</code> 压缩及其他 <code style="color: var(--accent-ice)">/v1/*</code> 自动透传。<code style="color: var(--gold-soft)">X-Babel-Dry-Run: 1</code> 可仅观察算省钱，<code style="color: var(--gold-soft)">X-Babel-Domains</code> 可选领域词典，<code style="color: var(--gold-soft)">X-Babel-Bypass: 1</code> 可单次直通。
             </p>
             <div id="proxyMetricsBar" class="endpoint-row hidden" style="margin-top: 8px;"></div>
         </div>
@@ -1606,10 +1712,51 @@
             <label class="checkbox-label">
                 <input id="autoRefreshCheck" type="checkbox" checked> 自动刷新 (3s)
             </label>
+            <button id="quickstartToggleBtn" type="button" class="btn" onclick="toggleQuickstartPanel()">60 秒接入指南</button>
             <button type="button" class="btn btn-cyan" onclick="loadLogs()">立即刷新</button>
             <button type="button" class="btn btn-danger" onclick="clearLogs()">清空记录</button>
         </div>
     </div>
+
+    <div id="dryRunBanner" class="glass-card dry-run-banner hidden" role="status" aria-live="polite">
+        <span><strong>Dry-Run 观察模式已开启：</strong>所有代理请求均 100% 原样转发给上游（零语义风险、零等待改写），后台继续测算可省 Token 与缓存命中收益。</span>
+        <button type="button" class="btn btn-cyan" onclick="updateProxyPolicyField({ dry_run: false })">切换为正式压缩</button>
+    </div>
+
+    <div id="proxyPolicyBar" class="glass-card policy-bar" aria-label="代理运行时策略">
+        <div class="policy-controls">
+            <strong style="color: var(--accent-ice); font-size: 12px;">代理策略</strong>
+            <label class="checkbox-label" title="开启后只观察算 ROI，请求正文 100% 原样转发">
+                <input id="policyDryRunCheck" type="checkbox" onchange="updateProxyPolicyField({ dry_run: this.checked })"> Dry-Run 观察模式
+            </label>
+            <label class="checkbox-label" title="跳过带有 cache_control 标记的前缀，避免破坏上游 Prompt Cache">
+                <input id="policySkipCacheCheck" type="checkbox" onchange="updateProxyPolicyField({ skip_cache_control: this.checked })"> 保护 cache_control
+            </label>
+            <label class="checkbox-label" title="允许压缩 OpenAI developer 角色消息">
+                <input id="policyCompressDevCheck" type="checkbox" onchange="updateProxyPolicyField({ compress_developer: this.checked })"> 压缩 developer
+            </label>
+            <label class="checkbox-label" title="冷启动先原文直通并在后台异步预热缓存">
+                <input id="policyAsyncWarmupCheck" type="checkbox" checked onchange="updateProxyPolicyField({ async_warmup: this.checked })"> 异步预热
+            </label>
+            <label class="policy-inline-field" for="policyCompileBudgetSelect">
+                <span>编译预算</span>
+                <select id="policyCompileBudgetSelect" class="policy-mini-input" onchange="updateProxyPolicyField({ compile_budget: this.value })">
+                    <option value="off">off（无限等）</option>
+                    <option value="2s">2s</option>
+                    <option value="5s" selected>5s</option>
+                    <option value="10s">10s</option>
+                    <option value="30s">30s</option>
+                </select>
+            </label>
+            <label class="policy-inline-field" for="policyWarmupMinHitsInput">
+                <span>user 预热阈值</span>
+                <input id="policyWarmupMinHitsInput" type="number" min="0" max="10" step="1" value="2" class="policy-mini-input" style="width: 56px;" onchange="updateWarmupMinHitsPolicy(this)">
+            </label>
+        </div>
+        <span id="policySaveHint" style="color: var(--text-muted); font-size: 11.5px;"></span>
+    </div>
+
+    <div id="proxyQuickstartPanel" class="glass-card quickstart-panel hidden"></div>
 
     <div id="logsError" class="audit-bar is-error hidden" role="status" aria-live="polite"></div>
     <div id="logsContainer" class="log-list"></div>
@@ -3217,7 +3364,228 @@
         } catch (e) {}
     }
 
+    let latestProxyMetrics = null;
+    let latestProxySpeed = null;
+
+    function getProxyQuickstartRecipes() {
+        const origin = (typeof window !== 'undefined' && window.location && window.location.origin) ? window.location.origin : 'http://127.0.0.1:8080';
+        return [
+            {
+                title: '1. Claude Code（Anthropic 协议）',
+                note: '先在模型设置填写最终上游（upstream_url，例如 https://api.anthropic.com），再在终端运行：',
+                code: `export ANTHROPIC_BASE_URL="${origin}"\nclaude`
+            },
+            {
+                title: '2. Codex CLI / OpenAI SDK',
+                note: '指向本地 OpenAI 代理前缀（支持 /v1/chat/completions 与 /v1/responses）：',
+                code: `export OPENAI_BASE_URL="${origin}/v1"\ncodex`
+            },
+            {
+                title: '3. Ollama 本地零编译成本',
+                note: '在右上角「模型设置」用本地小模型充当编译/校验器（上游仍可填云端昂贵模型）：',
+                code: `BaseURL: http://127.0.0.1:11434/v1/chat/completions\nAPI Key: ollama\nModel:   qwen2.5:7b`
+            },
+            {
+                title: '4. Cursor / Cline / Cherry Studio',
+                note: '在客户端把 OpenAI / Anthropic Base URL 改到本地代理；若客户端带浏览器 Origin 需配置：',
+                code: `BABEL_PROXY_ALLOWED_ORIGINS="http://localhost:3000" ./babel\n# 客户端 Base URL: ${origin}/v1`
+            }
+        ];
+    }
+
+    async function copyTextWithFeedback(text, btn, defaultLabel) {
+        if (!btn) return;
+        try {
+            if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+            await navigator.clipboard.writeText(text);
+            btn.textContent = '已复制 ✓';
+            setTimeout(() => { btn.textContent = defaultLabel; }, 1500);
+        } catch (err) {
+            btn.textContent = '复制失败';
+            setTimeout(() => { btn.textContent = defaultLabel; }, 1500);
+        }
+    }
+
+    function renderQuickstartCards(container) {
+        if (!container) return;
+        container.innerHTML = '';
+
+        const header = document.createElement('div');
+        header.className = 'quickstart-title-row';
+        const title = document.createElement('strong');
+        title.style.color = 'var(--accent-light)';
+        title.textContent = '60 秒接入配方（可先开启上方 Dry-Run 观察模式，零风险测算实际省钱比）';
+        header.appendChild(title);
+        container.appendChild(header);
+
+        const grid = document.createElement('div');
+        grid.className = 'quickstart-grid';
+        for (const recipe of getProxyQuickstartRecipes()) {
+            const card = document.createElement('div');
+            card.className = 'quickstart-card';
+
+            const head = document.createElement('div');
+            head.className = 'quickstart-card-head';
+            const cardTitle = document.createElement('span');
+            cardTitle.className = 'quickstart-card-title';
+            cardTitle.textContent = recipe.title;
+            const copyBtn = document.createElement('button');
+            copyBtn.type = 'button';
+            copyBtn.className = 'btn';
+            copyBtn.textContent = '复制';
+            copyBtn.onclick = () => copyTextWithFeedback(recipe.code, copyBtn, '复制');
+            head.appendChild(cardTitle);
+            head.appendChild(copyBtn);
+
+            const note = document.createElement('div');
+            note.className = 'quickstart-card-note';
+            note.textContent = recipe.note;
+
+            const pre = document.createElement('pre');
+            pre.className = 'quickstart-code';
+            pre.textContent = recipe.code;
+
+            card.appendChild(head);
+            card.appendChild(note);
+            card.appendChild(pre);
+            grid.appendChild(card);
+        }
+        container.appendChild(grid);
+    }
+
+    function toggleQuickstartPanel(force) {
+        const panel = document.getElementById('proxyQuickstartPanel');
+        const btn = document.getElementById('quickstartToggleBtn');
+        if (!panel) return;
+        const willOpen = force !== undefined ? Boolean(force) : panel.classList.contains('hidden');
+        if (willOpen) {
+            renderQuickstartCards(panel);
+            panel.classList.remove('hidden');
+            if (btn) btn.textContent = '收起接入指南';
+        } else {
+            panel.classList.add('hidden');
+            if (btn) btn.textContent = '60 秒接入指南';
+        }
+    }
+
+    function renderProxyPolicy(speed) {
+        latestProxySpeed = speed || latestProxySpeed;
+        const banner = document.getElementById('dryRunBanner');
+        if (!speed) {
+            if (banner) banner.classList.add('hidden');
+            return;
+        }
+        if (banner) banner.classList.toggle('hidden', !speed.dry_run);
+        const setCheck = (id, val) => {
+            const el = document.getElementById(id);
+            if (el && typeof val === 'boolean') el.checked = val;
+        };
+        setCheck('policyDryRunCheck', speed.dry_run);
+        setCheck('policySkipCacheCheck', speed.skip_cache_control);
+        setCheck('policyCompressDevCheck', speed.compress_developer);
+        setCheck('policyAsyncWarmupCheck', speed.async_warmup);
+
+        const budgetSelect = document.getElementById('policyCompileBudgetSelect');
+        if (budgetSelect && speed.compile_budget) {
+            const budget = String(speed.compile_budget);
+            const hasOption = Array.from(budgetSelect.options || []).some(opt => opt.value === budget);
+            if (!hasOption && typeof Option === 'function') {
+                budgetSelect.add(new Option(budget, budget, false, true));
+            }
+            budgetSelect.value = budget;
+        }
+        const minHitsInput = document.getElementById('policyWarmupMinHitsInput');
+        if (minHitsInput && typeof speed.warmup_user_min_hits === 'number') {
+            minHitsInput.value = String(speed.warmup_user_min_hits);
+        }
+    }
+
+    async function updateProxyPolicyField(patch) {
+        const hint = document.getElementById('policySaveHint');
+        try {
+            const res = await fetchJSON('/api/logs', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'update_policy', ...patch })
+            });
+            if (res && res.proxy_speed) {
+                renderProxyPolicy(res.proxy_speed);
+                renderProxyMetrics(latestProxyMetrics, res.proxy_speed);
+            }
+            if (hint) {
+                hint.style.color = 'var(--emerald-light)';
+                hint.textContent = '策略已生效（仅当前运行期有效）';
+            }
+            document.getElementById('logsError')?.classList.add('hidden');
+        } catch (e) {
+            if (hint) {
+                hint.style.color = 'var(--rose)';
+                hint.textContent = `策略更新失败：${e.message || '请求异常'}`;
+            }
+            const box = document.getElementById('logsError');
+            if (box) {
+                box.textContent = `代理策略更新失败：${e.message || '请求异常'}`;
+                box.classList.remove('hidden');
+            }
+        }
+    }
+
+    function updateWarmupMinHitsPolicy(input) {
+        const parsed = Number.parseInt(input?.value ?? '', 10);
+        if (!Number.isFinite(parsed) || parsed < 0) return;
+        updateProxyPolicyField({ warmup_user_min_hits: parsed });
+    }
+
+    function redactDiagnosticText(text) {
+        return String(text || '')
+            .replace(/\bsk-(?:ant-|proj-)?[a-zA-Z0-9_-]{16,}\b/g, 'sk-***[REDACTED]')
+            .replace(/\bAKIA[0-9A-Z]{16}\b/g, 'AKIA***[REDACTED]')
+            .replace(/\bgh[pousr]_[a-zA-Z0-9]{20,}\b/g, 'gh*_***[REDACTED]')
+            .replace(/\beyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\b/g, 'eyJ***[JWT_REDACTED]')
+            .replace(/(\bBearer\s+)[a-zA-Z0-9._\-+/=]{12,}/gi, '$1***[REDACTED]')
+            .replace(/((?:api[_-]?key|secret[_-]?key|password|passwd|pwd|access[_-]?token|auth[_-]?token)\s*[:=]\s*["']?)[a-zA-Z0-9._\-+/=!@#$%^&*]{6,}(["']?)/gi, '$1***[REDACTED]$2');
+    }
+
+    function truncateDiagnosticSnippet(text, maxChars = 800) {
+        const clean = redactDiagnosticText(text);
+        if (clean.length <= maxChars) return clean;
+        return `${clean.slice(0, maxChars)}\n... [truncated ${clean.length - maxChars} chars]`;
+    }
+
+    function buildProxyDiagnosticReport(item) {
+        const policy = latestProxySpeed ? JSON.stringify(latestProxySpeed) : 'unknown';
+        return [
+            '### Babel Transparent Proxy Diagnostic',
+            `- Log ID: ${item.id || ''}`,
+            `- Timestamp: ${item.timestamp || ''}`,
+            `- Protocol: ${item.protocol || ''}`,
+            `- Role / Block: ${redactDiagnosticText(item.role || '')}`,
+            `- Decision: ${item.decision || ''}`,
+            `- Reason: ${redactDiagnosticText(item.reason || '')}`,
+            `- Ratio: ${item.ratio || 'N/A'}`,
+            `- Validation Method: ${item.validation_method || 'none'}`,
+            `- Cache Hit: ${Boolean(item.cache_hit)} | Server Redacted: ${Boolean(item.redacted)}`,
+            `- Runtime Policy: \`${policy}\``,
+            '',
+            '#### Original (redacted & bounded)',
+            '```text',
+            truncateDiagnosticSnippet(item.original || ''),
+            '```',
+            '',
+            '#### Compiled / Forwarded Candidate (redacted & bounded)',
+            '```text',
+            truncateDiagnosticSnippet(item.compiled || ''),
+            '```'
+        ].join('\n');
+    }
+
+    async function copyProxyDiagnostic(item, btn) {
+        await copyTextWithFeedback(buildProxyDiagnosticReport(item), btn, '复制脱敏诊断');
+    }
+
     function renderProxyMetrics(metrics, speed) {
+        latestProxyMetrics = metrics || latestProxyMetrics;
+        latestProxySpeed = speed || latestProxySpeed;
         const bar = document.getElementById('proxyMetricsBar');
         if (!bar) return;
         bar.innerHTML = '';
@@ -3225,22 +3593,37 @@
             bar.classList.add('hidden');
             return;
         }
-        const addChip = (text) => {
+        const addChip = (text, className = 'tag tag-role') => {
             const chip = document.createElement('span');
-            chip.className = 'tag tag-role';
+            chip.className = className;
             chip.textContent = text;
             bar.appendChild(chip);
         };
         if (metrics) {
             addChip(`请求 ${metrics.requests_total || 0}`);
             addChip(`采纳 ${metrics.adopted_total || 0}`);
+            if ((metrics.adopted_saved_tokens_total || 0) > 0) {
+                const orig = metrics.adopted_orig_tokens_total || 0;
+                const saved = metrics.adopted_saved_tokens_total;
+                const pct = orig > 0 ? ((saved / orig) * 100).toFixed(1) : '0.0';
+                addChip(`实省 Token: ${saved} (-${pct}%)`, 'tag tag-roi');
+            }
+            if ((metrics.dry_run_total || 0) > 0) {
+                const orig = metrics.dry_run_orig_tokens_total || 0;
+                const potSaved = metrics.dry_run_potential_saved_tokens_total || 0;
+                const pct = orig > 0 ? ((potSaved / orig) * 100).toFixed(1) : '0.0';
+                addChip(`Dry-Run 预计可省: ${potSaved} (-${pct}%) · 命中 ${metrics.dry_run_would_adopt_total || 0}/${metrics.dry_run_total}`, 'tag tag-dryrun');
+            }
+            if (metrics.fast_path_hit_total) addChip(`快路径命中 ${metrics.fast_path_hit_total}`);
             addChip(`直通 ${metrics.passthrough_total || 0}`);
+            if (metrics.validation_rejected_total) addChip(`校验拦截 ${metrics.validation_rejected_total}`);
             if (metrics.bypass_total) addChip(`旁路 ${metrics.bypass_total}`);
             if (metrics.oversize_total) addChip(`大包透传 ${metrics.oversize_total}`);
             if (metrics.budget_timeout_total) addChip(`预算回退 ${metrics.budget_timeout_total}`);
             if (metrics.upstream_error_total) addChip(`上游异常 ${metrics.upstream_error_total}`);
         }
         if (speed) {
+            if (speed.dry_run) addChip('Dry-Run 开', 'tag tag-dryrun');
             addChip(`编译预算 ${speed.compile_budget || 'off'}`);
             addChip(`异步预热 ${speed.async_warmup ? '开(user≥' + (speed.warmup_user_min_hits ?? 1) + ')' : '关'}`);
             if (speed.skip_cache_control) addChip('保护 cache_control');
@@ -3256,6 +3639,7 @@
                 document.getElementById('redactCheck').checked = payload.redact_enabled;
             }
             if (payload.circuit) renderCircuitStatus(payload.circuit);
+            renderProxyPolicy(payload.proxy_speed);
             renderProxyMetrics(payload.metrics, payload.proxy_speed);
             document.getElementById('logsError').classList.add('hidden');
 
@@ -3271,7 +3655,16 @@
             container.innerHTML = '';
 
             if (!logs.length) {
-                container.innerHTML = `<div class="glass-card empty-state">暂无代理拦截记录。<br>将 Product 的 <code>OPENAI_BASE_URL</code> 指向 <code style="color: var(--cyan-light)">${window.location.origin}/v1</code>（或将 Claude Code 的 <code>ANTHROPIC_BASE_URL</code> 指向 <code style="color: #d8b4fe">${window.location.origin}</code>）即可实时透视。</div>`;
+                const emptyCard = document.createElement('div');
+                emptyCard.className = 'glass-card empty-state';
+                const lead = document.createElement('div');
+                lead.style.marginBottom = '16px';
+                lead.textContent = '暂无代理拦截记录。复制下方任一客户端接入命令启动流量（怕影响业务可先打开上方「Dry-Run 观察模式」零风险试用）：';
+                emptyCard.appendChild(lead);
+                const quickstartBox = document.createElement('div');
+                renderQuickstartCards(quickstartBox);
+                emptyCard.appendChild(quickstartBox);
+                container.appendChild(emptyCard);
                 return;
             }
 
@@ -3299,12 +3692,15 @@
                 if (Array.isArray(item.domains) && item.domains.length) addTag(`领域：${item.domains.join(' · ')}`, 'tag tag-dialect');
                 addTag(item.role || '', roleClass);
                 const adopted = item.decision === 'adopted';
+                const dryRunWouldAdopt = item.decision === 'dry_run_would_adopt';
                 const keptOriginal = item.decision === 'kept_original';
-                addTag(adopted ? '已采用候选' : keptOriginal ? '已保留原文' : '决策未提供',
-                    adopted ? 'tag tag-dialect' : 'tag tag-role');
+                addTag(
+                    adopted ? '已采用候选' : dryRunWouldAdopt ? 'Dry-Run 可省（原样转发）' : keptOriginal ? '已保留原文' : '决策未提供',
+                    adopted ? 'tag tag-dialect' : dryRunWouldAdopt ? 'tag tag-dryrun' : 'tag tag-role'
+                );
                 const measurement = formatProxyMeasurement(item);
                 if (measurement) addTag(measurement, 'tag tag-estimated');
-                const validationLabel = { blind_read: '盲读对照', llm_compare: '模型对照', local_checks: '本地检查', none: '未执行校验' }[item.validation_method];
+                const validationLabel = { blind_read: '盲读对照', llm_compare: '模型对照', local_checks: '本地检查', cached: '缓存校验', none: '未执行校验' }[item.validation_method];
                 if (validationLabel) addTag(`校验方式：${validationLabel}`, 'tag tag-role');
                 const usage = formatProxyUsage(item);
                 if (usage) {
@@ -3313,10 +3709,21 @@
                 if (item.cache_hit) addTag('CACHE HIT', 'cache-pill');
                 if (item.redacted) addTag('已脱敏', 'tag tag-redact');
                 header.appendChild(tags);
+
+                const actions = document.createElement('div');
+                actions.className = 'log-header-actions';
+                const diagBtn = document.createElement('button');
+                diagBtn.type = 'button';
+                diagBtn.className = 'btn';
+                diagBtn.textContent = '复制脱敏诊断';
+                diagBtn.onclick = () => copyProxyDiagnostic(item, diagBtn);
+                actions.appendChild(diagBtn);
+
                 const id = document.createElement('span');
                 id.style.color = 'var(--text-muted)';
                 id.textContent = `#${item.id || ''}`;
-                header.appendChild(id);
+                actions.appendChild(id);
+                header.appendChild(actions);
 
                 const reason = document.createElement('div');
                 reason.className = 'log-reason';
@@ -3331,7 +3738,14 @@
 
                 const right = document.createElement('pre');
                 right.className = 'log-col';
-                right.textContent = `${adopted ? '实际发送：候选' : keptOriginal ? '实际发送：原文' : '记录文本（决策未提供）'}\n\n${item.compiled || ''}`;
+                const rightHeader = adopted
+                    ? '实际发送：候选'
+                    : dryRunWouldAdopt
+                        ? 'Dry-Run 候选（实际已原样转发）'
+                        : keptOriginal
+                            ? '实际发送：原文'
+                            : '记录文本（决策未提供）';
+                right.textContent = `${rightHeader}\n\n${item.compiled || ''}`;
 
                 grid.appendChild(left);
                 grid.appendChild(right);

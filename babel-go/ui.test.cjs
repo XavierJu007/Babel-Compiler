@@ -89,7 +89,7 @@ function setup(responses = []) {
     });
     vm.runInContext(app, context);
     get('rawInput').value = '禁止删除订单；金额 > 50 元时审批。';
-    for (const id of ['candidateBadge', 'statsBadge', 'cacheBadge', 'auditBox', 'invariantCapsules', 'logsError']) {
+    for (const id of ['candidateBadge', 'statsBadge', 'cacheBadge', 'auditBox', 'invariantCapsules', 'logsError', 'dryRunBanner', 'proxyQuickstartPanel']) {
         get(id).className = 'hidden';
     }
     return { context, get, requests, storage };
@@ -1276,4 +1276,112 @@ test('a disappeared selected domain stays explicit instead of silently changing 
     await context.runCompile();
     assert.deepEqual(JSON.parse(requests[2].options.body).domains, ['api-contract']);
     assert.equal(get('invariantCapsules').dataset.validationStatus, 'error');
+});
+
+function findElements(root, predicate) {
+    const hits = [];
+    const walk = node => {
+        if (!node) return;
+        if (predicate(node)) hits.push(node);
+        for (const child of node.children || []) walk(child);
+    };
+    walk(root);
+    return hits;
+}
+
+test('empty proxy logs render 4 quickstart recipes without placeholder text', async () => {
+    const { context, get } = setup([{ data: { logs: [], proxy_speed: { dry_run: false, compile_budget: '5s', async_warmup: true, warmup_user_min_hits: 2 } } }]);
+    await context.loadLogs();
+    const text = get('logsContainer').textContent;
+    assert.doesNotMatch(text, /Product/);
+    assert.match(text, /Claude Code/);
+    assert.match(text, /Codex CLI/);
+    assert.match(text, /Ollama/);
+    assert.match(text, /Cursor \/ Cline \/ Cherry Studio/);
+    assert.match(text, /127\.0\.0\.1:8080\/v1/);
+
+    context.toggleQuickstartPanel(true);
+    assert.equal(get('proxyQuickstartPanel').classList.contains('hidden'), false);
+    assert.match(get('proxyQuickstartPanel').textContent, /ANTHROPIC_BASE_URL/);
+});
+
+test('dry-run proxy logs render banner, ROI chips, policy updates, and redacted diagnostics', async () => {
+    const logItem = {
+        id: 'dry-42',
+        timestamp: '10:30:00',
+        protocol: 'openai',
+        role: 'system',
+        decision: 'dry_run_would_adopt',
+        reason: 'Dry-Run 观察模式：本次审计通过，且估算 Token更少，实际已原样转发原文',
+        original: 'System prompt with sk-ant-secret1234567890abcdef token',
+        compiled: '∀req: compressed with Bearer abcdef1234567890',
+        ratio: '文本 Token（估算）100→60 (减少40.0%)',
+        validation_method: 'cached',
+        cache_hit: true,
+        redacted: true
+    };
+    const payload = {
+        proxy_speed: {
+            dry_run: true,
+            skip_cache_control: true,
+            compress_developer: false,
+            async_warmup: true,
+            compile_budget: '10s',
+            warmup_user_min_hits: 3
+        },
+        metrics: {
+            requests_total: 4,
+            adopted_total: 1,
+            adopted_orig_tokens_total: 100,
+            adopted_saved_tokens_total: 40,
+            dry_run_total: 2,
+            dry_run_would_adopt_total: 1,
+            dry_run_orig_tokens_total: 200,
+            dry_run_potential_saved_tokens_total: 80,
+            fast_path_hit_total: 2,
+            validation_rejected_total: 1,
+            passthrough_total: 3
+        },
+        logs: [logItem]
+    };
+    const { context, get, requests } = setup([
+        { data: payload },
+        { data: { status: 'ok', proxy_speed: { ...payload.proxy_speed, dry_run: false, compile_budget: '30s' } } }
+    ]);
+
+    await context.loadLogs();
+    assert.equal(get('dryRunBanner').classList.contains('hidden'), false);
+    assert.equal(get('policyDryRunCheck').checked, true);
+    assert.equal(get('policySkipCacheCheck').checked, true);
+    assert.equal(get('policyCompileBudgetSelect').value, '10s');
+    assert.equal(get('policyWarmupMinHitsInput').value, '3');
+
+    const metricsText = get('proxyMetricsBar').textContent;
+    assert.match(metricsText, /实省 Token: 40 \(-40\.0%\)/);
+    assert.match(metricsText, /Dry-Run 预计可省: 80 \(-40\.0%\) · 命中 1\/2/);
+    assert.match(metricsText, /快路径命中 2/);
+    assert.match(metricsText, /校验拦截 1/);
+
+    const logsText = get('logsContainer').textContent;
+    assert.match(logsText, /Dry-Run 可省（原样转发）/);
+    assert.match(logsText, /Dry-Run 候选（实际已原样转发）/);
+    assert.match(logsText, /校验方式：缓存校验/);
+
+    let copiedReport = '';
+    context.navigator.clipboard.writeText = async text => { copiedReport = text; };
+    const diagBtn = findElements(get('logsContainer'), el => el.tagName === 'BUTTON' && el.textContent === '复制脱敏诊断')[0];
+    assert.ok(diagBtn, 'missing diagnostic export button');
+    await diagBtn.onclick();
+    assert.match(copiedReport, /Decision: dry_run_would_adopt/);
+    assert.match(copiedReport, /sk-\*\*\*\[REDACTED\]/);
+    assert.match(copiedReport, /Bearer \*\*\*\[REDACTED\]/);
+    assert.doesNotMatch(copiedReport, /secret1234567890abcdef|abcdef1234567890/);
+    assert.match(copiedReport, /"dry_run":true/);
+
+    await context.updateProxyPolicyField({ dry_run: false, compile_budget: '30s' });
+    const patchReq = JSON.parse(requests[1].options.body);
+    assert.deepEqual(patchReq, { action: 'update_policy', dry_run: false, compile_budget: '30s' });
+    assert.equal(get('dryRunBanner').classList.contains('hidden'), true);
+    assert.equal(get('policyDryRunCheck').checked, false);
+    assert.equal(get('policyCompileBudgetSelect').value, '30s');
 });

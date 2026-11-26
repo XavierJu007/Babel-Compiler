@@ -17,6 +17,7 @@ import (
 func unsetProxySpeedEnv(t *testing.T) {
 	t.Helper()
 	for _, name := range []string{
+		"BABEL_PROXY_DRY_RUN",
 		"BABEL_PROXY_VALIDATION_CACHE_TTL",
 		"BABEL_PROXY_NEGATIVE_CACHE_TTL",
 		"BABEL_PROXY_ASYNC_WARMUP",
@@ -40,6 +41,8 @@ func unsetProxySpeedEnv(t *testing.T) {
 // 恢复包级保守默认，避免用例之间互相污染。
 func resetProxySpeedVars(t *testing.T) {
 	t.Helper()
+	proxyPolicyMu.Lock()
+	proxyDryRun = false
 	proxyValidationCacheTTL = 0
 	proxyNegativeCacheTTL = 0
 	proxyCompileBudget = 0
@@ -49,18 +52,23 @@ func resetProxySpeedVars(t *testing.T) {
 	proxyWarmupUserMinHits = 1
 	proxyMinRunes = 35
 	proxySkipNonProse = false
+	proxyPolicyMu.Unlock()
 	validationCache.Reset()
 	negativeCache.Reset()
 	resetWarmupAdmissionCache()
 	t.Cleanup(func() {
+		proxyPolicyMu.Lock()
+		proxyDryRun = false
 		proxyValidationCacheTTL = 0
 		proxyNegativeCacheTTL = 0
 		proxyCompileBudget = 0
 		proxyAsyncWarmup = false
 		proxySkipCacheControl = false
+		proxyCompressDeveloper = false
 		proxyWarmupUserMinHits = 1
 		proxyMinRunes = 35
 		proxySkipNonProse = false
+		proxyPolicyMu.Unlock()
 		validationCache.Reset()
 		negativeCache.Reset()
 		resetWarmupAdmissionCache()

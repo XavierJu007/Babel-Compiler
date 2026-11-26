@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -14,6 +15,8 @@ import (
 // 包级默认保持保守：全部关闭，保证既有单测与 CLI 行为零变化。
 // 生产默认值只在 startServer() 中按环境变量补齐。
 var (
+	proxyPolicyMu           sync.RWMutex
+	proxyDryRun             bool
 	proxyValidationCacheTTL time.Duration
 	proxyNegativeCacheTTL   time.Duration
 	proxyCompileBudget      time.Duration
@@ -68,6 +71,14 @@ func parseProxyBool(raw string, fallback bool) bool {
 // configureProxySpeedDefaults 在服务端模式应用生产默认值：
 // 环境变量"未设置"才取默认，"显式 =0/=false"必须覆盖默认。
 func configureProxySpeedDefaults() {
+	proxyPolicyMu.Lock()
+	defer proxyPolicyMu.Unlock()
+
+	if raw, ok := os.LookupEnv("BABEL_PROXY_DRY_RUN"); ok {
+		proxyDryRun = parseProxyBool(raw, false)
+	} else {
+		proxyDryRun = false
+	}
 	if raw, ok := os.LookupEnv("BABEL_PROXY_VALIDATION_CACHE_TTL"); ok {
 		proxyValidationCacheTTL = parseProxyDuration(raw)
 	} else {
@@ -138,6 +149,89 @@ func configureProxySpeedDefaults() {
 	}
 }
 
+type proxyPolicySnapshot struct {
+	DryRun            bool
+	SkipCacheControl  bool
+	CompressDeveloper bool
+	AsyncWarmup       bool
+	SkipNonProse      bool
+	CompileBudget     time.Duration
+	WarmupUserMinHits int
+	MinRunes          int
+}
+
+func snapshotProxyPolicy() proxyPolicySnapshot {
+	proxyPolicyMu.RLock()
+	defer proxyPolicyMu.RUnlock()
+	return proxyPolicySnapshot{
+		DryRun:            proxyDryRun,
+		SkipCacheControl:  proxySkipCacheControl,
+		CompressDeveloper: proxyCompressDeveloper,
+		AsyncWarmup:       proxyAsyncWarmup,
+		SkipNonProse:      proxySkipNonProse,
+		CompileBudget:     proxyCompileBudget,
+		WarmupUserMinHits: proxyWarmupUserMinHits,
+		MinRunes:          proxyMinRunes,
+	}
+}
+
+type proxyPolicyPatch struct {
+	DryRun            *bool
+	SkipCacheControl  *bool
+	CompressDeveloper *bool
+	AsyncWarmup       *bool
+	CompileBudget     *string
+	WarmupUserMinHits *int
+}
+
+func parseStrictProxyDuration(raw string) (time.Duration, error) {
+	trimmed := strings.TrimSpace(strings.ToLower(raw))
+	switch trimmed {
+	case "", "0", "off", "false", "no":
+		return 0, nil
+	}
+	value, err := time.ParseDuration(trimmed)
+	if err != nil || value <= 0 {
+		return 0, fmt.Errorf("无效的编译预算时长: %q（请使用如 5s、10s 或 off）", raw)
+	}
+	return value, nil
+}
+
+func updateProxyPolicy(patch proxyPolicyPatch) error {
+	var parsedBudget time.Duration
+	if patch.CompileBudget != nil {
+		var err error
+		parsedBudget, err = parseStrictProxyDuration(*patch.CompileBudget)
+		if err != nil {
+			return err
+		}
+	}
+	if patch.WarmupUserMinHits != nil && *patch.WarmupUserMinHits < 0 {
+		return fmt.Errorf("user 预热频次阈值不能为负数")
+	}
+	proxyPolicyMu.Lock()
+	defer proxyPolicyMu.Unlock()
+	if patch.DryRun != nil {
+		proxyDryRun = *patch.DryRun
+	}
+	if patch.SkipCacheControl != nil {
+		proxySkipCacheControl = *patch.SkipCacheControl
+	}
+	if patch.CompressDeveloper != nil {
+		proxyCompressDeveloper = *patch.CompressDeveloper
+	}
+	if patch.AsyncWarmup != nil {
+		proxyAsyncWarmup = *patch.AsyncWarmup
+	}
+	if patch.CompileBudget != nil {
+		proxyCompileBudget = parsedBudget
+	}
+	if patch.WarmupUserMinHits != nil {
+		proxyWarmupUserMinHits = *patch.WarmupUserMinHits
+	}
+	return nil
+}
+
 // proxySpeedDurationLabel 让关掉的缓存显示为 off，而不是 0s。
 func proxySpeedDurationLabel(value time.Duration) string {
 	if value <= 0 {
@@ -147,16 +241,18 @@ func proxySpeedDurationLabel(value time.Duration) string {
 }
 
 func proxySpeedSummary() map[string]any {
+	snap := snapshotProxyPolicy()
 	return map[string]any{
+		"dry_run":              snap.DryRun,
 		"validation_cache_ttl": proxyValidationCacheTTL.String(),
 		"negative_cache_ttl":   proxyNegativeCacheTTL.String(),
-		"compile_budget":       proxySpeedDurationLabel(proxyCompileBudget),
-		"async_warmup":         proxyAsyncWarmup,
-		"skip_cache_control":   proxySkipCacheControl,
-		"compress_developer":   proxyCompressDeveloper,
-		"warmup_user_min_hits": proxyWarmupUserMinHits,
-		"min_runes":            proxyMinRunes,
-		"skip_non_prose":       proxySkipNonProse,
+		"compile_budget":       proxySpeedDurationLabel(snap.CompileBudget),
+		"async_warmup":         snap.AsyncWarmup,
+		"skip_cache_control":   snap.SkipCacheControl,
+		"compress_developer":   snap.CompressDeveloper,
+		"warmup_user_min_hits": snap.WarmupUserMinHits,
+		"min_runes":            snap.MinRunes,
+		"skip_non_prose":       snap.SkipNonProse,
 		"warmup_workers":       proxyWarmupWorkers,
 	}
 }
@@ -211,10 +307,11 @@ func shouldWarmupBlock(role, cacheKey string) bool {
 	if role != "user" {
 		return true
 	}
-	if proxyWarmupUserMinHits <= 0 {
+	minHits := snapshotProxyPolicy().WarmupUserMinHits
+	if minHits <= 0 {
 		return false
 	}
-	if proxyWarmupUserMinHits == 1 {
+	if minHits == 1 {
 		return true
 	}
 	warmupSeenMu.Lock()
@@ -222,7 +319,7 @@ func shouldWarmupBlock(role, cacheKey string) bool {
 	hits, _ := warmupSeenCache.Get(cacheKey)
 	hits++
 	warmupSeenCache.Put(cacheKey, hits, proxyWarmupSeenTTL)
-	return hits >= proxyWarmupUserMinHits
+	return hits >= minHits
 }
 
 func resetWarmupAdmissionCache() {

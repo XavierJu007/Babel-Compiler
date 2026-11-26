@@ -1,0 +1,26 @@
+# Babel binds strictly to loopback (127.0.0.1:8080) by security design so local
+# API keys and prompt traffic are never exposed to the LAN.
+# - On Linux hosts: network_mode: host lets local tools (Claude Code, Codex CLI,
+#   curl) reach http://127.0.0.1:8080 directly.
+# - As an agent sidecar: attach your agent container with network_mode: "service:babel"
+#   so it talks to Babel over 127.0.0.1:8080 without exposing a public port.
+services:
+  babel:
+    build: .
+    image: babel-compiler:local
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - babel-data:/data
+    environment:
+      # Start risk-free by forwarding requests unchanged while measuring ROI:
+      # BABEL_PROXY_DRY_RUN: "true"
+      # Compiler / auditor configuration (or omit and configure via the Web UI):
+      # BABEL_BASE_URL: "https://api.openai.com/v1/chat/completions"
+      # BABEL_API_KEY: "${BABEL_API_KEY:-}"
+      # BABEL_MODEL: "gpt-4o-mini"
+      # BABEL_UPSTREAM_URL: "https://api.openai.com"
+      BABEL_PROXY_SKIP_CACHE_CONTROL: "false"
+
+volumes:
+  babel-data:

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -362,15 +363,20 @@ func translateMessageBlockContext(ctx context.Context, protocol, role, text stri
 }
 
 func translateMessageBlockWithConfig(ctx context.Context, protocol, role, text string, p Profile, dialect Dialect, reqKeywords, domains []string, preloadedCfg *Config) (string, string, int, int) {
+	return translateMessageBlockWithOptions(ctx, protocol, role, text, p, dialect, reqKeywords, domains, preloadedCfg, false)
+}
+
+func translateMessageBlockWithOptions(ctx context.Context, protocol, role, text string, p Profile, dialect Dialect, reqKeywords, domains []string, preloadedCfg *Config, dryRun bool) (string, string, int, int) {
 	origTok := estimateTokensBPE(text)
 	if ctx.Err() != nil {
 		return text, "", origTok, origTok
 	}
-	if utf8.RuneCountInString(strings.TrimSpace(text)) < proxyMinRunes {
+	policy := snapshotProxyPolicy()
+	if utf8.RuneCountInString(strings.TrimSpace(text)) < policy.MinRunes {
 		return text, "", origTok, origTok
 	}
 	// 纯 JSON 或整体代码围栏对模型没有压缩价值，本地直接跳过。
-	if proxySkipNonProse && isNonProsePayload(text) {
+	if policy.SkipNonProse && isNonProsePayload(text) {
 		return text, "", origTok, origTok
 	}
 
@@ -411,7 +417,7 @@ func translateMessageBlockWithConfig(ctx context.Context, protocol, role, text s
 	}
 
 	// 纯内存快路径：生成缓存 + 校验缓存双命中时，完全不碰信号量与熔断器。
-	if compiled, logID, compTok, hit := proxyCachedAdoptionWithConfig(protocol, role, text, p, blockDialect, domains, activeKeywords, cacheKey, preloadedCfg); hit {
+	if compiled, logID, compTok, hit := proxyCachedAdoptionWithOptions(protocol, role, text, p, blockDialect, domains, activeKeywords, cacheKey, preloadedCfg, dryRun); hit {
 		return compiled, logID, origTok, compTok
 	}
 
@@ -434,7 +440,7 @@ func translateMessageBlockWithConfig(ctx context.Context, protocol, role, text s
 	}
 
 	// 预热只覆盖「本地没有候选」的冷启动；已有缓存时走正常路径直接采用。
-	if proxyAsyncWarmup && !cacheKeyHasCandidate(cacheKey) {
+	if policy.AsyncWarmup && !cacheKeyHasCandidate(cacheKey) {
 		reason := "已触发后台异步预热，本次保留原文直通"
 		if !shouldWarmupBlock(role, cacheKey) {
 			reason = "一次性 user 文本未达预热频次阈值，本次保留原文直通"
@@ -508,6 +514,7 @@ func translateMessageBlockWithConfig(ctx context.Context, protocol, role, text s
 			// A rejected candidate proves the compiler is reachable. Release any
 			// half-open probe rather than leaving the circuit permanently busy.
 			compilerCB.RecordSuccess()
+			proxyMetrics.validationRejectedTotal.Add(1)
 			entry.ValidationMethod = validationErr.Validation.Method
 			entry.Reason = "候选未通过编译检查，已保留原文"
 		} else {
@@ -536,8 +543,13 @@ func translateMessageBlockWithConfig(ctx context.Context, protocol, role, text s
 	}
 	entry.Compiled = res.Compiled
 	entry.Ratio = res.Stats.CompressionRatio
-	entry.Decision = "adopted"
-	entry.Reason = "本次审计通过，且" + countLabel + "更少"
+	if dryRun {
+		entry.Decision = "dry_run_would_adopt"
+		entry.Reason = "Dry-Run 观察模式：本次审计通过，且" + countLabel + "更少，实际已原样转发原文"
+	} else {
+		entry.Decision = "adopted"
+		entry.Reason = "本次审计通过，且" + countLabel + "更少"
+	}
 	appendProxyLog(entry)
 	return res.Compiled, logID, origTok, compTok
 }
@@ -552,10 +564,14 @@ func cacheKeyHasCandidate(cacheKey string) bool {
 // proxyCachedAdoption 是纯内存快路径：生成缓存命中、且同一策略指纹下的校验
 // 结论为 passed 时，直接采用候选，不占信号量、不碰熔断器，也不上报成功探针。
 func proxyCachedAdoption(protocol, role, text string, p Profile, dialect Dialect, domains, keywords []string, cacheKey string) (string, string, int, bool) {
-	return proxyCachedAdoptionWithConfig(protocol, role, text, p, dialect, domains, keywords, cacheKey, nil)
+	return proxyCachedAdoptionWithOptions(protocol, role, text, p, dialect, domains, keywords, cacheKey, nil, false)
 }
 
 func proxyCachedAdoptionWithConfig(protocol, role, text string, p Profile, dialect Dialect, domains, keywords []string, cacheKey string, preloadedCfg *Config) (string, string, int, bool) {
+	return proxyCachedAdoptionWithOptions(protocol, role, text, p, dialect, domains, keywords, cacheKey, preloadedCfg, false)
+}
+
+func proxyCachedAdoptionWithOptions(protocol, role, text string, p Profile, dialect Dialect, domains, keywords []string, cacheKey string, preloadedCfg *Config, dryRun bool) (string, string, int, bool) {
 	if proxyValidationCacheTTL <= 0 {
 		return "", "", 0, false
 	}
@@ -620,12 +636,18 @@ func proxyCachedAdoptionWithConfig(protocol, role, text string, p Profile, diale
 	}
 	proxyMetrics.fastPathHitTotal.Add(1)
 	logID := fmt.Sprintf("%d-%d", time.Now().UnixNano(), proxyLogSequence.Add(1))
+	decision := "adopted"
+	reason := "生成缓存与校验缓存双命中，直接采用"
+	if dryRun {
+		decision = "dry_run_would_adopt"
+		reason = "Dry-Run 观察模式：生成与校验缓存双命中，已测算可省 Token，实际已原样转发原文"
+	}
 	appendProxyLog(ProxyLog{
 		ID: logID, Timestamp: time.Now().Format("15:04:05"),
 		Protocol: protocol, Dialect: dialect.Name, Domains: domains, Role: role,
 		Original: text, Compiled: entry.Compiled, CacheHit: true,
-		Decision:            "adopted",
-		Reason:              "生成缓存与校验缓存双命中，直接采用",
+		Decision:            decision,
+		Reason:              reason,
 		Ratio:               fmt.Sprintf("文本 Token（%s）%d→%d (减少%.1f%%)", label, before.Tokens, after.Tokens, percent),
 		MeasurementKind:     before.Kind,
 		MeasurementEncoding: before.Encoding,
@@ -652,7 +674,7 @@ type proxyBlockResult struct {
 
 // appendProxyTextBlock 只把够长的文本加入编译队列；短文本按原文计入统计。
 func appendProxyTextBlock(blocks *[]proxyTextBlock, role, text string, reqKeywords []string, apply func(string), estOrig, estComp *int) {
-	if utf8.RuneCountInString(strings.TrimSpace(text)) < proxyMinRunes {
+	if utf8.RuneCountInString(strings.TrimSpace(text)) < snapshotProxyPolicy().MinRunes {
 		t := estimateTokensBPE(text)
 		*estOrig += t
 		*estComp += t
@@ -802,11 +824,11 @@ func collectToolsBlocks(tools []any, blocks *[]proxyTextBlock, estOrig, estComp 
 	collectToolsBlocksWithOptions(tools, false, blocks, estOrig, estComp)
 }
 
-func runProxyBlockTranslations(ctx context.Context, protocol string, blocks []proxyTextBlock, p Profile, dialect Dialect, domains []string, preloadedCfg *Config) []proxyBlockResult {
+func runProxyBlockTranslations(ctx context.Context, protocol string, blocks []proxyTextBlock, p Profile, dialect Dialect, domains []string, preloadedCfg *Config, dryRun bool) []proxyBlockResult {
 	results := make([]proxyBlockResult, len(blocks))
 	if len(blocks) == 1 {
 		b := blocks[0]
-		comp, id, oTok, cTok := translateMessageBlockWithConfig(ctx, protocol, b.role, b.text, p, dialect, b.reqKeywords, domains, preloadedCfg)
+		comp, id, oTok, cTok := translateMessageBlockWithOptions(ctx, protocol, b.role, b.text, p, dialect, b.reqKeywords, domains, preloadedCfg, dryRun)
 		results[0] = proxyBlockResult{compiled: comp, logID: id, origTok: oTok, compTok: cTok}
 		return results
 	}
@@ -829,7 +851,7 @@ func runProxyBlockTranslations(ctx context.Context, protocol string, blocks []pr
 					return
 				}
 				b := blocks[idx]
-				comp, id, oTok, cTok := translateMessageBlockWithConfig(ctx, protocol, b.role, b.text, p, dialect, b.reqKeywords, domains, preloadedCfg)
+				comp, id, oTok, cTok := translateMessageBlockWithOptions(ctx, protocol, b.role, b.text, p, dialect, b.reqKeywords, domains, preloadedCfg, dryRun)
 				results[idx] = proxyBlockResult{compiled: comp, logID: id, origTok: oTok, compTok: cTok}
 			}
 		}()
@@ -839,17 +861,42 @@ func runProxyBlockTranslations(ctx context.Context, protocol string, blocks []pr
 }
 
 func compileProxyBlocks(ctx context.Context, protocol string, blocks []proxyTextBlock, p Profile, dialect Dialect, domains []string, logIDs *[]string, estOrig, estComp *int) bool {
-	return compileProxyBlocksWithConfig(ctx, protocol, blocks, p, dialect, domains, nil, logIDs, estOrig, estComp)
+	mutated, _, _ := compileProxyBlocksWithOptions(ctx, protocol, blocks, p, dialect, domains, nil, logIDs, estOrig, estComp, false)
+	return mutated
 }
 
-// compileProxyBlocksWithConfig 把一次请求里的文本块做有界并行编译，然后按原顺序写回。
-// 启用代理缓存或预热时先对相同文本做请求内去重，避免重复校验与绕过预热频次阈值。
-// 写回与统计累加都发生在 wg.Wait() 之后，保证 payload 无并发写、结果可复现。
 func compileProxyBlocksWithConfig(ctx context.Context, protocol string, blocks []proxyTextBlock, p Profile, dialect Dialect, domains []string, preloadedCfg *Config, logIDs *[]string, estOrig, estComp *int) bool {
+	mutated, _, _ := compileProxyBlocksWithOptions(ctx, protocol, blocks, p, dialect, domains, preloadedCfg, logIDs, estOrig, estComp, false)
+	return mutated
+}
+
+// compileProxyBlocksWithOptions 把一次请求里的文本块做有界并行编译，然后按原顺序写回。
+// 启用代理缓存或预热时先对相同文本做请求内去重，避免重复校验与绕过预热频次阈值。
+// Dry-Run 模式下照常测算可省 Token 与写入观察日志，但不修改请求体，保证上游收到原文。
+func compileProxyBlocksWithOptions(ctx context.Context, protocol string, blocks []proxyTextBlock, p Profile, dialect Dialect, domains []string, preloadedCfg *Config, logIDs *[]string, estOrig, estComp *int, dryRun bool) (bool, int, int) {
 	if len(blocks) == 0 {
-		return false
+		return false, 0, 0
 	}
-	if (proxyValidationCacheTTL > 0 || proxyAsyncWarmup) && len(blocks) > 1 {
+	policy := snapshotProxyPolicy()
+	applyResult := func(b proxyTextBlock, r proxyBlockResult, mutated *bool, origTokens, savedTokens *int) {
+		*estOrig += r.origTok
+		if dryRun {
+			*estComp += r.origTok
+		} else {
+			*estComp += r.compTok
+		}
+		if r.compiled != b.text {
+			if saved := r.origTok - r.compTok; saved > 0 {
+				*origTokens += r.origTok
+				*savedTokens += saved
+			}
+			if !dryRun {
+				b.apply(r.compiled)
+				*mutated = true
+			}
+		}
+	}
+	if (proxyValidationCacheTTL > 0 || policy.AsyncWarmup) && len(blocks) > 1 {
 		type blockGroup struct {
 			rep     proxyTextBlock
 			indices []int
@@ -879,41 +926,34 @@ func compileProxyBlocksWithConfig(ctx context.Context, protocol string, blocks [
 			for i, g := range groups {
 				reps[i] = g.rep
 			}
-			repResults := runProxyBlockTranslations(ctx, protocol, reps, p, dialect, domains, preloadedCfg)
+			repResults := runProxyBlockTranslations(ctx, protocol, reps, p, dialect, domains, preloadedCfg, dryRun)
 			mutated := false
+			origTokens := 0
+			savedTokens := 0
 			for gIdx, g := range groups {
 				r := repResults[gIdx]
 				for _, idx := range g.indices {
-					b := blocks[idx]
-					if r.compiled != b.text {
-						mutated = true
-					}
-					b.apply(r.compiled)
-					*estOrig += r.origTok
-					*estComp += r.compTok
+					applyResult(blocks[idx], r, &mutated, &origTokens, &savedTokens)
 				}
 				if r.logID != "" {
 					*logIDs = append(*logIDs, r.logID)
 				}
 			}
-			return mutated
+			return mutated, origTokens, savedTokens
 		}
 	}
-	results := runProxyBlockTranslations(ctx, protocol, blocks, p, dialect, domains, preloadedCfg)
+	results := runProxyBlockTranslations(ctx, protocol, blocks, p, dialect, domains, preloadedCfg, dryRun)
 	mutated := false
+	origTokens := 0
+	savedTokens := 0
 	for i, b := range blocks {
 		r := results[i]
-		if r.compiled != b.text {
-			mutated = true
-		}
-		b.apply(r.compiled)
-		*estOrig += r.origTok
-		*estComp += r.compTok
+		applyResult(b, r, &mutated, &origTokens, &savedTokens)
 		if r.logID != "" {
 			*logIDs = append(*logIDs, r.logID)
 		}
 	}
-	return mutated
+	return mutated, origTokens, savedTokens
 }
 
 func extractUsageFromOpenAISSETail(tail string) int {
@@ -990,21 +1030,31 @@ func resolveRequestCompileBudget(r *http.Request) time.Duration {
 	if raw := strings.TrimSpace(r.Header.Get("X-Babel-Compile-Budget")); raw != "" {
 		return parseProxyDuration(raw)
 	}
-	return proxyCompileBudget
+	return snapshotProxyPolicy().CompileBudget
 }
 
 func resolveRequestSkipCacheControl(r *http.Request) bool {
+	defaultSkip := snapshotProxyPolicy().SkipCacheControl
 	if raw := strings.TrimSpace(r.Header.Get("X-Babel-Skip-Cache-Control")); raw != "" {
-		return parseProxyBool(raw, proxySkipCacheControl)
+		return parseProxyBool(raw, defaultSkip)
 	}
-	return proxySkipCacheControl
+	return defaultSkip
 }
 
 func resolveRequestCompressDeveloper(r *http.Request) bool {
+	defaultCompress := snapshotProxyPolicy().CompressDeveloper
 	if raw := strings.TrimSpace(r.Header.Get("X-Babel-Compress-Developer")); raw != "" {
-		return parseProxyBool(raw, proxyCompressDeveloper)
+		return parseProxyBool(raw, defaultCompress)
 	}
-	return proxyCompressDeveloper
+	return defaultCompress
+}
+
+func resolveRequestDryRun(r *http.Request) bool {
+	defaultDryRun := snapshotProxyPolicy().DryRun
+	if raw := strings.TrimSpace(r.Header.Get("X-Babel-Dry-Run")); raw != "" {
+		return parseProxyBool(raw, defaultDryRun)
+	}
+	return defaultDryRun
 }
 
 func isResponsesJSONFormat(payload map[string]any) bool {
@@ -1129,13 +1179,14 @@ func handleStructuredProxy(w http.ResponseWriter, r *http.Request, adapter proxy
 		compressDeveloper: resolveRequestCompressDeveloper(r),
 	}, &blocks, &estOrigTotal, &estCompTotal)
 
+	dryRun := resolveRequestDryRun(r)
 	compileStart := time.Now()
 	compileCtx := r.Context()
 	var cancelCompile context.CancelFunc
 	if budget := resolveRequestCompileBudget(r); budget > 0 {
 		compileCtx, cancelCompile = context.WithTimeout(r.Context(), budget)
 	}
-	mutated := compileProxyBlocksWithConfig(compileCtx, adapter.protocol, blocks, p, dialect, domains, &cfg, &logIDs, &estOrigTotal, &estCompTotal)
+	mutated, origTokens, savedTokens := compileProxyBlocksWithOptions(compileCtx, adapter.protocol, blocks, p, dialect, domains, &cfg, &logIDs, &estOrigTotal, &estCompTotal, dryRun)
 	budgetExceeded := cancelCompile != nil && compileCtx.Err() != nil && r.Context().Err() == nil
 	if cancelCompile != nil {
 		cancelCompile()
@@ -1147,9 +1198,24 @@ func handleStructuredProxy(w http.ResponseWriter, r *http.Request, adapter proxy
 
 	babelStatus := "passthrough"
 	switch {
+	case dryRun:
+		proxyMetrics.dryRunTotal.Add(1)
+		proxyMetrics.passthroughTotal.Add(1)
+		if savedTokens > 0 {
+			babelStatus = "dry-run-hit"
+			proxyMetrics.dryRunWouldAdoptTotal.Add(1)
+			proxyMetrics.dryRunOrigTokensTotal.Add(uint64(origTokens))
+			proxyMetrics.dryRunPotentialSavedTokensTotal.Add(uint64(savedTokens))
+		} else {
+			babelStatus = "dry-run"
+		}
 	case mutated:
 		babelStatus = "adopted"
 		proxyMetrics.adoptedTotal.Add(1)
+		if savedTokens > 0 {
+			proxyMetrics.adoptedOrigTokensTotal.Add(uint64(origTokens))
+			proxyMetrics.adoptedSavedTokensTotal.Add(uint64(savedTokens))
+		}
 	case budgetExceeded:
 		babelStatus = "budget_timeout"
 		proxyMetrics.budgetTimeoutTotal.Add(1)
@@ -1166,7 +1232,7 @@ func handleStructuredProxy(w http.ResponseWriter, r *http.Request, adapter proxy
 	// optional fields; usage is recorded only when it appears in their response.
 	// 未替换任何文本时直接复用原始字节，避免对上 MB 的工具输出重新序列化。
 	modifiedBody := rawBody
-	if mutated {
+	if mutated && !dryRun {
 		if encoded, err := marshalProxyPayload(payload); err == nil {
 			modifiedBody = encoded
 		}
@@ -1194,6 +1260,9 @@ func handleStructuredProxy(w http.ResponseWriter, r *http.Request, adapter proxy
 	copyProxyResponseHeaders(w.Header(), resp.Header)
 	setDiagnosticHeader(w.Header(), "X-Babel-Status", babelStatus)
 	setDiagnosticHeader(w.Header(), "X-Babel-Compile-Ms", fmt.Sprintf("%d", compileElapsedMS))
+	if dryRun && savedTokens > 0 {
+		setDiagnosticHeader(w.Header(), "X-Babel-Dry-Run-Saved-Tokens", strconv.Itoa(savedTokens))
+	}
 	w.WriteHeader(resp.StatusCode)
 
 	hasEncodedBody := strings.TrimSpace(resp.Header.Get("Content-Encoding")) != ""

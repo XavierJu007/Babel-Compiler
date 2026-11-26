@@ -375,21 +375,44 @@ func newServerMux() *http.ServeMux {
 
 		if r.Method == "POST" {
 			var req struct {
-				Action  string `json:"action"` // toggle_redact | reset_circuit
-				Enabled bool   `json:"enabled"`
+				Action            string  `json:"action"` // toggle_redact | reset_circuit | update_policy
+				Enabled           bool    `json:"enabled"`
+				DryRun            *bool   `json:"dry_run"`
+				SkipCacheControl  *bool   `json:"skip_cache_control"`
+				CompressDeveloper *bool   `json:"compress_developer"`
+				AsyncWarmup       *bool   `json:"async_warmup"`
+				CompileBudget     *string `json:"compile_budget"`
+				WarmupUserMinHits *int    `json:"warmup_user_min_hits"`
 			}
-			if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
-				switch req.Action {
-				case "toggle_redact":
-					setLogRedactEnabled(req.Enabled)
-				case "reset_circuit":
-					compilerCB.Reset()
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]string{"detail": "无效请求"})
+				return
+			}
+			switch req.Action {
+			case "toggle_redact":
+				setLogRedactEnabled(req.Enabled)
+			case "reset_circuit":
+				compilerCB.Reset()
+			case "update_policy":
+				if err := updateProxyPolicy(proxyPolicyPatch{
+					DryRun:            req.DryRun,
+					SkipCacheControl:  req.SkipCacheControl,
+					CompressDeveloper: req.CompressDeveloper,
+					AsyncWarmup:       req.AsyncWarmup,
+					CompileBudget:     req.CompileBudget,
+					WarmupUserMinHits: req.WarmupUserMinHits,
+				}); err != nil {
+					w.WriteHeader(http.StatusBadRequest)
+					json.NewEncoder(w).Encode(map[string]string{"detail": err.Error()})
+					return
 				}
 			}
 			json.NewEncoder(w).Encode(map[string]any{
 				"status":         "ok",
 				"redact_enabled": isLogRedactEnabled(),
 				"circuit":        compilerCB.Status(),
+				"proxy_speed":    proxySpeedSummary(),
 			})
 			return
 		}
@@ -477,9 +500,10 @@ func startServer(preferredAddr string, autoOpen bool) {
 	fmt.Printf("    - LRU 缓存池:     %s (上限 %d 条 / %d MiB，异步防抖落盘)\n", cacheFilePath(), maxCacheEntries, maxCacheBytesLimit()/(1024*1024))
 	fmt.Printf("    - 代理并发控制:   全局上限 %d / 单请求块并发 %d / 队列超时 %v\n",
 		proxyCompileSem.Status()["limit"], proxyBlockConcurrency, proxyCompileQueueTimeout)
-	fmt.Printf("    - 代理提速:       校验缓存 %s / 负缓存 %s / 编译预算 %s / 异步预热 %t (user≥%d次) / 保护cache_control %t / 最小长度 %d / 跳过非散文 %t\n",
-		proxySpeedDurationLabel(proxyValidationCacheTTL), proxySpeedDurationLabel(proxyNegativeCacheTTL),
-		proxySpeedDurationLabel(proxyCompileBudget), proxyAsyncWarmup, proxyWarmupUserMinHits, proxySkipCacheControl, proxyMinRunes, proxySkipNonProse)
+	snap := snapshotProxyPolicy()
+	fmt.Printf("    - 代理策略:       Dry-Run %t / 校验缓存 %s / 负缓存 %s / 编译预算 %s / 异步预热 %t (user≥%d次) / 保护cache_control %t / 最小长度 %d / 跳过非散文 %t\n",
+		snap.DryRun, proxySpeedDurationLabel(proxyValidationCacheTTL), proxySpeedDurationLabel(proxyNegativeCacheTTL),
+		proxySpeedDurationLabel(snap.CompileBudget), snap.AsyncWarmup, snap.WarmupUserMinHits, snap.SkipCacheControl, snap.MinRunes, snap.SkipNonProse)
 	fmt.Printf("    - Web 控制台:     %s\n", webURL)
 	fmt.Printf("    - 健康检查:       %s/healthz\n", webURL)
 	fmt.Printf("    - OpenAI 代理:    %s/v1/chat/completions · %s/v1/responses\n", webURL, webURL)

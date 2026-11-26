@@ -131,15 +131,17 @@ OpenAI `/v1/chat/completions`、OpenAI `/v1/responses` 与 Anthropic `/v1/messag
 X-Babel-Profile: compiler
 X-Babel-Validation-Mode: blind
 X-Babel-Reader-Profile: reader
+X-Babel-Dry-Run: true                # 可选：观察模式，100% 原样转发上游并后台测算可省 Token
 X-Babel-Bypass: 1                    # 可选：跳过压缩直接流式透传
 X-Babel-Compile-Budget: 3s           # 可选：单次请求编译预算，超时立即回退原文
 X-Babel-Skip-Cache-Control: true     # 可选：保护带 cache_control 的前缀不被改动
 X-Babel-Compress-Developer: true     # 可选：允许压缩 OpenAI developer 角色（默认关闭）
 ```
 
-省略请求头时继承所选方案与服务端默认配置；方案未设置校验方式时使用 `compare`。`X-Babel-Reader-Profile` 需要指向已保存方案；显式发送空值可以清除继承的阅读器，改用本次编译方案。代理会在响应头附加不覆写上游的 `X-Babel-Status` 与 `X-Babel-Compile-Ms` 便于排查，并提供 `GET /healthz` 返回运行状态与代理指标。
+省略请求头时继承所选方案与服务端默认配置；方案未设置校验方式时使用 `compare`。`X-Babel-Reader-Profile` 需要指向已保存方案；显式发送空值可以清除继承的阅读器，改用本次编译方案。代理会在响应头附加不覆写上游的 `X-Babel-Status`（采纳时 `adopted`、观察命中时 `dry-run-hit`）、`X-Babel-Dry-Run-Saved-Tokens` 与 `X-Babel-Compile-Ms` 便于排查，并提供 `GET /healthz` 返回运行状态与代理指标；Web 控制台「透明代理」页签中的「代理策略」栏也支持运行期免重启动态切换 Dry-Run 等策略（`POST /api/logs` `action="update_policy"`）。
 
 常用服务端环境变量（均可通过环境变量覆写）：
+- `BABEL_PROXY_DRY_RUN`（默认 `false`）：开启后进入 Dry-Run 观察模式，所有代理请求均 100% 原样转发上游，同时测算潜在节省 Token 与缓存命中率并展示在 Web ROI 看板中。
 - `BABEL_PROXY_COMPILE_BUDGET`（默认 `5s`，`0`/`off` 关闭）：单次请求的编译延迟预算，超时立刻 fail-open 转发原文。
 - `BABEL_PROXY_SKIP_CACHE_CONTROL`（默认 `false`）：开启后按前缀断点跳过 `system` / `tools` / `messages` 中 `cache_control` 及其之前的内容，避免击穿上游 Prompt Caching。
 - `BABEL_PROXY_WARMUP_USER_MIN_HITS`（默认 `2`，`0` 禁用 `user` 预热）：异步预热时 `system`/`tool:*` 首次即预热，`user` 需重复出现达到阈值才入队，避免一次性输入浪费编译配额。
@@ -163,7 +165,7 @@ X-Babel-Compress-Developer: true     # 可选：允许压缩 OpenAI developer �
 
 流式请求保留客户端提供的 `stream_options`，不为了统计而自动添加 `include_usage`；实际用量只在上游返回时记录。回退同样保留图像等非文本消息块、客户端协议选项及流式响应，不重发最终请求。非流式响应为 usage 统计最多保留 1 MiB 副本，超过后放弃统计，不截断实际转发的正文；SSE 使用有界的首部或尾部采样。生成与校验模型的 8 MiB 响应上限不套用到最终上游响应。
 
-这些请求头不改变最终消费模型。方案中的请求 URL、API Key 和模型用于编译及对照，阅读器可另用自己的方案；请求体中的 `model` 和客户端认证信息属于最终上游。OpenAI 代理必须收到调用方的 `Authorization`；Anthropic 必须收到调用方的 `x-api-key` 或 `Authorization`。缺失时返回 HTTP 401，不借用编译密钥。代理的 `upstream_url` / `X-Upstream-BaseURL` 表示最终服务基址，按相应协议构造转发路径。OpenAI 代理未指定基址时原样使用编译请求 URL；Anthropic 代理须显式指定基址。所有最终转发也拒绝重定向。具体接入见 [README](../../README.md#http-api-与代理)。
+这些请求头不改变最终消费模型。方案中的请求 URL、API Key 和模型用于编译及对照，阅读器可另用自己的方案；请求体中的 `model` 和客户端认证信息属于最终上游。OpenAI 代理必须收到调用方的 `Authorization`；Anthropic 必须收到调用方的 `x-api-key` 或 `Authorization`。缺失时返回 HTTP 401，不借用编译密钥。代理的 `upstream_url` / `X-Upstream-BaseURL` 表示最终服务基址，按相应协议构造转发路径。OpenAI 代理未指定基址时原样使用编译请求 URL；Anthropic 代理须显式指定基址。所有最终转发也拒绝重定向。具体接入见 [README](../../README.md#transparent-proxy) 或 [简体中文 README](../../README.zh-CN.md#透明代理)。
 
 ## 5. 调用次数、缓存与成本
 

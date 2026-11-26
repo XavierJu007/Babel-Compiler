@@ -23,6 +23,14 @@ func isolateProxyState(t *testing.T) {
 	logsMutex.Unlock()
 	oldBreaker := compilerCB
 	compilerCB = newCircuitBreaker(3, time.Minute)
+	proxyPolicyMu.Lock()
+	oldDryRun := proxyDryRun
+	oldSkipCache := proxySkipCacheControl
+	oldCompressDev := proxyCompressDeveloper
+	oldBudget := proxyCompileBudget
+	oldWarmup := proxyAsyncWarmup
+	oldMinHits := proxyWarmupUserMinHits
+	proxyPolicyMu.Unlock()
 	t.Cleanup(func() {
 		cacheMutex.Lock()
 		diskCache = oldCache
@@ -31,6 +39,14 @@ func isolateProxyState(t *testing.T) {
 		proxyLogs = oldLogs
 		logsMutex.Unlock()
 		compilerCB = oldBreaker
+		proxyPolicyMu.Lock()
+		proxyDryRun = oldDryRun
+		proxySkipCacheControl = oldSkipCache
+		proxyCompressDeveloper = oldCompressDev
+		proxyCompileBudget = oldBudget
+		proxyAsyncWarmup = oldWarmup
+		proxyWarmupUserMinHits = oldMinHits
+		proxyPolicyMu.Unlock()
 	})
 }
 

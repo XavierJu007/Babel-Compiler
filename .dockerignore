@@ -1,0 +1,10 @@
+.git
+.github
+bin/
+dist/
+*.test
+node_modules/
+.DS_Store
+babel.config.json
+.babel_cache.json
+eval/results/

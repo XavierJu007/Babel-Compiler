@@ -81,7 +81,61 @@ curl http://127.0.0.1:8080/api/compile \
 
 **编译使用已保存方案，最终执行使用请求体中的 `model`。** 上游 Key 必须由调用方提供，代理不会借用编译 Key。
 
-代理只替换对应文本字段，保留消息角色、工具结构、查询参数与业务请求头；模型响应（含长 SSE 流）直接透传，不额外回译。支持 `X-Babel-Bypass: 1` 单次旁路、`X-Babel-Compile-Budget` 编译延迟预算、`X-Babel-Skip-Cache-Control: true` 保护上游 Prompt Cache，以及 `GET /healthz` 健康与指标检查。[完整接入与回退规则](docs/usage/validation.md#4-代理使用)。
+代理只替换对应文本字段，保留消息角色、工具结构、查询参数与业务请求头；模型响应（含长 SSE 流）直接透传，不额外回译。支持 `X-Babel-Dry-Run: true` 零风险观察模式、`X-Babel-Bypass: 1` 单次旁路、`X-Babel-Compile-Budget` 编译延迟预算、`X-Babel-Skip-Cache-Control: true` 保护上游 Prompt Cache、Web 代理策略实时切换、单条日志一键复制脱敏诊断包，以及 `GET /healthz` 健康与指标检查。[完整接入与回退规则](docs/usage/validation.md#4-代理使用)。
+
+### 为什么调用编译器反而能省钱？（成本与回本账）
+
+只有在**编译器远比消费模型便宜**且**压缩前缀被多轮复用**时，编译才有正收益：
+
+1. **便宜/本地免费编译器 -> 昂贵主力消费模型**：编译器和校验器配置本地 Ollama（如 `qwen2.5:7b`，边际成本接近 0）或极低价小模型（`gpt-4o-mini` / `deepseek-chat`），而实际业务/Agent 流量调用 Claude Sonnet/Opus 或 GPT-5。
+2. **多轮 Agent 摊薄编译成本**：Claude Code、Codex 与多工具 MCP 对话中，冗长的 `system` 提示词和 `tools` JSON Schema 在几十上百轮里高度重复。Babel 在后台异步预热（`async_warmup`）并验证一次后，后续请求全部走内存双缓存快路径（接近 0 ms 额外延迟，零重复编译调用）。
+
+### Dry-Run 观察模式：零风险先测自己工作流能省多少
+
+首次接入不想立刻改动线上 Prompt？可在 Web「透明代理」顶部的策略栏勾选 **Dry-Run 观察模式**（或环境变量 `BABEL_PROXY_DRY_RUN=true` / 请求头 `X-Babel-Dry-Run: true`）：
+
+- 所有请求 **100% 原样转发给上游**（零语义误改风险、不阻塞首包）；
+- 后台照常完成异步压缩测算与等义校验，并在 Web 看板实时汇总：**「预计可省 Token 数、节省比例、命中次数/总次数」**，确认自己工作流有真实收益再一键切到正式压缩。
+
+### 60 秒主流客户端接入配方
+
+1. **Claude Code（Anthropic 协议）**：在模型配置里填好 `upstream_url`（如 `https://api.anthropic.com`），终端执行：
+   ```bash
+   export ANTHROPIC_BASE_URL="http://127.0.0.1:8080"
+   claude
+   ```
+2. **Codex CLI / OpenAI SDK**：
+   ```bash
+   export OPENAI_BASE_URL="http://127.0.0.1:8080/v1"
+   codex
+   ```
+3. **Ollama 本地零编译成本**：右上角「模型配置中心」填入 BaseURL `http://127.0.0.1:11434/v1/chat/completions`、API Key `ollama`、Model `qwen2.5:7b`（`upstream_url` 仍填你的云端主力模型服务）。
+4. **Cursor / Cline / Cherry Studio**：将 Base URL 指向 `http://127.0.0.1:8080/v1`（或 `http://127.0.0.1:8080`）；若客户端附带浏览器 `Origin` 头，启动时加上 `BABEL_PROXY_ALLOWED_ORIGINS="http://localhost:3000"`。
+
+### Docker Sidecar 部署
+
+出于安全边界设计，Babel 仅绑定环回地址（`127.0.0.1:8080`），避免本地凭据与 Prompt 暴露到局域网：
+
+```bash
+docker compose up -d --build
+```
+
+[docker-compose.yml](docker-compose.yml) 中已包含 `BABEL_PROXY_DRY_RUN=true` 与容器 sidecar（`network_mode: "service:babel"`）注释示例。
+
+### 真实模型基准评测（`babel-eval`）
+
+启动 Babel 并保存可用配置方案后，可直接用内置案例或自定义 JSONL 测试集跑真实模型的压缩率与验证通过率：
+
+```bash
+go run ./cmd/babel-eval --live pipeline \
+  --endpoint http://127.0.0.1:8080 \
+  --profile default \
+  --limit 10 --max-requests 20 \
+  --output eval/results/live.jsonl
+go run ./cmd/babel-eval report eval/results/live.jsonl -output eval/results/live.html
+```
+
+更多参数与自建测试集规范见 [eval/README.md](eval/README.md)。
 
 ## 文档
 
