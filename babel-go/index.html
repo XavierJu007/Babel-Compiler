@@ -858,6 +858,149 @@
             border: 1px solid rgba(56, 189, 248, 0.28);
         }
 
+        .route-pill {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 6px;
+            background: rgba(148, 163, 184, 0.1);
+            color: var(--text-secondary);
+            border: 1px solid var(--border-subtle);
+            white-space: nowrap;
+        }
+        .route-pill.is-fast {
+            background: rgba(16, 185, 129, 0.12);
+            color: #6ee7b7;
+            border-color: rgba(16, 185, 129, 0.3);
+        }
+        .route-pill.is-parallel {
+            background: rgba(56, 189, 248, 0.12);
+            color: var(--accent-light);
+            border-color: rgba(56, 189, 248, 0.3);
+        }
+        .route-pill.is-llm {
+            background: rgba(234, 179, 8, 0.12);
+            color: var(--gold-soft);
+            border-color: rgba(234, 179, 8, 0.3);
+        }
+
+        .compile-progress {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 7px 16px;
+            background: rgba(16, 22, 34, 0.9);
+            border-bottom: 1px solid var(--border-subtle);
+            font-family: var(--font-mono);
+            font-size: 11.5px;
+            color: var(--accent-ice);
+        }
+        .compile-progress-left {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .compile-progress-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--accent-light);
+            box-shadow: 0 0 8px var(--accent);
+        }
+        .compile-progress-timer {
+            color: var(--gold-soft);
+            font-variant-numeric: tabular-nums;
+            font-weight: 600;
+        }
+
+        .history-panel {
+            padding: 12px 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .history-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            font-size: 12px;
+        }
+        .history-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+            gap: 8px;
+        }
+        .history-item {
+            background: var(--bg-input);
+            border: 1px solid var(--border-subtle);
+            border-radius: 8px;
+            padding: 8px 10px;
+            cursor: pointer;
+            text-align: left;
+            color: var(--text-primary);
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            transition: border-color 0.15s ease, background 0.15s ease;
+        }
+        .history-item:hover {
+            border-color: var(--border-accent);
+            background: rgba(56, 189, 248, 0.06);
+        }
+        .history-item-meta {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 6px;
+            font-family: var(--font-mono);
+            font-size: 10.5px;
+            color: var(--text-muted);
+        }
+        .history-item-preview {
+            font-size: 11.5px;
+            color: var(--text-secondary);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .proxy-filter-bar {
+            padding: 9px 14px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .filter-pill-group {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+        .filter-pill {
+            background: var(--bg-input);
+            border: 1px solid var(--border-subtle);
+            color: var(--text-secondary);
+            padding: 3px 9px;
+            border-radius: 6px;
+            font-size: 11.5px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+        .filter-pill:hover {
+            border-color: var(--border-mid);
+            color: var(--text-primary);
+        }
+        .filter-pill.active {
+            background: rgba(56, 189, 248, 0.14);
+            color: var(--accent-light);
+            border-color: rgba(56, 189, 248, 0.35);
+            font-weight: 600;
+        }
+
         /* ==================== 不变量胶囊 & 审计结果栏 ==================== */
         .capsules-bar {
             display: flex;
@@ -1526,24 +1669,30 @@
 <main id="viewCompiler" class="workspace ui-fade">
     <section class="glass-card brand-banner" aria-labelledby="workspaceTitle">
         <h1 id="workspaceTitle" class="sr-only">Babel Compiler — 高密度自然语言提示词编译与透明代理</h1>
-        <div class="banner-stage">
-            <img class="banner-art" src="/assets/babel-poster.png" alt="Babel Compiler 主题横幅" fetchpriority="high" decoding="async">
-        </div>
         <div class="banner-meta-bar">
             <div class="banner-meta-left">
                 <div class="banner-flow">INPUT <span aria-hidden="true">→</span> BABEL</div>
                 <span class="banner-divider" aria-hidden="true"></span>
-                <span class="banner-tagline">将长篇自然语言编译为高密度自解释巴别语 · 支持 OpenAI / Anthropic 透明代理与 Dry-Run 测算</span>
+                <span class="banner-tagline">短文本/JSON &lt;1ms 本地处理 · 长文本并行分块流式编译 · 支持 OpenAI / Anthropic 透明代理</span>
             </div>
-            <button type="button" class="btn btn-gold" onclick="fillDemoText()">
-                <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-                <span>填入测试样本</span>
-            </button>
+            <div class="pane-actions">
+                <button id="toggleOperatorsBtn" type="button" class="btn" onclick="toggleOperatorBar()" aria-expanded="false">公共符号</button>
+                <select id="demoPresetSelect" class="select-dark" aria-label="选择示例模板" style="padding: 4px 8px; font-size: 12px;">
+                    <option value="sop" selected>长篇 SOP (数值+否定密集)</option>
+                    <option value="agent">编程 Agent 规范 (英文)</option>
+                    <option value="json">格式化 JSON Schema (&lt;1ms)</option>
+                    <option value="short">短约束直通样本 (&lt;1ms)</option>
+                </select>
+                <button type="button" class="btn btn-gold" onclick="fillDemoText(document.getElementById('demoPresetSelect').value)">
+                    <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                    <span>填入测试样本</span>
+                </button>
+            </div>
         </div>
     </section>
 
-    <!-- 公共逻辑符号速查栏（点击可直接插入光标处） -->
-    <div class="glass-card operator-bar">
+    <!-- 公共逻辑符号速查栏（默认收起，按需展开） -->
+    <div id="operatorBar" class="glass-card operator-bar hidden">
         <div class="operator-list">
             <span class="op-title">
                 <span>公共符号</span>
@@ -1610,9 +1759,12 @@
                 <div class="pane-title-group">
                     <span class="pane-dot" aria-hidden="true"></span>
                     <label for="rawInput" class="pane-label">INPUT / 自然语言</label>
-                    <span id="inputCharCount" class="char-counter">0 chars</span>
+                    <span id="inputCharCount" class="char-counter">0 字 · ~0 tok</span>
+                    <span id="routePreviewBadge" class="route-pill hidden" title="根据长度、结构和当前策略预判的执行路径"></span>
                 </div>
                 <div class="pane-actions">
+                    <button id="clearInputBtn" type="button" class="btn" onclick="clearCompileInput()" title="清空输入与当前结果">清空</button>
+                    <button id="pasteCompileBtn" type="button" class="btn" onclick="pasteAndCompile()" title="从剪贴板粘贴并立即编译">粘贴并编译</button>
                     <select id="compileStrategy" class="select-dark" onchange="updateCompileOptionsHint()" title="auto：短文本(<180字或<80tok)与JSON走<1ms本地策略，长文本(>1200字)自动并行；local：<1ms零LLM；deep：强制LLM" style="padding: 4px 8px; font-size: 12px;">
                         <option value="auto" selected>自动策略 · 短直通/长并行</option>
                         <option value="local">极速本地 · &lt;1ms</option>
@@ -1622,6 +1774,7 @@
                         <input id="verifyCheck" type="checkbox" checked onchange="updateCompileOptionsHint()"> 严格校验
                     </label>
                     <button id="runBtn" type="button" class="btn btn-primary" onclick="runCompile(false)" title="编译（Cmd/Ctrl + Enter）">编译</button>
+                    <button id="stopBtn" type="button" class="btn btn-danger hidden" onclick="cancelCompile()" title="中止正在进行的编译请求">停止</button>
                 </div>
             </div>
             <textarea id="rawInput" class="code-area" oninput="updateInputCount()" placeholder="在这里粘贴提示词、工作流程或 SOP。&#10;&#10;主体、条件、例外与约束，将被整理成紧凑的语义树。"></textarea>
@@ -1638,15 +1791,32 @@
                     <span id="cacheBadge" class="cache-pill hidden">CACHE HIT</span>
                 </div>
                 <div class="pane-actions">
+                    <button id="forceDeepBtn" type="button" class="btn hidden" onclick="forceDeepCompile()" title="跳过短文本直通阈值，强制执行 LLM 语义编译">强制深度编译</button>
                     <button id="forceBtn" type="button" class="btn" onclick="runCompile(true)" title="跳过本地缓存强制重新编译">重编译</button>
+                    <button id="historyToggleBtn" type="button" class="btn" onclick="toggleHistoryPanel()" aria-expanded="false">历史 (0)</button>
                     <button id="copyBtn" type="button" class="btn btn-cyan" onclick="copyResult()" disabled>复制结果</button>
                 </div>
+            </div>
+            <div id="compileProgressBar" class="compile-progress hidden" role="status" aria-live="polite">
+                <div class="compile-progress-left">
+                    <span class="compile-progress-dot" aria-hidden="true"></span>
+                    <span id="compileProgressText">编译中...</span>
+                </div>
+                <span id="compileTimerText" class="compile-progress-timer">0.0s</span>
             </div>
             <textarea id="dslOutput" readonly class="code-area output" placeholder="用公开术语、符号和紧凑层级表达关系、条件与约束；无需额外图例..."></textarea>
             <div id="invariantCapsules" class="capsules-bar hidden" aria-live="polite"></div>
             <div id="auditBox" class="audit-bar hidden" role="status" aria-live="polite"></div>
         </section>
     </div>
+
+    <section id="historyPanel" class="glass-card history-panel hidden" aria-label="本地编译历史">
+        <div class="history-head">
+            <strong style="color: var(--text-primary);">最近编译记录（仅保存在当前浏览器）</strong>
+            <button type="button" class="btn" onclick="clearCompileHistory()">清空历史</button>
+        </div>
+        <div id="historyList" class="history-list"></div>
+    </section>
 
     <footer class="workspace-footer">
         <span>公开符号 · 自解释 · 混合语言 · 本地运行，零外部依赖</span>
@@ -1686,6 +1856,7 @@
                 <input id="autoRefreshCheck" type="checkbox" checked> 自动刷新 (3s)
             </label>
             <button id="quickstartToggleBtn" type="button" class="btn" onclick="toggleQuickstartPanel()">60 秒接入指南</button>
+            <button id="proxyDryRunProbeBtn" type="button" class="btn" onclick="runProxyDryRunProbe()" title="向本机代理发送一条安全的 Dry-Run 探测请求验证链路">测试代理链路 (Dry-Run)</button>
             <button type="button" class="btn btn-cyan" onclick="loadLogs()">立即刷新</button>
             <button type="button" class="btn btn-danger" onclick="clearLogs()">清空记录</button>
         </div>
@@ -1733,6 +1904,21 @@
     </div>
 
     <div id="proxyQuickstartPanel" class="glass-card quickstart-panel hidden"></div>
+
+    <div id="proxyFilterBar" class="glass-card proxy-filter-bar" aria-label="代理记录筛选">
+        <div class="filter-pill-group">
+            <button id="filterBtn-all" type="button" class="filter-pill active" onclick="setProxyLogFilter('all')">全部</button>
+            <button id="filterBtn-adopted" type="button" class="filter-pill" onclick="setProxyLogFilter('adopted')">已采用(LLM)</button>
+            <button id="filterBtn-local_fast" type="button" class="filter-pill" onclick="setProxyLogFilter('local_fast')">本地快路径</button>
+            <button id="filterBtn-dry_run" type="button" class="filter-pill" onclick="setProxyLogFilter('dry_run')">Dry-Run</button>
+            <button id="filterBtn-kept_original" type="button" class="filter-pill" onclick="setProxyLogFilter('kept_original')">保留原文</button>
+            <button id="filterBtn-system_tools" type="button" class="filter-pill" onclick="setProxyLogFilter('system_tools')">仅 system/tools</button>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px;">
+            <input id="proxyLogSearchInput" type="search" class="policy-mini-input" style="min-width: 200px;" placeholder="按角色 / 原因 / 内容过滤..." oninput="renderFilteredProxyLogs()">
+            <span id="proxyFilterCount" class="domain-note"></span>
+        </div>
+    </div>
 
     <div id="logsError" class="audit-bar is-error hidden" role="status" aria-live="polite"></div>
     <div id="logsContainer" class="log-list"></div>
@@ -2751,6 +2937,7 @@
             ? `盲读：阅读器 ${options.effective_reader || '与编译方案相同'} 只看候选，随后对照原文；比 compare 额外调用一次阅读器。`
             : '对照：同一审计调用读取原文与候选。';
         document.getElementById('compileOptionsHint').textContent = `目标计数：${options.token_encoding}（文本本体，不含请求包装）；编码不根据编译模型推测。${validation}`;
+        updateRoutePreview();
         invalidateCompileContext();
     }
 
@@ -3044,6 +3231,254 @@
     let compileRequestSequence = 0;
     let lastCompileContext = null;
     let compileContextRevision = 0;
+    let activeCompileAbort = null;
+    let compileTimerHandle = null;
+    let compileStartedAt = 0;
+    let compileCurrentStage = '编译中';
+    const COMPILE_HISTORY_KEY = 'babel_compile_history_v1';
+    const COMPILE_HISTORY_LIMIT = 15;
+
+    function stopCompileTimer() {
+        if (compileTimerHandle !== null && typeof clearInterval === 'function') {
+            clearInterval(compileTimerHandle);
+        }
+        compileTimerHandle = null;
+    }
+
+    function updateCompileProgressDisplay() {
+        const sec = Math.max(0, (Date.now() - compileStartedAt) / 1000).toFixed(1);
+        const textEl = document.getElementById('compileProgressText');
+        const timerEl = document.getElementById('compileTimerText');
+        const stopBtn = document.getElementById('stopBtn');
+        if (textEl) textEl.textContent = `${compileCurrentStage}...`;
+        if (timerEl) timerEl.textContent = `${sec}s`;
+        if (stopBtn && !stopBtn.classList.contains('hidden')) {
+            stopBtn.textContent = `停止 (${sec}s)`;
+        }
+    }
+
+    function cancelCompile() {
+        compileRequestSequence++;
+        if (activeCompileAbort) {
+            try { activeCompileAbort.abort(); } catch (e) {}
+            activeCompileAbort = null;
+        }
+        stopCompileTimer();
+        const btn = document.getElementById('runBtn');
+        const forceBtn = document.getElementById('forceBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const progressBar = document.getElementById('compileProgressBar');
+        if (btn) {
+            btn.textContent = '编译';
+            btn.disabled = false;
+        }
+        if (forceBtn) forceBtn.disabled = false;
+        if (stopBtn) {
+            stopBtn.textContent = '停止';
+            stopBtn.classList.add('hidden');
+        }
+        if (progressBar) progressBar.classList.add('hidden');
+        isOverdrive = false;
+        renderValidation({
+            status: 'not_run',
+            method: 'none',
+            policy_version: 'semantic-gate-v2',
+            issues: ['已手动停止本次编译。']
+        });
+    }
+
+    function estimateTokensQuick(text) {
+        if (!text) return 0;
+        let nonAscii = 0;
+        for (const ch of text) {
+            if (ch.charCodeAt(0) > 0x7f) nonAscii++;
+        }
+        const ascii = text.length - nonAscii;
+        return Math.max(1, Math.ceil(nonAscii / 1.45 + ascii / 3.8));
+    }
+
+    function looksLikeNonProseClient(text) {
+        const trimmed = text.trim();
+        if (trimmed.length < 2) return false;
+        if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+            try {
+                JSON.parse(trimmed);
+                return true;
+            } catch (e) {}
+        }
+        if ((trimmed.startsWith('```') && trimmed.endsWith('```') && trimmed.indexOf('```', 3) === trimmed.length - 3) ||
+            (trimmed.startsWith('~~~') && trimmed.endsWith('~~~') && trimmed.indexOf('~~~', 3) === trimmed.length - 3)) {
+            return true;
+        }
+        return false;
+    }
+
+    function predictCompileRoute(text, strategy = 'auto') {
+        const trimmed = (text || '').trim();
+        if (!trimmed) return { label: '', kind: '' };
+        const runes = Array.from(trimmed).length;
+        const estTok = estimateTokensQuick(text);
+        if (strategy === 'local') {
+            return { label: '预计：极速本地无损 (<1ms)', kind: 'is-fast' };
+        }
+        if (strategy === 'deep') {
+            return runes > 1200
+                ? { label: '预计：并行分块深度编译', kind: 'is-parallel' }
+                : { label: '预计：单次深度编译', kind: 'is-llm' };
+        }
+        if (looksLikeNonProseClient(text)) {
+            return { label: '预计：JSON/代码本地快路径 (<1ms)', kind: 'is-fast' };
+        }
+        if (runes < 180 || estTok < 80) {
+            return { label: '预计：短文本直通/本地 (<1ms，防膨胀)', kind: 'is-fast' };
+        }
+        if (runes > 1200) {
+            return { label: '预计：并行分块编译', kind: 'is-parallel' };
+        }
+        return { label: '预计：单次语义编译', kind: 'is-llm' };
+    }
+
+    function updateRoutePreview() {
+        const text = document.getElementById('rawInput')?.value || '';
+        const strategy = document.getElementById('compileStrategy')?.value || 'auto';
+        const badge = document.getElementById('routePreviewBadge');
+        if (!badge) return;
+        const route = predictCompileRoute(text, strategy);
+        if (!route.label) {
+            badge.textContent = '';
+            badge.className = 'route-pill hidden';
+            return;
+        }
+        badge.textContent = route.label;
+        badge.className = `route-pill ${route.kind}`.trim();
+    }
+
+    function toggleOperatorBar(force) {
+        const bar = document.getElementById('operatorBar');
+        const btn = document.getElementById('toggleOperatorsBtn');
+        if (!bar) return;
+        const show = force !== undefined ? Boolean(force) : bar.classList.contains('hidden');
+        bar.classList.toggle('hidden', !show);
+        if (btn) btn.setAttribute('aria-expanded', String(show));
+    }
+
+    function readCompileHistory() {
+        try {
+            const parsed = JSON.parse(localStorage.getItem(COMPILE_HISTORY_KEY) || '[]');
+            return Array.isArray(parsed) ? parsed : [];
+        } catch (e) {
+            return [];
+        }
+    }
+
+    function renderCompileHistory() {
+        const list = readCompileHistory();
+        const btn = document.getElementById('historyToggleBtn');
+        if (btn) btn.textContent = `历史 (${list.length})`;
+        const box = document.getElementById('historyList');
+        if (!box) return;
+        box.innerHTML = '';
+        if (!list.length) {
+            const empty = document.createElement('div');
+            empty.className = 'domain-note';
+            empty.textContent = '暂无本地编译记录。每次编译成功后会自动保存在当前浏览器。';
+            box.appendChild(empty);
+            return;
+        }
+        list.forEach((entry, idx) => {
+            const itemBtn = document.createElement('button');
+            itemBtn.type = 'button';
+            itemBtn.className = 'history-item';
+            itemBtn.onclick = () => restoreCompileHistory(idx);
+
+            const meta = document.createElement('div');
+            meta.className = 'history-item-meta';
+            const left = document.createElement('span');
+            left.textContent = `${entry.ts || ''} · ${entry.strategy || 'auto'}`;
+            const right = document.createElement('span');
+            const ms = Number.isFinite(entry.elapsedMs) ? ` · ${entry.elapsedMs < 1000 ? `${entry.elapsedMs}ms` : `${(entry.elapsedMs / 1000).toFixed(1)}s`}` : '';
+            right.textContent = `${entry.origTok ?? '?'}→${entry.compTok ?? '?'} tok${ms}`;
+            meta.appendChild(left);
+            meta.appendChild(right);
+
+            const preview = document.createElement('div');
+            preview.className = 'history-item-preview';
+            preview.textContent = (entry.text || '').replace(/\s+/g, ' ').slice(0, 72);
+
+            itemBtn.appendChild(meta);
+            itemBtn.appendChild(preview);
+            box.appendChild(itemBtn);
+        });
+    }
+
+    function saveCompileHistory(entry) {
+        if (!entry || !entry.text || !entry.compiled) return;
+        const list = readCompileHistory().filter(item =>
+            !(item.text === entry.text && item.compiled === entry.compiled && item.strategy === entry.strategy));
+        list.unshift(entry);
+        try {
+            localStorage.setItem(COMPILE_HISTORY_KEY, JSON.stringify(list.slice(0, COMPILE_HISTORY_LIMIT)));
+        } catch (e) {}
+        renderCompileHistory();
+    }
+
+    function restoreCompileHistory(index) {
+        const list = readCompileHistory();
+        const entry = list[index];
+        if (!entry) return;
+        document.getElementById('rawInput').value = entry.text || '';
+        updateInputCount();
+        document.getElementById('dslOutput').value = entry.compiled || '';
+        document.getElementById('dslOutput').dataset.candidateStatus = entry.validationStatus || 'passed';
+        const copyBtn = document.getElementById('copyBtn');
+        copyBtn.disabled = !entry.compiled;
+        copyBtn.textContent = '复制结果';
+        toggleHistoryPanel(false);
+    }
+
+    function clearCompileHistory() {
+        try { localStorage.setItem(COMPILE_HISTORY_KEY, '[]'); } catch (e) {}
+        renderCompileHistory();
+    }
+
+    function toggleHistoryPanel(force) {
+        const panel = document.getElementById('historyPanel');
+        const btn = document.getElementById('historyToggleBtn');
+        if (!panel) return;
+        const show = force !== undefined ? Boolean(force) : panel.classList.contains('hidden');
+        if (show) renderCompileHistory();
+        panel.classList.toggle('hidden', !show);
+        if (btn) btn.setAttribute('aria-expanded', String(show));
+    }
+
+    function clearCompileInput() {
+        document.getElementById('rawInput').value = '';
+        updateInputCount();
+        resetCompileResult();
+    }
+
+    async function pasteAndCompile() {
+        if (!navigator.clipboard?.readText) {
+            document.getElementById('rawInput').focus();
+            return;
+        }
+        try {
+            const text = await navigator.clipboard.readText();
+            if (!text || !text.trim()) return;
+            document.getElementById('rawInput').value = text;
+            updateInputCount();
+            await runCompile(false);
+        } catch (e) {
+            document.getElementById('rawInput').focus();
+        }
+    }
+
+    function forceDeepCompile() {
+        const sel = document.getElementById('compileStrategy');
+        if (sel) sel.value = 'deep';
+        updateCompileOptionsHint();
+        return runCompile(true);
+    }
 
     function currentCompileContext() {
         const profile = selectedCompileProfileName();
@@ -3083,10 +3518,11 @@
         const copyBtn = document.getElementById('copyBtn');
         copyBtn.disabled = true;
         copyBtn.textContent = '复制结果';
-        for (const id of ['candidateBadge', 'statsBadge', 'cacheBadge', 'invariantCapsules', 'auditBox']) {
+        for (const id of ['candidateBadge', 'statsBadge', 'cacheBadge', 'invariantCapsules', 'auditBox', 'forceDeepBtn', 'compileProgressBar']) {
             const el = document.getElementById(id);
+            if (!el) continue;
             el.classList.add('hidden');
-            if (id !== 'cacheBadge') el.textContent = '';
+            if (id !== 'cacheBadge' && id !== 'forceDeepBtn' && id !== 'compileProgressBar') el.textContent = '';
         }
         delete document.getElementById('invariantCapsules').dataset.validationStatus;
         document.getElementById('auditBox').className = 'audit-bar hidden';
@@ -3196,8 +3632,11 @@
     }
 
     function updateInputCount() {
-        const len = document.getElementById('rawInput').value.length;
-        document.getElementById('inputCharCount').textContent = `${len} chars`;
+        const raw = document.getElementById('rawInput').value;
+        const runes = Array.from(raw).length;
+        const estTok = raw.trim() ? estimateTokensQuick(raw) : 0;
+        document.getElementById('inputCharCount').textContent = `${runes} 字 · ~${estTok} tok`;
+        updateRoutePreview();
         if (document.getElementById('runBtn').disabled || document.getElementById('dslOutput').value ||
             document.getElementById('invariantCapsules').dataset.validationStatus !== undefined) {
             markCompileInputChanged();
@@ -3246,8 +3685,41 @@
 2. 遇到 SOP 未覆盖的场景，先挂起并登记「待确认」，不得自行推断规则后放款。
 3. 单个用户的可识别信息仅在当前工单内使用，禁止跨工单检索、禁止批量导出、禁止转发至外部沟通工具。`;
 
-    function fillDemoText() {
-        document.getElementById('rawInput').value = DEMO_TEXT;
+    const DEMO_PRESETS = {
+        sop: DEMO_TEXT,
+        agent: `You are an autonomous coding agent operating on a production repository. Follow these constraints strictly:
+1. Always inspect existing callers and tests before modifying any public function signature or HTTP route.
+2. Never run destructive git commands such as git reset --hard, push --force, or branch deletion without explicit user confirmation.
+3. Never commit secrets, API keys, JWT tokens, or database credentials; redact them immediately if spotted in logs.
+4. Keep edits strictly scoped to files related to the task; do not reformat unrelated files or delete existing comments/docstrings.
+5. After editing code, run the full unit test suite and linter, and report only exact observed output counts.`,
+        json: `{
+  "service": "order-refund-gateway",
+  "version": "2.4.0",
+  "limits": {
+    "max_single_amount": 2000,
+    "auto_approve_under": 99,
+    "idempotency_ttl_seconds": 300,
+    "max_retries_per_30d": 3
+  },
+  "required_headers": [
+    "Authorization",
+    "X-Request-Id",
+    "X-Signature-256"
+  ],
+  "strict_invariants": [
+    "never_delete_ledger",
+    "never_refund_over_paid_amount"
+  ]
+}`,
+        short: '禁止删除线上订单流水，单笔退款金额 >= 500 元必须经售后主管与财务双签审批。'
+    };
+
+    function fillDemoText(preset = 'sop') {
+        const content = DEMO_PRESETS[preset] || DEMO_TEXT;
+        const presetSel = document.getElementById('demoPresetSelect');
+        if (presetSel && DEMO_PRESETS[preset]) presetSel.value = preset;
+        document.getElementById('rawInput').value = content;
         updateInputCount();
     }
 
@@ -3347,13 +3819,39 @@
         const text = document.getElementById('rawInput').value;
         if (!text.trim()) return;
         const requestSequence = ++compileRequestSequence;
+        if (activeCompileAbort) {
+            try { activeCompileAbort.abort(); } catch (e) {}
+        }
+        const controller = typeof AbortController === 'function' ? new AbortController() : null;
+        activeCompileAbort = controller;
+        stopCompileTimer();
+        compileStartedAt = Date.now();
+        compileCurrentStage = '编译中';
+
         const btn = document.getElementById('runBtn');
         const forceBtn = document.getElementById('forceBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const progressBar = document.getElementById('compileProgressBar');
         const output = document.getElementById('dslOutput');
         resetCompileResult();
         btn.textContent = '编译中...';
         btn.disabled = true;
         forceBtn.disabled = true;
+        if (stopBtn) {
+            stopBtn.textContent = '停止 (0.0s)';
+            stopBtn.classList.remove('hidden');
+        }
+        if (progressBar) progressBar.classList.remove('hidden');
+        updateCompileProgressDisplay();
+        if (typeof setInterval === 'function') {
+            compileTimerHandle = setInterval(() => {
+                if (requestSequence !== compileRequestSequence) {
+                    stopCompileTimer();
+                    return;
+                }
+                updateCompileProgressDisplay();
+            }, 100);
+        }
         isOverdrive = true;
 
         const strictGate = document.getElementById('verifyCheck').checked;
@@ -3366,6 +3864,7 @@
             const data = await fetchCompileStream('/api/compile/stream', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                ...(controller ? { signal: controller.signal } : {}),
                 body: JSON.stringify({
                     text,
                     ...(profile ? { profile } : {}),
@@ -3382,8 +3881,17 @@
             }, {
                 onStage: stage => {
                     if (!compileRequestIsCurrent(text, requestContext, requestSequence)) return;
-                    if (stage === 'generating') btn.textContent = '生成中...';
-                    else if (stage === 'validating') btn.textContent = '校验中...';
+                    if (stage === 'generating') {
+                        compileCurrentStage = '生成巴别语中';
+                        btn.textContent = '生成中...';
+                    } else if (stage === 'rewriting') {
+                        compileCurrentStage = '结构修正中';
+                        btn.textContent = '修正中...';
+                    } else if (stage === 'validating') {
+                        compileCurrentStage = '语义校验中';
+                        btn.textContent = '校验中...';
+                    }
+                    updateCompileProgressDisplay();
                 },
                 onDelta: (chunk, reset) => {
                     if (!compileRequestIsCurrent(text, requestContext, requestSequence)) return;
@@ -3413,8 +3921,29 @@
             } : validation;
             renderCompileCandidate(data, displayedValidation);
             renderValidation(displayedValidation, data.reason || '');
+            const forceDeepBtn = document.getElementById('forceDeepBtn');
+            if (forceDeepBtn) {
+                const canForceDeep = options.strategy === 'auto' &&
+                    (data.strategy === 'passthrough' || data.strategy === 'local_fast');
+                forceDeepBtn.classList.toggle('hidden', !canForceDeep);
+            }
+            if (!['failed', 'error'].includes(displayedValidation.status)) {
+                const now = new Date();
+                const ts = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+                saveCompileHistory({
+                    ts,
+                    strategy: data.strategy || options.strategy,
+                    text,
+                    compiled: data.compiled,
+                    origTok: data.stats?.original_tokens,
+                    compTok: data.stats?.compiled_tokens,
+                    elapsedMs: Number.isFinite(data.elapsed_ms) ? data.elapsed_ms : Math.max(0, Date.now() - compileStartedAt),
+                    validationStatus: displayedValidation.status
+                });
+            }
 
         } catch (err) {
+            if (err && err.name === 'AbortError') return;
             if (!compileRequestIsCurrent(text, requestContext, requestSequence)) return;
             resetCompileResult();
             const reported = normalizeValidation(err.validation);
@@ -3430,9 +3959,16 @@
             }
         } finally {
             if (requestSequence === compileRequestSequence) {
+                activeCompileAbort = null;
+                stopCompileTimer();
                 btn.textContent = '编译';
                 btn.disabled = false;
                 forceBtn.disabled = false;
+                if (stopBtn) {
+                    stopBtn.textContent = '停止';
+                    stopBtn.classList.add('hidden');
+                }
+                if (progressBar) progressBar.classList.add('hidden');
                 isOverdrive = false;
             }
         }
@@ -3506,6 +4042,75 @@
 
     let latestProxyMetrics = null;
     let latestProxySpeed = null;
+    let latestProxyLogs = [];
+    let proxyLogFilter = 'all';
+
+    function setProxyLogFilter(filterName) {
+        proxyLogFilter = filterName || 'all';
+        for (const key of ['all', 'adopted', 'local_fast', 'dry_run', 'kept_original', 'system_tools']) {
+            const btn = document.getElementById(`filterBtn-${key}`);
+            if (btn) btn.classList.toggle('active', key === proxyLogFilter);
+        }
+        renderFilteredProxyLogs();
+    }
+
+    async function runProxyDryRunProbe() {
+        const btn = document.getElementById('proxyDryRunProbeBtn');
+        const hint = document.getElementById('policySaveHint');
+        const active = serverConfig.profiles?.[selectedCompileProfileName()] || {};
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = '探测中...';
+        }
+        try {
+            const t0 = Date.now();
+            const probeSystem = [
+                'Please note that   every production change must retain rollback metadata and audit logs.',
+                '',
+                '---',
+                '',
+                '| Check | Rule |',
+                '| :---- | :--- |',
+                '| `sig` | HMAC-SHA256 |'
+            ].join('\n');
+            const res = await fetch('/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Bearer babel-dry-run-probe',
+                    'X-Babel-Dry-Run': '1'
+                },
+                body: JSON.stringify({
+                    model: active.model || 'gpt-4o-mini',
+                    max_tokens: 1,
+                    messages: [
+                        { role: 'system', content: probeSystem },
+                        { role: 'user', content: 'Say ok.' }
+                    ]
+                })
+            });
+            const dt = Date.now() - t0;
+            const babelStatus = res.headers?.get('X-Babel-Status') || 'processed';
+            const savedHdr = res.headers?.get('X-Babel-Dry-Run-Saved-Tokens') || '0';
+            if (hint) {
+                hint.style.color = res.ok ? 'var(--emerald-light)' : 'var(--gold-soft)';
+                hint.textContent = res.ok
+                    ? `Dry-Run 链路探测成功（HTTP ${res.status} · ${babelStatus} · 可省 ${savedHdr} tok · ${dt}ms）`
+                    : `代理已处理并记录 Dry-Run 块（${babelStatus} · 可省 ${savedHdr} tok）；上游返回 HTTP ${res.status}（需真实业务 Key 放行上游）`;
+            }
+            await loadLogs();
+        } catch (e) {
+            if (hint) {
+                hint.style.color = 'var(--rose)';
+                hint.textContent = `代理探测异常：${e.message || '请求失败'}`;
+            }
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = '测试代理链路 (Dry-Run)';
+            }
+        }
+    }
 
     function getProxyQuickstartRecipes() {
         const origin = (typeof window !== 'undefined' && window.location && window.location.origin) ? window.location.origin : 'http://127.0.0.1:8080';
@@ -3779,6 +4384,164 @@
         bar.classList.remove('hidden');
     }
 
+    function renderFilteredProxyLogs() {
+        const container = document.getElementById('logsContainer');
+        if (!container) return;
+        container.innerHTML = '';
+
+        const total = latestProxyLogs.length;
+        const countEl = document.getElementById('proxyFilterCount');
+
+        if (!total) {
+            if (countEl) countEl.textContent = '';
+            const emptyCard = document.createElement('div');
+            emptyCard.className = 'glass-card empty-state';
+            const lead = document.createElement('div');
+            lead.style.marginBottom = '16px';
+            lead.textContent = '暂无代理拦截记录。复制下方任一客户端接入命令启动流量（怕影响业务可先打开上方「Dry-Run 观察模式」零风险试用）：';
+            emptyCard.appendChild(lead);
+            const quickstartBox = document.createElement('div');
+            renderQuickstartCards(quickstartBox);
+            emptyCard.appendChild(quickstartBox);
+            container.appendChild(emptyCard);
+            return;
+        }
+
+        const query = (document.getElementById('proxyLogSearchInput')?.value || '').trim().toLowerCase();
+        const filtered = latestProxyLogs.filter(item => {
+            if (proxyLogFilter === 'adopted' && item.decision !== 'adopted') return false;
+            if (proxyLogFilter === 'local_fast' && item.decision !== 'local_fast') return false;
+            if (proxyLogFilter === 'dry_run' && item.decision !== 'dry_run_would_adopt') return false;
+            if (proxyLogFilter === 'kept_original' && item.decision !== 'kept_original') return false;
+            if (proxyLogFilter === 'system_tools') {
+                const role = item.role || '';
+                if (role !== 'system' && role !== 'developer' && !role.startsWith('tool:')) return false;
+            }
+            if (query) {
+                const hay = [item.role, item.decision, item.reason, item.original, item.compiled, item.protocol]
+                    .filter(Boolean).join('\n').toLowerCase();
+                if (!hay.includes(query)) return false;
+            }
+            return true;
+        });
+
+        if (countEl) {
+            countEl.textContent = filtered.length === total ? `共 ${total} 条` : `显示 ${filtered.length} / ${total} 条`;
+        }
+
+        if (!filtered.length) {
+            const emptyCard = document.createElement('div');
+            emptyCard.className = 'glass-card empty-state';
+            emptyCard.textContent = '没有符合当前筛选或搜索条件的代理记录。';
+            container.appendChild(emptyCard);
+            return;
+        }
+
+        filtered.forEach(item => {
+            const card = document.createElement('div');
+            card.className = 'glass-card log-card';
+
+            const isTool = (item.role || '').startsWith('tool:');
+            const roleClass = isTool ? 'tag tag-tool' : 'tag tag-role';
+            const header = document.createElement('div');
+            header.className = 'log-card-header';
+            const tags = document.createElement('div');
+            tags.className = 'log-tags';
+            function addTag(text, className) {
+                const tag = document.createElement('span');
+                tag.className = className;
+                tag.textContent = text;
+                tags.appendChild(tag);
+                return tag;
+            }
+            addTag(`[${item.timestamp || ''}]`, '');
+            addTag(item.protocol === 'anthropic' ? 'ANTHROPIC' : 'OPENAI',
+                item.protocol === 'anthropic' ? 'tag tag-anthropic' : 'tag tag-openai');
+            if (item.dialect) addTag(item.dialect, 'tag tag-dialect');
+            if (Array.isArray(item.domains) && item.domains.length) addTag(`领域：${item.domains.join(' · ')}`, 'tag tag-dialect');
+            addTag(item.role || '', roleClass);
+            const adopted = item.decision === 'adopted';
+            const localFast = item.decision === 'local_fast';
+            const dryRunWouldAdopt = item.decision === 'dry_run_would_adopt';
+            const keptOriginal = item.decision === 'kept_original';
+            addTag(
+                adopted ? '已采用候选' : localFast ? '本地无损压缩' : dryRunWouldAdopt ? 'Dry-Run 可省（原样转发）' : keptOriginal ? '已保留原文' : '决策未提供',
+                (adopted || localFast) ? 'tag tag-dialect' : dryRunWouldAdopt ? 'tag tag-dryrun' : 'tag tag-role'
+            );
+            const measurement = formatProxyMeasurement(item);
+            if (measurement) addTag(measurement, 'tag tag-estimated');
+            const validationLabel = { blind_read: '盲读对照', llm_compare: '模型对照', local_checks: '本地检查', local_fast: '本地快路径', cached: '缓存校验', none: '未执行校验' }[item.validation_method];
+            if (validationLabel) addTag(`校验方式：${validationLabel}`, 'tag tag-role');
+            const usage = formatProxyUsage(item);
+            if (usage) {
+                addTag(usage, 'tag tag-billing').title = '整次请求的实际用量与所检查文本的估算范围不同，不能据此计算实际节省；同一请求的 usage 可能显示在多条记录中，请勿相加。';
+            }
+            if (item.cache_hit) addTag('CACHE HIT', 'cache-pill');
+            if (item.redacted) addTag('已脱敏', 'tag tag-redact');
+            header.appendChild(tags);
+
+            const actions = document.createElement('div');
+            actions.className = 'log-header-actions';
+            const diagBtn = document.createElement('button');
+            diagBtn.type = 'button';
+            diagBtn.className = 'btn';
+            diagBtn.textContent = '复制脱敏诊断';
+            diagBtn.onclick = () => copyProxyDiagnostic(item, diagBtn);
+            actions.appendChild(diagBtn);
+
+            const id = document.createElement('span');
+            id.style.color = 'var(--text-muted)';
+            id.textContent = `#${item.id || ''}`;
+            actions.appendChild(id);
+            header.appendChild(actions);
+
+            const reason = document.createElement('div');
+            reason.className = 'log-reason';
+            reason.textContent = item.reason || '后端未提供本次处理原因。';
+
+            const grid = document.createElement('div');
+            grid.className = 'log-diff';
+
+            const left = document.createElement('div');
+            left.className = 'log-col';
+            const leftHead = document.createElement('div');
+            leftHead.className = 'log-col-head';
+            leftHead.textContent = '原文';
+            const leftBody = document.createElement('pre');
+            leftBody.className = 'log-col-body';
+            leftBody.textContent = item.original || '';
+            left.appendChild(leftHead);
+            left.appendChild(leftBody);
+
+            const right = document.createElement('div');
+            right.className = 'log-col';
+            const rightHeader = adopted
+                ? '实际发送：候选'
+                : localFast
+                    ? '实际发送：本地无损压缩'
+                    : dryRunWouldAdopt
+                        ? 'Dry-Run 候选（实际已原样转发）'
+                        : keptOriginal
+                            ? '实际发送：原文'
+                            : '记录文本（决策未提供）';
+            const rightHead = document.createElement('div');
+            rightHead.className = 'log-col-head';
+            rightHead.textContent = rightHeader;
+            const rightBody = document.createElement('pre');
+            rightBody.className = 'log-col-body';
+            rightBody.textContent = item.compiled || '';
+            right.appendChild(rightHead);
+            right.appendChild(rightBody);
+
+            grid.appendChild(left);
+            grid.appendChild(right);
+            card.appendChild(header);
+            card.appendChild(reason);
+            card.appendChild(grid);
+            container.appendChild(card);
+        });
+    }
+
     async function loadLogs() {
         try {
             const payload = await fetchJSON('/api/logs');
@@ -3799,126 +4562,8 @@
                 badge.classList.add('hidden');
             }
 
-            const container = document.getElementById('logsContainer');
-            container.innerHTML = '';
-
-            if (!logs.length) {
-                const emptyCard = document.createElement('div');
-                emptyCard.className = 'glass-card empty-state';
-                const lead = document.createElement('div');
-                lead.style.marginBottom = '16px';
-                lead.textContent = '暂无代理拦截记录。复制下方任一客户端接入命令启动流量（怕影响业务可先打开上方「Dry-Run 观察模式」零风险试用）：';
-                emptyCard.appendChild(lead);
-                const quickstartBox = document.createElement('div');
-                renderQuickstartCards(quickstartBox);
-                emptyCard.appendChild(quickstartBox);
-                container.appendChild(emptyCard);
-                return;
-            }
-
-            logs.forEach(item => {
-                const card = document.createElement('div');
-                card.className = 'glass-card log-card';
-
-                const isTool = (item.role || '').startsWith('tool:');
-                const roleClass = isTool ? 'tag tag-tool' : 'tag tag-role';
-                const header = document.createElement('div');
-                header.className = 'log-card-header';
-                const tags = document.createElement('div');
-                tags.className = 'log-tags';
-                function addTag(text, className) {
-                    const tag = document.createElement('span');
-                    tag.className = className;
-                    tag.textContent = text;
-                    tags.appendChild(tag);
-                    return tag;
-                }
-                addTag(`[${item.timestamp || ''}]`, '');
-                addTag(item.protocol === 'anthropic' ? 'ANTHROPIC' : 'OPENAI',
-                    item.protocol === 'anthropic' ? 'tag tag-anthropic' : 'tag tag-openai');
-                if (item.dialect) addTag(item.dialect, 'tag tag-dialect');
-                if (Array.isArray(item.domains) && item.domains.length) addTag(`领域：${item.domains.join(' · ')}`, 'tag tag-dialect');
-                addTag(item.role || '', roleClass);
-                const adopted = item.decision === 'adopted';
-                const localFast = item.decision === 'local_fast';
-                const dryRunWouldAdopt = item.decision === 'dry_run_would_adopt';
-                const keptOriginal = item.decision === 'kept_original';
-                addTag(
-                    adopted ? '已采用候选' : localFast ? '本地无损压缩' : dryRunWouldAdopt ? 'Dry-Run 可省（原样转发）' : keptOriginal ? '已保留原文' : '决策未提供',
-                    (adopted || localFast) ? 'tag tag-dialect' : dryRunWouldAdopt ? 'tag tag-dryrun' : 'tag tag-role'
-                );
-                const measurement = formatProxyMeasurement(item);
-                if (measurement) addTag(measurement, 'tag tag-estimated');
-                const validationLabel = { blind_read: '盲读对照', llm_compare: '模型对照', local_checks: '本地检查', local_fast: '本地快路径', cached: '缓存校验', none: '未执行校验' }[item.validation_method];
-                if (validationLabel) addTag(`校验方式：${validationLabel}`, 'tag tag-role');
-                const usage = formatProxyUsage(item);
-                if (usage) {
-                    addTag(usage, 'tag tag-billing').title = '整次请求的实际用量与所检查文本的估算范围不同，不能据此计算实际节省；同一请求的 usage 可能显示在多条记录中，请勿相加。';
-                }
-                if (item.cache_hit) addTag('CACHE HIT', 'cache-pill');
-                if (item.redacted) addTag('已脱敏', 'tag tag-redact');
-                header.appendChild(tags);
-
-                const actions = document.createElement('div');
-                actions.className = 'log-header-actions';
-                const diagBtn = document.createElement('button');
-                diagBtn.type = 'button';
-                diagBtn.className = 'btn';
-                diagBtn.textContent = '复制脱敏诊断';
-                diagBtn.onclick = () => copyProxyDiagnostic(item, diagBtn);
-                actions.appendChild(diagBtn);
-
-                const id = document.createElement('span');
-                id.style.color = 'var(--text-muted)';
-                id.textContent = `#${item.id || ''}`;
-                actions.appendChild(id);
-                header.appendChild(actions);
-
-                const reason = document.createElement('div');
-                reason.className = 'log-reason';
-                reason.textContent = item.reason || '后端未提供本次处理原因。';
-
-                const grid = document.createElement('div');
-                grid.className = 'log-diff';
-
-                const left = document.createElement('div');
-                left.className = 'log-col';
-                const leftHead = document.createElement('div');
-                leftHead.className = 'log-col-head';
-                leftHead.textContent = '原文';
-                const leftBody = document.createElement('pre');
-                leftBody.className = 'log-col-body';
-                leftBody.textContent = item.original || '';
-                left.appendChild(leftHead);
-                left.appendChild(leftBody);
-
-                const right = document.createElement('div');
-                right.className = 'log-col';
-                const rightHeader = adopted
-                    ? '实际发送：候选'
-                    : localFast
-                        ? '实际发送：本地无损压缩'
-                        : dryRunWouldAdopt
-                            ? 'Dry-Run 候选（实际已原样转发）'
-                            : keptOriginal
-                                ? '实际发送：原文'
-                                : '记录文本（决策未提供）';
-                const rightHead = document.createElement('div');
-                rightHead.className = 'log-col-head';
-                rightHead.textContent = rightHeader;
-                const rightBody = document.createElement('pre');
-                rightBody.className = 'log-col-body';
-                rightBody.textContent = item.compiled || '';
-                right.appendChild(rightHead);
-                right.appendChild(rightBody);
-
-                grid.appendChild(left);
-                grid.appendChild(right);
-                card.appendChild(header);
-                card.appendChild(reason);
-                card.appendChild(grid);
-                container.appendChild(card);
-            });
+            latestProxyLogs = logs;
+            renderFilteredProxyLogs();
         } catch (e) {
             const box = document.getElementById('logsError');
             box.textContent = `代理记录刷新失败：${e.message || '请求异常'}。当前记录可能过期。`;
@@ -3983,6 +4628,8 @@
         document.getElementById('domainChoices').textContent = '领域加载失败';
         document.getElementById('domainSelectionHint').textContent = `无法加载领域库：${error.message}。可打开领域表达库重试。`;
     });
+    renderCompileHistory();
+    updateInputCount();
     loadInitConfig();
 </script>
 </body>

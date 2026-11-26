@@ -255,6 +255,7 @@ func TestProxyShadowWarmupNonBlockingAndDeduplicated(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+	drainShadowWarmup(2 * time.Second)
 	if genCalls.Load() != 1 {
 		t.Fatalf("generation calls=%d; want exactly 1", genCalls.Load())
 	}

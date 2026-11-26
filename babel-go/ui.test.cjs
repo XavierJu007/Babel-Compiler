@@ -75,7 +75,7 @@ function setup(responses = []) {
         fetch: async (url, options) => {
             requests.push({ url, options });
             let response = responses.shift();
-            if (typeof response === 'function') response = await response();
+            if (typeof response === 'function') response = await response(options);
             if (response instanceof Error) throw response;
             if (!response) throw new Error('Unexpected fetch');
             const status = response.status || 200;
@@ -91,11 +91,12 @@ function setup(responses = []) {
         confirm: () => true,
         navigator: { clipboard: { writeText: async () => {} } },
         TextDecoder,
+        AbortController,
         alert: message => { throw new Error(`Unexpected alert: ${message}`); }
     });
     vm.runInContext(app, context);
     get('rawInput').value = '禁止删除订单；金额 > 50 元时审批。';
-    for (const id of ['candidateBadge', 'statsBadge', 'cacheBadge', 'auditBox', 'invariantCapsules', 'logsError', 'dryRunBanner', 'proxyQuickstartPanel']) {
+    for (const id of ['candidateBadge', 'statsBadge', 'cacheBadge', 'auditBox', 'invariantCapsules', 'logsError', 'dryRunBanner', 'proxyQuickstartPanel', 'stopBtn', 'compileProgressBar', 'operatorBar', 'routePreviewBadge', 'historyPanel', 'forceDeepBtn']) {
         get(id).className = 'hidden';
     }
     return { context, get, requests, storage };
@@ -1524,4 +1525,142 @@ test('proxy renders local_fast decision badge and updates local_fast_path policy
     await context.updateProxyPolicyField({ local_fast_path: false });
     assert.deepEqual(JSON.parse(requests[1].options.body), { action: 'update_policy', local_fast_path: false });
     assert.equal(get('policyLocalFastCheck').checked, false);
+});
+
+test('cancelCompile aborts in-flight stream request and restores editor controls cleanly', async () => {
+    const { context, get, requests } = setup([
+        options => new Promise((_, reject) => {
+            assert.ok(options.signal, 'expected AbortSignal on compile request');
+            options.signal.addEventListener('abort', () => {
+                const err = new Error('Aborted');
+                err.name = 'AbortError';
+                reject(err);
+            });
+        })
+    ]);
+    get('compileStrategy').value = 'deep';
+    const pending = context.runCompile();
+    assert.equal(get('runBtn').disabled, true);
+    assert.equal(get('stopBtn').classList.contains('hidden'), false);
+    assert.equal(get('compileProgressBar').classList.contains('hidden'), false);
+
+    context.cancelCompile();
+    await pending;
+
+    assert.equal(requests[0].options.signal.aborted, true);
+    assert.equal(get('runBtn').disabled, false);
+    assert.equal(get('runBtn').textContent, '编译');
+    assert.equal(get('forceBtn').disabled, false);
+    assert.equal(get('stopBtn').classList.contains('hidden'), true);
+    assert.equal(get('compileProgressBar').classList.contains('hidden'), true);
+    assert.match(get('auditBox').textContent, /已手动停止本次编译/);
+});
+
+test('route preview and multi-scenario demo presets reflect short, JSON, and parallel lengths', () => {
+    const { context, get } = setup();
+    get('compileStrategy').value = 'auto';
+
+    context.fillDemoText('short');
+    assert.match(get('inputCharCount').textContent, /字 · ~\d+ tok/);
+    assert.match(get('routePreviewBadge').textContent, /短文本直通\/本地/);
+    assert.equal(get('routePreviewBadge').classList.contains('is-fast'), true);
+
+    context.fillDemoText('json');
+    assert.match(get('routePreviewBadge').textContent, /JSON\/代码本地快路径/);
+    assert.equal(get('routePreviewBadge').classList.contains('is-fast'), true);
+
+    context.fillDemoText('agent');
+    assert.match(get('routePreviewBadge').textContent, /单次语义编译/);
+    assert.equal(get('routePreviewBadge').classList.contains('is-llm'), true);
+
+    context.fillDemoText('sop');
+    assert.match(get('routePreviewBadge').textContent, /并行分块编译/);
+    assert.equal(get('routePreviewBadge').classList.contains('is-parallel'), true);
+
+    context.toggleOperatorBar();
+    assert.equal(get('operatorBar').classList.contains('hidden'), false);
+    context.clearCompileInput();
+    assert.equal(get('rawInput').value, '');
+    assert.equal(get('routePreviewBadge').classList.contains('hidden'), true);
+});
+
+test('compile history saves bounded results without secrets and forceDeepBtn overrides auto passthrough', async () => {
+    const shortResp = result({
+        compiled: '短文本原样',
+        strategy: 'passthrough',
+        reason: '短文本低于阈值',
+        elapsed_ms: 1,
+        validation: validation('passed', 'local_fast')
+    });
+    const deepResp = result({
+        compiled: '∀order: ¬delete',
+        strategy: 'llm_compile',
+        elapsed_ms: 350,
+        validation: validation('passed', 'llm_compare')
+    });
+    const { context, get, requests, storage } = setup([
+        { data: shortResp },
+        { data: deepResp }
+    ]);
+    get('verifyCheck').checked = true;
+    get('compileStrategy').value = 'auto';
+    await context.runCompile();
+
+    assert.equal(get('forceDeepBtn').classList.contains('hidden'), false);
+    assert.match(get('historyToggleBtn').textContent, /历史 \(1\)/);
+
+    const savedHist = JSON.parse(storage.get('babel_compile_history_v1'));
+    assert.equal(savedHist.length, 1);
+    assert.equal(Object.hasOwn(savedHist[0], 'api_key'), false);
+
+    await context.forceDeepCompile();
+    assert.equal(get('compileStrategy').value, 'deep');
+    assert.equal(JSON.parse(requests[1].options.body).strategy, 'deep');
+    assert.equal(JSON.parse(requests[1].options.body).no_cache, true);
+    assert.equal(get('forceDeepBtn').classList.contains('hidden'), true);
+    assert.equal(get('dslOutput').value, '∀order: ¬delete');
+
+    context.toggleHistoryPanel(true);
+    assert.equal(get('historyPanel').classList.contains('hidden'), false);
+    context.restoreCompileHistory(1);
+    assert.equal(get('dslOutput').value, '短文本原样');
+    assert.equal(get('historyPanel').classList.contains('hidden'), true);
+});
+
+test('proxy log filters and dry-run self-test probe work cleanly', async () => {
+    const logsPayload = {
+        proxy_speed: { dry_run: false, async_warmup: true, local_fast_path: true, compile_budget: '5s', warmup_user_min_hits: 2 },
+        metrics: { requests_total: 3 },
+        logs: [
+            { id: '1', timestamp: '10:00:01', protocol: 'openai', role: 'system', decision: 'adopted', reason: 'system compressed', original: 'sys orig', compiled: 'sys comp' },
+            { id: '2', timestamp: '10:00:02', protocol: 'openai', role: 'user', decision: 'local_fast', reason: 'whitespace stripped', original: 'user   raw', compiled: 'user raw' },
+            { id: '3', timestamp: '10:00:03', protocol: 'openai', role: 'tool:search', decision: 'kept_original', reason: 'short tool', original: 'tool orig', compiled: 'tool orig' }
+        ]
+    };
+    const { context, get, requests } = setup([
+        { data: logsPayload },
+        { status: 200, headers: { get: name => name === 'X-Babel-Status' ? 'dry-run-hit' : '5' }, data: {} },
+        { data: logsPayload }
+    ]);
+    await context.loadLogs();
+    assert.equal(get('proxyFilterCount').textContent, '共 3 条');
+
+    context.setProxyLogFilter('local_fast');
+    assert.equal(get('proxyFilterCount').textContent, '显示 1 / 3 条');
+    assert.match(get('logsContainer').textContent, /whitespace stripped/);
+    assert.doesNotMatch(get('logsContainer').textContent, /system compressed/);
+
+    context.setProxyLogFilter('system_tools');
+    assert.equal(get('proxyFilterCount').textContent, '显示 2 / 3 条');
+
+    get('proxyLogSearchInput').value = 'tool:search';
+    context.renderFilteredProxyLogs();
+    assert.equal(get('proxyFilterCount').textContent, '显示 1 / 3 条');
+
+    get('proxyLogSearchInput').value = '';
+    context.setProxyLogFilter('all');
+    await context.runProxyDryRunProbe();
+    assert.equal(requests[1].url, '/v1/chat/completions');
+    assert.equal(requests[1].options.headers['X-Babel-Dry-Run'], '1');
+    assert.match(get('policySaveHint').textContent, /Dry-Run/);
 });

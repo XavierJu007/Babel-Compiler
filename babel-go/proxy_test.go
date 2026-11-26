@@ -32,6 +32,7 @@ func isolateProxyState(t *testing.T) {
 	oldMinHits := proxyWarmupUserMinHits
 	proxyPolicyMu.Unlock()
 	t.Cleanup(func() {
+		drainShadowWarmup(2 * time.Second)
 		cacheMutex.Lock()
 		diskCache = oldCache
 		cacheMutex.Unlock()
