@@ -1,4 +1,5 @@
 name: Release
+# Builds cross-platform binaries, self-signed macOS DMGs, and publishes GitHub Releases.
 
 on:
   push:
