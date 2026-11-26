@@ -16,6 +16,7 @@ var commit = "unknown"
 func main() {
 	showVersion := flag.Bool("version", false, "显示版本、提交和构建平台后退出")
 	serveAddr := flag.String("serve", "", "指定 Web/API/代理服务地址 (留空则自动探测可用端口)")
+	appMode := flag.Bool("app", false, "以桌面应用模式启动并自动打开浏览器")
 	profileName := flag.String("profile", "", "指定使用的已保存配置方案名称")
 	mode := flag.String("m", defaultDialectName, "已弃用，仅兼容旧内置名称；当前固定使用混合表达，无需指定")
 	domains := flag.String("domains", "", "组合领域名称，以逗号分隔 (如 application-security,api-contract)")
@@ -119,6 +120,10 @@ func main() {
 
 	if *serveAddr != "" {
 		startServer(*serveAddr, false)
+		return
+	}
+	if *appMode {
+		startServer("", true)
 		return
 	}
 

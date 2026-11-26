@@ -159,3 +159,37 @@ func TestRejectsNonEmptyOutputAndUnsafeMetadata(t *testing.T) {
 		t.Fatal("invalid metadata created an output directory")
 	}
 }
+
+func TestSelectTargetsAndMacOSBundleMetadata(t *testing.T) {
+	all, err := selectTargets("all")
+	if err != nil || len(all) != 6 {
+		t.Fatalf("expected all 6 targets, got %d (%v)", len(all), err)
+	}
+	wl, err := selectTargets("windows, linux")
+	if err != nil || len(wl) != 4 {
+		t.Fatalf("expected 4 windows+linux targets, got %d (%v)", len(wl), err)
+	}
+	mac, err := selectTargets("macos")
+	if err != nil || len(mac) != 2 || mac[0].goos != "darwin" || mac[1].goos != "darwin" {
+		t.Fatalf("expected 2 macos targets, got %+v (%v)", mac, err)
+	}
+	if _, err := selectTargets("plan9"); err == nil {
+		t.Fatal("expected unknown target error")
+	}
+
+	if got := macosAppBundleVersion("v0.2.0-rc.1"); got != "0.2.0" {
+		t.Fatalf("macosAppBundleVersion mismatch: %q", got)
+	}
+	plist := renderMacOSInfoPlist("v0.2.0", "6wyndoIin")
+	for _, want := range []string{
+		"<string>6wyndoIin</string>",
+		"<string>0.2.0</string>",
+		"<string>babel-launcher</string>",
+		"<string>Babel.icns</string>",
+	} {
+		if !strings.Contains(plist, want) {
+			t.Fatalf("Info.plist missing %q:\n%s", want, plist)
+		}
+	}
+}
+

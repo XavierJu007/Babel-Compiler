@@ -1,0 +1,5 @@
+docs/ export-ignore
+README.md export-ignore
+README.zh-CN.md export-ignore
+.github/ export-ignore
+*.md export-ignore
