@@ -1,11 +1,13 @@
-## v0.2.0 — 极速本地压缩、流式可中断工作台、macOS 桌面安装包
+## v0.2.1 — 高密度浅树压缩、纯英文原生编译、章节并行与门禁精确度提升
 
 ### 更新亮点 / Highlights
 
-- **极速本地快路径 (<1ms) & 智能路由**：短文本（`<180` 字或 `<80` Token）与纯 JSON / 代码自动走零 LLM 本地确定性无损压缩或原样直通，消除等待与短文本膨胀；透明代理冷启动同样即时生效并同步后台异步预热。
-- **超长文档并行分块 + 流式 UI**：`>1200` 字文档自动多块并行编译，Web 控制台全面切换为 `/api/compile/stream` SSE 流式渲染，支持实时计时与**随时点击「停止」中止编译**。
-- **体验全面打磨**：首屏精简直达双栏编辑器；输入即预判路由与估算 Token；多场景样本预设、本地编译历史、一键「强制深度编译」、代理日志过滤与一键 `Dry-Run` 链路自检。
-- **全新图标与 macOS `.dmg` 桌面安装**：为 Windows `.exe`（内嵌 `.ico`）、macOS `Babel.app`（`.icns`）及 Web 控制台适配 BABEL 深色几何图标；macOS 产物统一使用自签名标识 **`6wyndoIin`**。
+- **更高净压缩比与浅树排版**：去除冗余逐行框线前缀（`│ ├`）与装饰性编号，采用顶层 `├`/`╰` + 2 空格缩进并加强公共前提合并与单位简写（`h`/`min`/`s`/`d`/`req/s`/`<=`/`>=`），在中文规章、运维手册、合同审阅等场景下显著降低 BPE Token 消耗。
+- **纯英文输入原生编译 & Token 密度分块**：纯英文输入自动启用全英文零汉字电报式编译提示词与英文续写引导，避免译为中文导致 Token 膨胀；按英文与中文 Token 密度区分自动并行切块阈值（英文 `5000` / `2800` 字符，中文 `2000` / `900` 字符）。
+- **章节边界并行提速**：`>900` 字（中文）多章节文本在空白行及 Markdown `#` / 中文顶层标题处自动并行编译，显著缩短中长文本等待时间；并行失败时优先透传真实上游根因错误。
+- **语义门禁与字面量校验精确度提升**：
+  - 修复 `20req/s` 等速率单位的数值字面量误报、`userId/orderId/tenantId` 与中文紧邻路径（如 `php://filter读源码`）的技术字面量边界误报，以及 `第一条`/`Section 1` 独立标题误锁全文列表编号的问题。
+  - 将语义审阅与盲审的 `max_tokens` 提升至 `2048`，避免长文本审计截断返回 `502`；放行等价巴别语简写并禁止在 `missing[]` 中写入非缺陷说明。
 
 ---
 
@@ -15,8 +17,8 @@ Windows、macOS 和 Linux 均提供 `amd64` / `arm64` 程序包。页面、图�
 
 | 系统 / System | 安装包 / Package | 说明 / Notes |
 | :--- | :--- | :--- |
-| **macOS Apple Silicon (桌面安装)** | `babel_v0.2.0_macos_arm64.dmg` | 拖入 Applications 双击打开（自签名 `6wyndoIin`） |
-| **macOS Intel (桌面安装)** | `babel_v0.2.0_macos_amd64.dmg` | 拖入 Applications 双击打开（自签名 `6wyndoIin`） |
+| **macOS Apple Silicon (桌面安装)** | `babel_v0.2.1_macos_arm64.dmg` | 拖入 Applications 双击打开（自签名 `6wyndoIin`） |
+| **macOS Intel (桌面安装)** | `babel_v0.2.1_macos_amd64.dmg` | 拖入 Applications 双击打开（自签名 `6wyndoIin`） |
 | **macOS Apple Silicon / Intel (CLI)** | `macos_arm64.tar.gz` / `macos_amd64.tar.gz` | 终端运行 `./babel`（自签名 `6wyndoIin`） |
 | **Windows x64 / ARM64** | `windows_amd64.zip` / `windows_arm64.zip` | 解压后双击带图标的 `babel.exe` 运行 |
 | **Linux x86-64 / ARM64** | `linux_amd64.tar.gz` / `linux_arm64.tar.gz` | 终端运行 `./babel` |
