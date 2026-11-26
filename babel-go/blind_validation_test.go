@@ -117,6 +117,24 @@ func TestBlindReadingStrictSchema(t *testing.T) {
 	if _, err := parseBlindReading(" \n" + raw + "\n "); err != nil {
 		t.Fatalf("valid reading rejected: %v", err)
 	}
+	// Clean single fenced JSON object and omitted default/empty fields must parse cleanly.
+	if _, err := parseBlindReading("```json\n" + raw + "\n```"); err != nil {
+		t.Fatalf("single fenced JSON rejected: %v", err)
+	}
+	compactRaw := `{"schema_version":1,"relations":[{"relation":"删除","modality":"permission","evidence":"系统允许删除日志。"}]}`
+	compactParsed, err := parseBlindReading(compactRaw)
+	if err != nil {
+		t.Fatalf("compact schema with omitted defaults rejected: %v", err)
+	}
+	if compactParsed.Entities == nil || compactParsed.Ambiguities == nil || len(compactParsed.Relations) != 1 ||
+		compactParsed.Relations[0].Conditions == nil || compactParsed.Relations[0].Quantities == nil || compactParsed.Relations[0].Negated {
+		t.Fatalf("compact defaults not initialized properly: %+v", compactParsed)
+	}
+	compactQty := `{"schema_version":1,"relations":[{"relation":"等待","modality":"obligation","quantities":[{"value":"30","applies_to":"超时"}],"evidence":"最多等待 30"}]}`
+	if parsedQty, err := parseBlindReading(compactQty); err != nil || parsedQty.Relations[0].Quantities[0].Unit != "" || parsedQty.Relations[0].Quantities[0].Comparison != "" {
+		t.Fatalf("compact quantity with omitted optional fields rejected: %+v err=%v", parsedQty, err)
+	}
+
 	for _, tc := range []struct{ name, raw string }{
 		{"plain text", "NOT PASS"},
 		{"null object", "null"},
@@ -129,10 +147,10 @@ func TestBlindReadingStrictSchema(t *testing.T) {
 		{"null relation", `{"schema_version":1,"entities":[],"relations":[null],"ambiguities":[]}`},
 		{"null ambiguity", strings.Replace(raw, `"ambiguities":[]`, `"ambiguities":[null]`, 1)},
 		{"null subject", strings.Replace(raw, `"subject":"系统"`, `"subject":null`, 1)},
-		{"missing boolean", strings.Replace(raw, `"negated":false,`, "", 1)},
 		{"string boolean", strings.Replace(raw, `"negated":false`, `"negated":"false"`, 1)},
 		{"null boolean", strings.Replace(raw, `"negated":false`, `"negated":null`, 1)},
 		{"null quantities", strings.Replace(raw, `"quantities":[]`, `"quantities":null`, 1)},
+		{"empty relation", `{"schema_version":1,"relations":[{"relation":"","modality":"permission","evidence":"x"}]}`},
 		{"empty evidence", strings.Replace(raw, `"evidence":"系统允许删除日志。"`, `"evidence":""`, 1)},
 		{"unknown modality", strings.Replace(raw, `"modality":"permission"`, `"modality":"PASS"`, 1)},
 		{"duplicate root", strings.Replace(raw, `"schema_version":1`, `"schema_version":1,"schema_version":1`, 1)},
@@ -141,8 +159,9 @@ func TestBlindReadingStrictSchema(t *testing.T) {
 		{"case folded key", strings.Replace(raw, `"modality":`, `"Modality":`, 1)},
 		{"misplaced known key", strings.Replace(raw, `"object":"日志"`, `"entities":["日志"]`, 1)},
 		{"trailing text", raw + " NOT PASS"},
+		{"fenced trailing prose", "```json\n" + raw + "\n```\nExtra text"},
+		{"fenced bad language", "```text\n" + raw + "\n```"},
 		{"second object", raw + raw},
-		{"fenced", "```json\n" + raw + "\n```"},
 		{"over limit", strings.Repeat(" ", 256*1024) + raw},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -157,7 +176,7 @@ func TestBlindReadingStrictSchema(t *testing.T) {
 	quantityJSON := blindReadingJSON(t, quantified)
 	for _, mutation := range []string{
 		strings.Replace(quantityJSON, `"value":"30"`, `"value":30`, 1),
-		strings.Replace(quantityJSON, `"unit":"秒",`, "", 1),
+		strings.Replace(quantityJSON, `"unit":"秒"`, `"unit":null`, 1),
 		strings.Replace(quantityJSON, `"comparison":"至多"`, `"comparison":null`, 1),
 		strings.Replace(quantityJSON, `"applies_to":"等待时间"`, `"applies_to":""`, 1),
 		strings.Replace(quantityJSON, `"value":"30"`, `"value":"30","value":"40"`, 1),
@@ -335,5 +354,24 @@ func TestBlindCapabilityIsNotAutomaticallyReadAsProhibition(t *testing.T) {
 	}}, Ambiguities: []string{}}
 	if issues := checkBlindReadingGrounding(reading, candidate); len(issues) > 0 {
 		t.Fatalf("capability must be reviewed in context, not rejected as a definite prohibition conflict: %v", issues)
+	}
+}
+
+func TestBlindEntityGroundingCaseAndBacktickTolerance(t *testing.T) {
+	const candidate = "Allow HTTP requests on `/v2/orders` only for `Admin` role."
+	reading := BlindReading{
+		SchemaVersion: 1,
+		Entities:      []string{"`admin`", "http"},
+		Relations: []BlindRelation{{
+			Relation: "allow", Modality: "permission", Evidence: candidate,
+		}},
+		Ambiguities: []string{},
+	}
+	if issues := checkBlindReadingGrounding(reading, candidate); len(issues) > 0 {
+		t.Fatalf("case/backtick entity tolerance failed: %v", issues)
+	}
+	reading.Entities = append(reading.Entities, "NonExistentEntity")
+	if issues := checkBlindReadingGrounding(reading, candidate); len(issues) == 0 {
+		t.Fatal("invented entity bypassed grounding")
 	}
 }
